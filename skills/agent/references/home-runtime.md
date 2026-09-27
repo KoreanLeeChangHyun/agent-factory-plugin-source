@@ -25,7 +25,7 @@
 ### 2.1. Initialization
 
 1. Initialize with `exec.py init --project-root PROJECT`; first submit and extension connection use the same
-   helper. An installed entry is `python3 /absolute/installed/plugin/skills/agent/scripts/exec.py init --project-root /absolute/code/worktree`.
+   helper. An installed entry is `python3 /absolute/installed/plugin/scripts/exec.py init --project-root /absolute/code/worktree`.
 2. Inspect versioned locations/registrations with `location` and `projects`.
    `list`, capability inspection and status discovery never initialize missing
    storage.
@@ -76,7 +76,7 @@
 
 ### 2.3. Host readiness and diagnostics
 
-- Run `python3 <installed-agent-skill>/scripts/exec.py doctor` when first choosing a managed host,
+- Run `python3 <plugin-root>/scripts/exec.py doctor` when first choosing a managed host,
   when that host changes, or when diagnosing a relevant failure. Reuse the observation
   for unchanged hosts; it is not a per-submission ceremony or a substitute for launch preflight.
 - Add `--probe` to exercise the system bubblewrap helper on Linux with a five-second
@@ -143,7 +143,7 @@
 
 - Managed roles are `main`, `work` and `verification`; follow the role prompt supplied
   for the current run.
-- Use `scripts/exec.py` for delegated roles; Main may also be exec-hosted.
+- Use `<plugin-root>/scripts/exec.py` for delegated roles; Main may also be exec-hosted.
 - Resume exact session IDs; do not use `resume --last` or concurrent turns per session.
 - New sessions use App Server when the installed protocol advertises `instructionDelivery`:
   effective developer-configuration reading, developer instructions on start/resume,
@@ -228,7 +228,7 @@
   acceptance, inspect the Agent's existing runs; recover using the original key
   and immutable inputs. Loops manage this binding automatically.
 
-- `scripts/exec.py`: `submit`, `send`, `status`, `result`, `inbox`,
+- `<plugin-root>/scripts/exec.py`: `submit`, `send`, `status`, `result`, `inbox`,
   `list`, `cancel`, `reconcile`.
 - `submit` and `send` accept either the existing text inputs or `--input-file`.
   - The latter is a versioned `agent-input` JSON document containing `message` and up to
@@ -247,7 +247,7 @@
   `send`. Clients must require that flag before using `agent-input`; a missing or
   false flag identifies a runtime that cannot guarantee image delivery and must not be
   downgraded to attachment-reference text.
-- `scripts/loop.py`: `start`, `status`, `reconcile` (one transition), `recover-receipt`,
+- `<plugin-root>/scripts/loop.py`: `start`, `status`, `reconcile` (one transition), `recover-receipt`,
   `skip --actor human --authorization-reference REF --decision-evidence TEXT`. Missing skip evidence or non-Human actors fail closed. Timing and END
   follow [the Agent graph](../SKILL.md#roles-and-graph).
 - Completed runs publish validated `receipt.json` beside `result.md`.
@@ -362,7 +362,7 @@
   current view without launching or resuming agents:
 
   ```sh
-  python3 <installed-agent-skill>/scripts/loop.py refresh-progress \
+  python3 <plugin-root>/scripts/loop.py refresh-progress \
     --project-root PROJECT --work-agent WORK_AGENT --loop-id LOOP_ID
   ```
 

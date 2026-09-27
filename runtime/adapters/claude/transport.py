@@ -50,9 +50,10 @@ def planning_phases(state):
 def cli_command(session, state, parts, phase=None):
     directory = Path(state["statePath"]).parent
     fixed = directory / "claude-instructions.txt"
-    skills = Path(__file__).resolve().parents[4]
-    bindings = "\n\nAgent Factory installed skill sources (read only when needed):\n" + "\n".join(
-        f"- agent-factory:{name}: {skills / name / 'SKILL.md'}" for name in ("agent", "convention", "document"))
+    root = Path(__file__).resolve().parents[3]
+    bindings = f"\n\nAgent Factory plugin root (`<plugin-root>`): {root}\n" + \
+        "Agent Factory installed skill sources (read only when needed):\n" + "\n".join(
+        f"- agent-factory:{name}: {root / 'skills' / name / 'SKILL.md'}" for name in ("agent", "convention", "document"))
     atomic_write(fixed, (parts.fixed + bindings).encode("utf-8"))
     # Claude's validator does not register the 2020-12 meta-schema. Our result
     # contract uses only shared object/const/enum/type keywords; retain all of

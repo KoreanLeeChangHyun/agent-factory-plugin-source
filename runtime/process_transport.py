@@ -30,8 +30,8 @@ MAX_INLINE_REQUEST_BYTES = 64 * 1024
 MAX_EVENT_BYTES = None
 MAX_EVENTS_BYTES = None
 MAX_STDERR_BYTES = None
-SKILL_ROOT = Path(__file__).resolve().parents[1]
-EXEC_SCRIPT = SKILL_ROOT / "scripts" / "exec.py"
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+EXEC_SCRIPT = PLUGIN_ROOT / "scripts" / "exec.py"
 if sys.platform in {"linux", "darwin"}:
     import paths as runtime_paths
 
@@ -251,7 +251,7 @@ The following validated content is the complete `{role}` system-prompt source:
     development_root = os.environ.get("AGENT_FACTORY_DEV_PLUGIN_ROOT", "").strip()
     if development_root:
         root = Path(development_root).resolve()
-        if root != Path(__file__).resolve().parents[3]:
+        if root != PLUGIN_ROOT:
             raise ContractError("development_plugin_invalid", "Development run must use the local plugin runtime")
         bindings = "\n".join(
             f"- agent-factory:{name}: {root / 'skills' / name / 'SKILL.md'}"

@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parents[2] / 'skills/document/scripts'
+SCRIPTS = Path(__file__).resolve().parents[2] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 spec = importlib.util.spec_from_file_location('lesson_lifecycle', SCRIPTS / 'lessons.py')
 lessons = importlib.util.module_from_spec(spec)

@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[2] / "skills/agent/scripts/exec.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts/exec.py"
 spec = importlib.util.spec_from_file_location("worktree_runtime", SCRIPT)
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)

@@ -15,13 +15,14 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             installed = base / "agent-factory"
-            shutil.copytree(ROOT / "skills", installed / "skills",
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"))
+            for part in ("skills", "runtime", "scripts"):
+                shutil.copytree(ROOT / part, installed / part,
+                                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"))
             cwd = base / "consumer"; cwd.mkdir()
             env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "AGENT_FACTORY_HOME": str(base / "runtime-home")}
             env.pop("PYTHONPATH", None)
             for script in ("exec.py", "loop.py"):
-                path = installed / "skills/agent/scripts" / script
+                path = installed / "scripts" / script
                 result = subprocess.run([sys.executable, str(path), "--help"], cwd=cwd,
                                         env=env, capture_output=True, text=True, timeout=20)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -40,14 +41,14 @@ class DistributionTests(unittest.TestCase):
             for name, arguments in retired_invocations:
                 with self.subTest(retired=arguments):
                     rejected = subprocess.run(
-                        [sys.executable, str(installed / "skills/agent/scripts" / name), *arguments],
+                        [sys.executable, str(installed / "scripts" / name), *arguments],
                         cwd=cwd, env=env, capture_output=True, text=True, timeout=20,
                     )
                     self.assertNotEqual(rejected.returncode, 0)
                     self.assertIn("invalid_arguments", rejected.stdout)
                     self.assertIn("report", rejected.stdout)
                     self.assertFalse((base / "runtime-home").exists())
-            script = installed / "skills/agent/scripts/exec.py"
+            script = installed / "scripts/exec.py"
             location = subprocess.run([sys.executable, str(script), "location", "--project-root", str(cwd)],
                                       env=env, capture_output=True, text=True, timeout=20)
             self.assertEqual(location.returncode, 0, location.stdout)
@@ -57,7 +58,7 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(initialized.returncode, 0, initialized.stdout)
             self.assertTrue((base / "runtime-home/registry.json").is_file())
             self.assertFalse((cwd / ".agent-factory").exists())
-            self.assertFalse((installed / "skills/agent/runtime/cloud_reporting.py").exists())
+            self.assertFalse((installed / "runtime/cloud_reporting.py").exists())
             self.assertFalse((installed / "mcp").exists())
             self.assertFalse((installed / "skills/mcp").exists())
             layout = (installed / "skills/document/SKILL.md").read_text()

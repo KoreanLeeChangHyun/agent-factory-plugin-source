@@ -14,8 +14,8 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
-EXEC_SCRIPT = ROOT / "skills" / "agent" / "scripts" / "exec.py"
-LOOP_SCRIPT = ROOT / "skills" / "agent" / "scripts" / "loop.py"
+EXEC_SCRIPT = ROOT / "scripts" / "exec.py"
+LOOP_SCRIPT = ROOT / "scripts" / "loop.py"
 
 
 def load_modules():

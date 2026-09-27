@@ -9,7 +9,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MIGRATE = ROOT / "skills/document/scripts/migrate_document_paths.py"
+MIGRATE = ROOT / "scripts/migrate_document_paths.py"
 
 
 def run(project, operations, *args):

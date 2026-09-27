@@ -18,8 +18,6 @@ from unittest import mock
 
 SCRIPT = (
     Path(__file__).resolve().parents[2]
-    / "skills"
-    / "agent"
     / "scripts"
     / "exec.py"
 )
@@ -320,7 +318,7 @@ class AgentExecTests(unittest.TestCase):
                 )
                 self.assertIn(source, prompt)
                 self.assertIn("<agent-factory-role-prompt>", prompt)
-                communication = (SCRIPT.parents[2] / "convention" / "references" / "communication.md").read_text(encoding="utf-8")
+                communication = (SCRIPT.parents[1] / "skills" / "convention" / "references" / "communication.md").read_text(encoding="utf-8")
                 if role == "main":
                     self.assertIn(communication, prompt)
                 else:
@@ -1762,7 +1760,7 @@ class AgentExecTests(unittest.TestCase):
             )
             finding = {
                 "id": "REV-001",
-                "path": "skills/agent/scripts/exec.py",
+                "path": "scripts/exec.py",
                 "location": "validate_receipt",
                 "problem": "binding is not checked",
                 "evidence": "the expected value is available in state",

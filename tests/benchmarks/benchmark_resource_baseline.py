@@ -18,7 +18,7 @@ import tracemalloc
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TRANSPORT = ROOT / "skills/agent/runtime/process_transport.py"
+TRANSPORT = ROOT / "runtime/process_transport.py"
 MAX_CHUNKS = 2_000
 
 
@@ -109,7 +109,7 @@ def main() -> int:
     evidence = {
         "schemaVersion": 1,
         "label": "Agent Factory plugin bounded resource baseline",
-        "source": {"path": "skills/agent/runtime/process_transport.py",
+        "source": {"path": "runtime/process_transport.py",
                    "sha256": hashlib.sha256(TRANSPORT.read_bytes()).hexdigest()},
         "environment": {"python": sys.version, "platform": platform.platform()},
         "isolation": {"disposableFixture": True, "realRuntimeHistoryUsed": False,

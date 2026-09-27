@@ -8,7 +8,7 @@
       "name": "agent-factory",
       "source": {
         "source": "url",
-        "url": "https://github.com/KoreanLeeChangHyun/agent-factory-codex-plugin.git",
+        "url": "{{repository}}.git",
         "ref": "main"
       },
       "policy": {

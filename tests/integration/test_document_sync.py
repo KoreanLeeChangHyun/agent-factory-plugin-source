@@ -11,7 +11,7 @@ import pytest
 from test_document_export import package
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "skills/document/scripts/sync_documents.py"
+SCRIPT = ROOT / "scripts/sync_documents.py"
 
 
 def run(root, *args):
@@ -220,7 +220,8 @@ sync.sync(Path(sys.argv[2]))
 
 def test_no_bundled_auto_hooks():
     assert not (ROOT / "hooks/hooks.json").exists()
-    assert "hooks" not in json.loads((ROOT / ".codex-plugin/plugin.json").read_text())
+    for manifest in (ROOT / "distribution/hosts").glob("*/.*-plugin/plugin.json"):
+        assert "hooks" not in json.loads(manifest.read_text())
     result = subprocess.run([sys.executable, str(SCRIPT), "--hook"], text=True, capture_output=True)
     assert result.returncode != 0
 
@@ -247,10 +248,11 @@ def test_cli_runs_from_relocated_document_skill(tmp_path):
     installed = tmp_path / "installed plugin"
     shutil.copytree(ROOT / "skills/document", installed / "skills/document",
                     ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(ROOT / "scripts", installed / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
     project = tmp_path / "consumer"
     project.mkdir()
     source = package(project, "skills")
-    result = subprocess.run([sys.executable, str(installed / "skills/document/scripts/sync_documents.py"),
+    result = subprocess.run([sys.executable, str(installed / "scripts/sync_documents.py"),
                              "--project-root", str(project)], cwd=tmp_path, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert (project / ".codex/skills/info-example/SKILL.md").read_bytes() == (source / "SKILL.md").read_bytes()

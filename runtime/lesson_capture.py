@@ -8,7 +8,7 @@ import subprocess
 import sys
 import uuid
 
-SCRIPT = Path(__file__).resolve().parents[2] / 'document/scripts/lessons.py'
+SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lessons.py'
 
 
 def observe(project_root, state, event, attempt=0):

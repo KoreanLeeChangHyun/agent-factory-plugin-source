@@ -11,3 +11,4 @@ __pycache__/
 /.agent-factory/db.sqlite-shm
 /.agent-factory/db.sqlite-wal
 .backup/
+/dist/

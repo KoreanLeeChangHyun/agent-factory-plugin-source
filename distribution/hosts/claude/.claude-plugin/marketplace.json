@@ -1,0 +1,21 @@
+{
+  "name": "agent-factory",
+  "owner": {
+    "name": "Agent Factory",
+    "url": "https://github.com/KoreanLeeChangHyun"
+  },
+  "metadata": {
+    "description": "Agent Factory skills for managed execution, shared conventions and documents.",
+    "version": "{{hostVersion}}"
+  },
+  "plugins": [
+    {
+      "name": "agent-factory",
+      "source": "./",
+      "description": "{{description}}",
+      "version": "{{hostVersion}}",
+      "category": "productivity",
+      "homepage": "{{repository}}"
+    }
+  ]
+}

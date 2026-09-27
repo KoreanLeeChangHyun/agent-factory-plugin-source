@@ -1,0 +1,25 @@
+{
+  "name": "agent-factory",
+  "version": "{{hostVersion}}",
+  "description": "{{description}}",
+  "author": {
+    "name": "Agent Factory",
+    "url": "https://github.com/KoreanLeeChangHyun"
+  },
+  "homepage": "{{repository}}",
+  "repository": "{{repository}}",
+  "license": "MIT",
+  "keywords": [
+    "agent-factory",
+    "managed-agents",
+    "interview",
+    "exploration",
+    "document",
+    "specification",
+    "source-gathering",
+    "tool-management",
+    "software-delivery",
+    "claude-code"
+  ],
+  "skills": "./skills/"
+}

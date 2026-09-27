@@ -8,7 +8,7 @@ import sys
 import pytest
 
 
-SCRIPT = Path(__file__).resolve().parents[2] / "skills/document/scripts/export_documents.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts/export_documents.py"
 
 
 def run(root, *args):

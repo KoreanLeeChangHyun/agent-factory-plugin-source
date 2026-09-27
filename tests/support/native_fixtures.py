@@ -4,7 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 
-SPEC = importlib.util.spec_from_file_location("native_test_exec", Path(__file__).parents[2] / "skills/agent/scripts/exec.py")
+SPEC = importlib.util.spec_from_file_location("native_test_exec", Path(__file__).parents[2] / "scripts/exec.py")
 runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runtime)
 native = runtime.native_codex

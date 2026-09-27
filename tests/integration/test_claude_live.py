@@ -16,7 +16,7 @@ import uuid
 import struct
 import zlib
 
-SCRIPT = Path(__file__).resolve().parents[2] / "skills/agent/scripts/exec.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts/exec.py"
 
 
 @unittest.skipUnless(os.environ.get("AF_TEST_CLAUDE_LIVE") == "1", "real Claude integration is opt-in")

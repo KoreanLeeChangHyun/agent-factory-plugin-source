@@ -14,7 +14,7 @@ from native_fixtures import native, runtime, native_fixture
 
 class ProviderBoundaryTests(unittest.TestCase):
     def test_claude_import_does_not_load_codex_or_its_policy(self):
-        directory = Path(__file__).parents[2] / 'skills/agent/runtime'
+        directory = Path(__file__).parents[2] / 'runtime'
         probe = '''import sys
 sys.path.insert(0, sys.argv[1])
 import adapters

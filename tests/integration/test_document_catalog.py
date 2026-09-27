@@ -9,8 +9,8 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CATALOG = ROOT / "skills/document/scripts/catalog_documents.py"
-SEARCH = ROOT / "skills/document/scripts/search_documents.py"
+CATALOG = ROOT / "scripts/catalog_documents.py"
+SEARCH = ROOT / "scripts/search_documents.py"
 
 
 def run(script, root, *args):

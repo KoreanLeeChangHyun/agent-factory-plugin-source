@@ -6,7 +6,7 @@ from unittest.mock import patch
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location('lesson_capture_test_module', ROOT / 'skills/agent/runtime/lesson_capture.py')
+spec = importlib.util.spec_from_file_location('lesson_capture_test_module', ROOT / 'runtime/lesson_capture.py')
 capture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(capture)
 

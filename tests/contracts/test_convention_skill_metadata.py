@@ -93,7 +93,7 @@ class ConventionSkillMetadataTests(unittest.TestCase):
                 self.assertNotRegex(text, r"(?i)\bMCP\b|cloud reporting|reporting-deliver|--reporting-config")
 
     def test_local_workflow_and_service_independence_contracts_are_explicit(self) -> None:
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme = (ROOT / "distribution" / "hosts" / "codex" / "README.md").read_text(encoding="utf-8")
         agent = (SKILLS / "agent" / "SKILL.md").read_text(encoding="utf-8")
         convention = (SKILLS / "convention" / "SKILL.md").read_text(encoding="utf-8")
         layout = (
@@ -104,7 +104,7 @@ class ConventionSkillMetadataTests(unittest.TestCase):
             for name in ("specification.md", "refined.md", "original.md")
         )
         manifest = json.loads(
-            (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+            (ROOT / "distribution" / "hosts" / "codex" / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
         )
 
         for mode in ("Extension + plugin", "MCP"):
@@ -264,20 +264,15 @@ class ConventionSkillMetadataTests(unittest.TestCase):
             r"make no installation\s+change unless authorized",
         )
 
-    def test_public_skills_expose_only_their_owned_scripts(self) -> None:
-        expected = {
-            name: ({"exec.py", "loop.py"} if name == "agent"
-                   else {"lessons.py", "catalog_documents.py", "export_documents.py",
-                         "migrate_document_paths.py", "search_documents.py", "sync_documents.py"}
-                   if name == "document" else set())
-            for name in PUBLIC_SKILLS
-        }
-        for skill, scripts in expected.items():
-            with self.subTest(skill=skill):
-                self.assertEqual(
-                    {path.name for path in (SKILLS / skill / "scripts").glob("*.py")},
-                    scripts,
-                )
+    def test_skills_hold_documents_and_scripts_live_at_plugin_root(self) -> None:
+        for name in PUBLIC_SKILLS:
+            with self.subTest(skill=name):
+                self.assertEqual(list((SKILLS / name).rglob("*.py")), [])
+        self.assertEqual(
+            {path.name for path in (ROOT / "scripts").glob("*.py")},
+            {"exec.py", "loop.py", "lessons.py", "catalog_documents.py", "export_documents.py",
+             "migrate_document_paths.py", "search_documents.py", "sync_documents.py"},
+        )
 
     def test_legacy_artifacts_are_excluded_and_runtime_state_is_ignored(self):
         self.assertEqual(list(SKILLS.rglob("*.sql")), [])

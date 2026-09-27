@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "support"))
 from mock_responses_provider import MockResponsesProvider
 
 ROOT = Path(__file__).resolve().parents[2]
-EXEC = ROOT / 'skills/agent/scripts/exec.py'
+EXEC = ROOT / 'scripts/exec.py'
 TERMINAL = {'completed', 'failed', 'cancelled', 'needs-human-decision'}
 
 

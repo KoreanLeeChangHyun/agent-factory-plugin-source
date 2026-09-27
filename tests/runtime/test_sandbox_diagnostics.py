@@ -9,8 +9,8 @@ from unittest import mock
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / 'skills/agent/scripts/exec.py'
-SPEC = importlib.util.spec_from_file_location('sandbox_diagnostics', ROOT / 'skills/agent/runtime/sandbox_diagnostics.py')
+SCRIPT = ROOT / 'scripts/exec.py'
+SPEC = importlib.util.spec_from_file_location('sandbox_diagnostics', ROOT / 'runtime/sandbox_diagnostics.py')
 diagnostics = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(diagnostics)
 

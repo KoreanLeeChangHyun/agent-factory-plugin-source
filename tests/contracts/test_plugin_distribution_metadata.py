@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -10,8 +13,17 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = ROOT / ".codex-plugin" / "plugin.json"
-MARKETPLACE = ROOT / ".agents" / "plugins" / "marketplace.json"
+PORT = ROOT / "distribution" / "port.py"
+_GENERATED = tempfile.TemporaryDirectory()
+DIST = Path(_GENERATED.name)
+subprocess.run([sys.executable, str(PORT), "--out", str(DIST), "--build", "20260101000000"],
+               check=True, capture_output=True, text=True)
+CODEX = DIST / "codex"
+CLAUDE = DIST / "claude"
+MANIFEST = CODEX / ".codex-plugin" / "plugin.json"
+MARKETPLACE = CODEX / ".agents" / "plugins" / "marketplace.json"
+CLAUDE_MANIFEST = CLAUDE / ".claude-plugin" / "plugin.json"
+CLAUDE_MARKETPLACE = CLAUDE / ".claude-plugin" / "marketplace.json"
 VERIFICATION_WORKFLOW = ROOT / ".github" / "workflows" / "manual-verification.yml"
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -20,8 +32,8 @@ SEMVER = re.compile(
 )
 CACHEBUSTER_VERSION = re.compile(r"^1\.0\.15\+codex\.\d{14}$")
 README_PATHS = (
-    ROOT / "README.md",
-    ROOT / "README.ko.md",
+    CODEX / "README.md",
+    CODEX / "README.ko.md",
 )
 README_CONTRACT_MARKERS = (
     "fully installable and usable on its own",
@@ -50,7 +62,7 @@ class PluginDistributionMetadataTests(unittest.TestCase):
                 if path.name != "README.md":
                     targets = re.findall(r"\[[^]]+\]\(([^)]+)\)", readme)
                     self.assertTrue(any(
-                        (path.parent / target).resolve() == (ROOT / "README.md").resolve()
+                        (path.parent / target).resolve() == (CODEX / "README.md").resolve()
                         for target in targets
                     ), "Former translations must link to the maintained README")
                     continue
@@ -75,9 +87,9 @@ class PluginDistributionMetadataTests(unittest.TestCase):
         self.assertEqual(manifest["skills"], "./skills/")
         self.assertNotIn("apps", manifest)
         self.assertNotIn("mcpServers", manifest)
-        self.assertTrue((ROOT / manifest["skills"]).is_dir())
+        self.assertTrue((CODEX / manifest["skills"]).is_dir())
         self.assertEqual(
-            {path.name for path in (ROOT / manifest["skills"]).iterdir() if path.is_dir()},
+            {path.name for path in (CODEX / manifest["skills"]).iterdir() if path.is_dir()},
             {"agent", "convention", "document"},
         )
         for field in ("homepage", "repository"):
@@ -121,6 +133,53 @@ class PluginDistributionMetadataTests(unittest.TestCase):
             "NOT_AVAILABLE", "AVAILABLE", "INSTALLED_BY_DEFAULT",
         })
         self.assertIn(entry["policy"]["authentication"], {"ON_INSTALL", "ON_USE"})
+
+
+    def test_every_host_carries_the_same_payload(self) -> None:
+        for name in ("skills", "runtime", "scripts", "LICENSE"):
+            with self.subTest(part=name):
+                source, codex, claude = ROOT / name, CODEX / name, CLAUDE / name
+                if source.is_dir():
+                    files = lambda base: sorted(str(p.relative_to(base)) for p in base.rglob("*")
+                                                if p.is_file() and "__pycache__" not in p.parts)
+                    self.assertEqual(files(codex), files(source))
+                    self.assertEqual(files(claude), files(source))
+                else:
+                    self.assertEqual(codex.read_bytes(), source.read_bytes())
+                    self.assertEqual(claude.read_bytes(), source.read_bytes())
+        for host in (CODEX, CLAUDE):
+            with self.subTest(host=host.name):
+                self.assertNotIn("{{", "".join(path.read_text(encoding="utf-8") for path in host.rglob("*.json")))
+                self.assertFalse((host / "tests").exists())
+                self.assertFalse((host / "distribution").exists())
+
+    def test_claude_manifest_and_marketplace_match_shared_metadata(self) -> None:
+        package = read_json(ROOT / "distribution" / "package.json")
+        manifest = read_json(CLAUDE_MANIFEST)
+        marketplace = read_json(CLAUDE_MARKETPLACE)
+        self.assertEqual(manifest["name"], package["name"])
+        self.assertEqual(manifest["version"], package["version"])
+        self.assertEqual(manifest["description"], package["description"])
+        self.assertEqual(manifest["skills"], "./skills/")
+        self.assertEqual(manifest["repository"], package["hosts"]["claude"]["repository"])
+        self.assertEqual(marketplace["name"], "agent-factory")
+        entry, = marketplace["plugins"]
+        self.assertEqual((entry["name"], entry["source"], entry["version"]),
+                         (manifest["name"], "./", manifest["version"]))
+        codex = read_json(MANIFEST)
+        self.assertEqual(codex["version"], package["version"] + "+codex.20260101000000")
+        self.assertEqual(codex["description"], package["description"])
+
+    def test_check_reports_drift_in_generated_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "claude"
+            command = [sys.executable, str(PORT), "--host", "claude", "--out", str(output), "--build", "20260101000000"]
+            subprocess.run(command, check=True, capture_output=True)
+            self.assertEqual(subprocess.run([*command, "--check"], capture_output=True).returncode, 0)
+            (output / "skills" / "agent" / "SKILL.md").write_text("edited", encoding="utf-8")
+            result = subprocess.run([*command, "--check"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("skills/agent/SKILL.md", result.stderr)
 
     def test_verification_workflow_requires_manual_human_dispatch(self) -> None:
         workflow = yaml.load(

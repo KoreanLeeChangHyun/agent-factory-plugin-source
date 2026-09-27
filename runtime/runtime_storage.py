@@ -29,8 +29,8 @@ SCHEMA_VERSION = "0.1.0"
 AGENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 ROLE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_REQUEST_BYTES = None
-SKILL_ROOT = Path(__file__).resolve().parents[1]
-PROMPTS = SKILL_ROOT / "prompt"
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+PROMPTS = PLUGIN_ROOT / "skills" / "agent" / "prompt"
 VALID_ROLES = {"main", "work", "verification"}
 response_operation: ContextVar[dict[str, Any] | None] = ContextVar("response_operation", default=None)
 if sys.platform in {"linux", "darwin"}:

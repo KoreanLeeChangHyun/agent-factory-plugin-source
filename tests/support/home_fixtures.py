@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
-RUNTIME = Path(__file__).parents[2] / "skills/agent/runtime"
+RUNTIME = Path(__file__).parents[2] / "runtime"
 sys.path.insert(0, str(RUNTIME))
 import paths
 import migration

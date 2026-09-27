@@ -55,10 +55,10 @@ SYSTEMD_REQUIRED_OPTIONS = (
 )
 ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 CGROUP_ROOT = Path("/sys/fs/cgroup")
-SKILL_ROOT = Path(__file__).resolve().parents[1]
-PROMPTS = SKILL_ROOT / "prompt"
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+PROMPTS = PLUGIN_ROOT / "skills" / "agent" / "prompt"
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(SKILL_ROOT / "runtime"))
+sys.path.insert(0, str(PLUGIN_ROOT / "runtime"))
 import sandbox_diagnostics
 import lesson_capture
 import worktrees

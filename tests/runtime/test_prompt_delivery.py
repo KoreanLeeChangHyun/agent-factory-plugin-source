@@ -115,7 +115,7 @@ class PromptDeliveryTests(unittest.TestCase):
                     process_transport.validate_terminal_result(invalid, state)
 
     def test_development_sources_follow_local_runtime_for_every_role(self):
-        root = Path(process_transport.__file__).resolve().parents[3]
+        root = Path(process_transport.__file__).resolve().parents[1]
         with mock.patch.dict(os.environ, {"AGENT_FACTORY_DEV_PLUGIN_ROOT": str(root)}):
             for role in ("main", "work", "verification"):
                 parts = self.parts(role)
