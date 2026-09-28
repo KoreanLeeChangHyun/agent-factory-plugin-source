@@ -224,7 +224,8 @@ class ConventionSkillMetadataTests(unittest.TestCase):
         original = (SKILLS / "document" / "references" / "original.md").read_text(
             encoding="utf-8"
         )
-        normalized = " ".join((document + "\n" + original).split())
+        host_sync = (SKILLS / "document" / "references" / "host-sync.md").read_text(encoding="utf-8")
+        normalized = " ".join((document + "\n" + original + "\n" + host_sync).split())
         for detail in (
             "one `metadata.yaml` with metadata and links only",
             "stores no copied source body or assets",

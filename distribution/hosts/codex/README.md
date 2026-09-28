@@ -148,7 +148,7 @@ The plugin exposes four public Skills:
 - Project specification documents written according to Agent Factory rules in `docs/skills/`
   are synchronized to `.codex/skills/`, making them available to Codex as project Skills.
 - After writing project specification documents in `docs/skills/`, agents run the
-  [Document Skill synchronization script](skills/document/SKILL.md#continuous-codex-synchronization)
+  [Document Skill synchronization script](skills/document/references/host-sync.md#continuous-codex-synchronization)
   and check the result. They also run it after modifying or deleting these documents.
 - If synchronized documents are edited independently, synchronization reports a conflict
   and stops to preserve those changes.
@@ -163,7 +163,7 @@ The plugin exposes four public Skills:
   MSYS2/Cygwin Python builds are unsupported. macOS and Windows require validation in your actual environment.
 - **Python:** Python 3.10+.
 - **Codex:** Codex CLI must be installed. Required capabilities and environment readiness are checked before execution.
-- See [host readiness](skills/agent/references/home-runtime.md#host-readiness-and-diagnostics)
+- See [host readiness](skills/agent/references/installation.md#host-readiness-and-diagnostics)
   for environment-specific requirements and limitations.
 
 ## Bug reports

@@ -115,7 +115,7 @@ Agent Factory는 사용자가 주도하는 소프트웨어 개발·전달을 위
 - Agent Factory 규칙에 따라 `docs/skills/`에 작성한 프로젝트 명세 문서는
   `.codex/skills/`로 동기화되어 Codex에서 프로젝트 스킬로 활용됩니다.
 - 에이전트는 `docs/skills/`에 프로젝트 명세 문서를 작성한 후
-  [Document 스킬의 동기화 스크립트](skills/document/SKILL.md#continuous-codex-synchronization)를
+  [Document 스킬의 동기화 스크립트](skills/document/references/host-sync.md#continuous-codex-synchronization)를
   실행하고 결과를 확인합니다. 문서를 수정하거나 삭제한 후에도 실행합니다.
 - 동기화된 문서를 별도로 편집한 경우 충돌을 보고하고 동기화를 중단하여 변경 내용을 보호합니다.
 - 동기화 관리 대상이 아닌 기존 스킬은 수정하지 않고 보존합니다.
@@ -129,7 +129,7 @@ Agent Factory는 사용자가 주도하는 소프트웨어 개발·전달을 위
   MSYS2/Cygwin용 Python은 지원하지 않습니다. macOS와 Windows는 실제 사용 환경에서 동작 확인이 필요합니다.
 - **Python:** Python 3.10+.
 - **Codex:** Codex CLI가 설치되어 있어야 합니다. 실행 전에 필요한 기능과 환경을 확인합니다.
-- 환경별 조건과 제한은 [호스트 준비 상태 안내](skills/agent/references/home-runtime.md#host-readiness-and-diagnostics)를 참고하십시오.
+- 환경별 조건과 제한은 [호스트 준비 상태 안내](skills/agent/references/installation.md#host-readiness-and-diagnostics)를 참고하십시오.
 
 ## 버그 문의
 

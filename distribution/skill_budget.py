@@ -16,8 +16,8 @@ SKILLS = ROOT / "skills"
 # Approximate tokens as characters / 4 (English Markdown); budgets are in these units.
 BUDGETS = {
     "description": 80,     # per Skill, always loaded
-    "skill": 4600,         # per SKILL.md, loaded when the Skill applies
-    "reference": 6000,     # per reference/asset/prompt file, loaded on demand
+    "skill": 3000,         # per SKILL.md, loaded when the Skill applies
+    "reference": 4500,     # per reference/asset/prompt file, loaded on demand
 }
 
 
