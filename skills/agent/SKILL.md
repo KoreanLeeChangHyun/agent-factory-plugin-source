@@ -116,15 +116,20 @@ metadata:
 
 ## 4. References
 
-- Read before the corresponding operation:
+Read only the file for the operation at hand:
 
-- `references/execution-modes.md`: captured execution routes, completion rules, runtime interface and Plan
-  transitions.
-- `references/home-runtime.md`: storage, cancellation and containment, bindings, legacy records and
-  progress repair; it routes to the two files below.
-- `references/installation.md`: initialization, permissions, host readiness and relocation.
-- `references/managed-execution.md`: prompts, sessions, run files, retries, CLI responses and receipts.
-- `references/native-fast-goal.md`: installed Codex Fast and native Goal.
-- `references/task-dispatch.md`: task binding, one-source task announcement, ordered loop
-  submission and worker assignment. Read before any managed dispatch.
-- `references/project-specialist.md`: project-specialized Work profiles.
+- Before dispatching (Main):
+  - `references/execution-modes.md`: captured routes, completion rules, runtime interface, Plan
+    transitions and providers.
+  - `references/task-dispatch.md`: task binding, one-source announcement, ordered loop
+    submission and worker assignment.
+- While a run executes or is inspected:
+  - `references/managed-execution.md`: prompts, sessions, run files, retries, CLI responses
+    and receipts.
+  - `references/home-runtime.md`: storage, cancellation and containment, capability bindings,
+    legacy records and progress repair.
+- When setting up or diagnosing a host:
+  - `references/installation.md`: initialization, permissions, host readiness and relocation.
+- Only for these features:
+  - `references/native-fast-goal.md`: installed Codex Fast and native Goal.
+  - `references/project-specialist.md`: project-specialized Work profiles.

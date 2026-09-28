@@ -4,11 +4,9 @@
 
 <a id="installation-and-connection"></a>
 
-## 1. Installation and connection
-
 <a id="initialization"></a>
 
-### 1.1. Initialization
+## 1. Initialization
 
 1. Initialize with `exec.py init --project-root PROJECT`; first submit and extension connection use the same
    helper. An installed entry is `python3 /absolute/installed/plugin/scripts/exec.py init --project-root /absolute/code/worktree`.
@@ -24,7 +22,7 @@
 
 <a id="permissions"></a>
 
-### 1.2. Permissions
+## 2. Permissions
 
 - **Inheritance:** children inherit the parent's filesystem, network and approval
   policy; no separate child sandbox default. Persist the resolved policy in session, run
@@ -60,7 +58,7 @@
 
 <a id="host-readiness-and-diagnostics"></a>
 
-### 1.3. Host readiness and diagnostics
+## 3. Host readiness and diagnostics
 
 - Run `python3 <plugin-root>/scripts/exec.py doctor` when first choosing a managed host,
   when that host changes, or when diagnosing a relevant failure. Reuse the observation
@@ -116,7 +114,7 @@
 
 <a id="relocation"></a>
 
-### 1.4. Relocation
+## 4. Relocation
 
 1. Use `exec.py rebind --runtime-home HOME --project-id ID --from-root OLD --project-root NEW`.
 2. Require matching old binding, an existing unregistered destination and no active

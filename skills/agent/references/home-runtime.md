@@ -16,10 +16,6 @@
   owner-only permissions and copy-once metadata protect initialization. Unsafe links,
   unsupported versions or ambiguous bindings fail closed.
 
-- Read only the file for the operation at hand:
-  - [installation.md](installation.md): initialization, permissions, host readiness, relocation.
-  - [managed-execution.md](managed-execution.md): prompts, sessions, run files, retries, CLI and receipts.
-
 <a id="linux-containment"></a>
 
 ## 2. Cancellation and containment
@@ -78,7 +74,6 @@
 - Keep archives immutable. An archived or malformed record is not proof of completion.
 - Resolve projects separately; nested checkouts do not share an identity automatically.
 - Report an unavailable mapping or recovery operation instead of editing runtime state.
-
 
 <a id="progress-projection"></a>
 
