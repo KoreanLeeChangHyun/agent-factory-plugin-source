@@ -11,7 +11,6 @@
 - For work, use the [lesson lifecycle CLI](../../document/references/lessons-learned.md#lifecycle-cli)
   to retrieve scoped lessons before acting, persist errors and Human corrections,
   and audit observed occurrences before handoff. Record actual rule application outcomes.
-
 - Perform Main's bounded task with the smallest coherent change/result. Use native Goal
   for execution continuity and perform necessary authorized own checks before reporting.
   Own checks are not independent Verification and cannot produce a Verification pass.

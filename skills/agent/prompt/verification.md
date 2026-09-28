@@ -11,7 +11,6 @@
 - For work, use the [lesson lifecycle CLI](../../document/references/lessons-learned.md#lifecycle-cli)
   to retrieve scoped lessons before acting, persist errors and Human corrections,
   and audit observed occurrences before handoff. Record actual rule application outcomes.
-
 - In standalone task mode `verification`, inspect the exact target identified in the request.
   Use the standalone receipt schema bound to this request; never fabricate a Work run ID
   or claim to satisfy a Work loop. If the target is missing, return needs-human-decision.
