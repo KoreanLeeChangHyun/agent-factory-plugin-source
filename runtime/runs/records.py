@@ -199,7 +199,7 @@ def create_session(runtime, args: argparse.Namespace, project_root: Path) -> dic
     runtime.role_path(role)
     if not hasattr(args, "resolved_execution_policy"):
         args.resolved_execution_policy = runtime.resolve_execution_policy(args, project_root)
-    provider = runtime.adapters.provider_for(args.model, getattr(args, "provider", None))
+    provider = runtime.adapters.provider_for(args.model, getattr(args, "provider", None) or getattr(args, "inherited_provider", None))
     provider_adapter = runtime.adapters.adapter(provider)
     codex = provider_adapter.executable(args)
     if os.sep not in codex:

@@ -15,7 +15,7 @@ def resolve_execution_policy(runtime, args: argparse.Namespace, project_root: Pa
             session = runtime.worktrees.inherit(session, {"projectRoot": str(project_root), **runtime.load_session(project_root, parent_state["agentId"])})
         stored = runtime.execution_policy.session_policy(session) if session is not None and "executionPolicy" in session else None
         policy_args = argparse.Namespace(**vars(args))
-        policy_args.provider = runtime.adapters.provider_for(getattr(args, "model", None), getattr(args, "provider", None), session)
+        policy_args.provider = runtime.adapters.provider_for(getattr(args, "model", None), getattr(args, "provider", None) or getattr(args, "inherited_provider", None), session)
         if session is not None:
             policy_args.execution_working_directory = str(runtime.worktrees.checked_path({"projectRoot": str(project_root), **session}))
         elif getattr(args, "role", None) in ("work", "verification") and os.environ.get("AGENT_FACTORY_PARENT_STATE"):
@@ -83,3 +83,18 @@ def requested_execution(runtime, args: argparse.Namespace) -> dict[str, Any]:
             raise runtime.ContractError("goal_objective_invalid", "An objective cannot be combined with --no-goal-mode")
         options["goalMode"] = True
     return options
+
+
+def inherited_provider(runtime, args: argparse.Namespace) -> str | None:
+    """A new delegated Agent without a provider or model runs on its managed parent's provider."""
+    locator = os.environ.get(runtime.execution_policy.PARENT_STATE_ENV)
+    if not locator or getattr(args, "provider", None) or getattr(args, "model", None):
+        return None
+    try:
+        parent = runtime.safe_read_json(Path(locator))
+        binding = parent.get("runtimeBinding", {})
+        session = runtime.safe_read_json(Path(binding["agentsRoot"]) / parent["agentId"] / "session.json")
+    except (runtime.ContractError, KeyError, TypeError, OSError, ValueError):
+        return None
+    provider = session.get("provider")
+    return provider if isinstance(provider, str) else None

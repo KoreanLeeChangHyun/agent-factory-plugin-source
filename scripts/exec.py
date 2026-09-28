@@ -258,7 +258,9 @@ def submit(args: argparse.Namespace, new_agent: bool) -> int:
     else:
         role = load_session(project_root, args.agent).get("role")
     stored_session = None if new_agent else load_session(project_root, args.agent)
-    provider = adapters.provider_for(getattr(args, "model", None), getattr(args, "provider", None), stored_session)
+    # Not an execution option: the dispatch tuple records only what the caller requested.
+    args.inherited_provider = execution_requests.inherited_provider(_runtime, args) if new_agent else None
+    provider = adapters.provider_for(getattr(args, "model", None), getattr(args, "provider", None) or args.inherited_provider, stored_session)
     policy = resolve_execution_policy(args, project_root, stored_session)
     args.resolved_execution_policy = policy
     human_approval_policy = resolve_human_approval_policy(args, stored_session)

@@ -2,6 +2,7 @@
 import runtime_test_home
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -74,6 +75,23 @@ assert 'adapters.codex.preflight' not in sys.modules
             args.action = "resume"
             with self.assertRaisesRegex(runtime.ContractError, "Goal was cleared"):
                 runtime.command_goal(args)
+
+    def test_new_delegated_agent_inherits_the_parent_provider(self):
+        from types import SimpleNamespace
+        from execution import requests
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepared = runtime.create_run(project_root=root, agent_id="main-parent", actor="human", request=b"x",
+                                          session={"role": "main", "maxAttempts": 1})
+            session_path = runtime.session_file(root, "main-parent")
+            runtime.atomic_write_json(session_path, {"agentId": "main-parent", "provider": "claude"})
+            args = SimpleNamespace(provider=None, model=None)
+            with mock.patch.dict(os.environ, {runtime.execution_policy.PARENT_STATE_ENV: prepared["statePath"]}):
+                self.assertEqual(requests.inherited_provider(runtime, args), "claude")
+                self.assertIsNone(requests.inherited_provider(runtime, SimpleNamespace(provider=None, model="gpt-5")))
+                self.assertIsNone(requests.inherited_provider(runtime, SimpleNamespace(provider="codex", model=None)))
+            with mock.patch.dict(os.environ, {runtime.execution_policy.PARENT_STATE_ENV: str(root / "missing.json")}):
+                self.assertIsNone(requests.inherited_provider(runtime, args))
 
     def test_orchestrator_import_does_not_eagerly_load_providers(self):
         path = Path(runtime.__file__)

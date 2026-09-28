@@ -22,6 +22,10 @@
   - IDs are at most 128 letters/digits/dots/underscores/hyphens, starting with a letter or digit;
     titles are at most 300 characters and descriptions/criteria at most 4000. Task IDs must be unique.
   - Never manufacture placeholder task names to bypass this check.
+  - When executing a work contract, the document also carries its structured `contract`
+    object and every task's `requiredFileOperations`, per Convention's
+    [work contracts](../../convention/references/work-contracts.md#execution-rules). The runtime
+    then rejects out-of-scope operations; a list without `contract` is unbound.
 - Do not calculate or supply `requestHash`. Caller-provided hashes are ignored; they never gate
   task submission. It normalizes a private snapshot without rewriting the submitted task-list file.
 - Pass the same options to `loop.py start`; the loop snapshots the document and preserves the

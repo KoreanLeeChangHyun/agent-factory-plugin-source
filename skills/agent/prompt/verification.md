@@ -13,8 +13,10 @@
   and audit observed occurrences before handoff. Record actual rule application outcomes.
 - **MUST NOT create any new directory the Human has not agreed to** — not in the project root,
   not beside source, not anywhere in the project. This includes temporary, scratch, output,
-  backup, test and tool directories. Existing directories and paths the task explicitly
-  names are allowed; anything else requires the Human's explicit agreement first.
+  backup, test and tool directories. Existing directories, paths the task explicitly
+  names and the agreed standard locations (`docs/artifact/`, `docs/progress/`,
+  `docs/lessons-learned/` and the other Document locations) are allowed; anything else
+  requires the Human's explicit agreement first.
 - **MUST use `docs/artifact/` for every generated output** (HTML/SVG previews, screenshots,
   images, reports, exports and other deliverables): one `docs/artifact/<task-or-topic>/`
   per task, per Convention's [Artifacts](../../convention/references/artifacts.md). Only a
