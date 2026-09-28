@@ -8,9 +8,10 @@ distributions are generated from it and must not be edited directly.
 | `skills/` | Host-neutral Skill documents (`agent`, `convention`, `document`) |
 | `runtime/storage/` | Runtime home, paths, persistence, public state, errors and migration |
 | `runtime/system/` | OS seams and process lifecycle: transport, containment, sandbox, Windows/macOS |
-| `runtime/execution/` | One agent turn: CLI, policy, prompts, images, usage, streaming, worktrees, lessons |
+| `runtime/execution/` | One agent turn: CLI, requested options, policy, prompts, images, usage, streaming, worktrees, lessons |
 | `runtime/tasks/` | Task modes, bindings, announcements, plan receipts and loop progress |
 | `runtime/contracts/` | Receipt and capability contracts and their preflight |
+| `runtime/runs/` | Run lifecycle: records, worker launch, attempts, and inspection/control commands |
 | `runtime/adapters/` | Provider adapters (`codex`, `claude`) |
 | `scripts/` | Command entrypoints (`exec.py`, `loop.py`, document and lesson tools) |
 | `distribution/package.json` | Shared name, version, description and host repositories |

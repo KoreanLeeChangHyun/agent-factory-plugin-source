@@ -11,7 +11,8 @@
 ## Ownership and storage
 
 - Agent entrypoints, support code and role prompts belong in `scripts/`, `runtime/` and `skills/agent/prompt/`, respectively. `skills/` holds host-neutral documents only; never add executable code there.
-- Place runtime code in its domain package under `runtime/` (`storage`, `system`, `execution`, `tasks`, `contracts`, `adapters`); import it as `from <domain> import <module>`.
+- Place runtime code in its domain package under `runtime/` (`storage`, `system`, `execution`, `runs`, `tasks`, `contracts`, `adapters`); import it as `from <domain> import <module>`.
+  `scripts/exec.py` keeps only the CLI entrypoint and `submit`; domain functions it exposes take the script (`runtime`) as their first argument and are bound with `partial`, so names patched on the script stay effective.
 - Resolve runtime storage through `runtime/storage/paths.py`, outside the checkout; never create a checkout `.agent-factory/` runtime.
 - The MCP service is independent of the extension/plugin service; keep its usage guidance, implementation and assets out of this product.
 - `skills/convention/assets/AGENTS.md` is the consumer bootstrap template; follow Convention's bootstrap contract.
