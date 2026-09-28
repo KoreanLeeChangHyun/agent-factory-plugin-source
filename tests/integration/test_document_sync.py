@@ -526,3 +526,22 @@ def test_linked_references_and_assets_sync_without_changing_links(tmp_path):
     assert run(tmp_path).returncode == 0
     assert (target / 'references/detail.md').read_bytes() == (source / 'references/detail.md').read_bytes()
     assert json.loads(run(tmp_path).stdout)['changes'] == []
+
+
+def test_claude_receives_the_same_owned_output_and_hosts_fail_independently(tmp_path):
+    source = package(tmp_path, "skills")
+    assert run(tmp_path).returncode == 0
+    for host in (".codex", ".claude"):
+        assert (tmp_path / host / "skills/info-example/SKILL.md").read_bytes() == (source / "SKILL.md").read_bytes()
+        assert (tmp_path / host / ".document-sync/manifest.json").is_file()
+    # An independent edit under .claude blocks only Claude; Codex still updates.
+    (tmp_path / ".claude/skills/info-example/SKILL.md").write_text("edited")
+    (source / "SKILL.md").write_text("# 변경\n", encoding="utf-8")
+    result = run(tmp_path)
+    assert result.returncode == 1 and "claude:" in result.stderr and "codex:" not in result.stderr
+    assert (tmp_path / ".codex/skills/info-example/SKILL.md").read_text(encoding="utf-8") == "# 변경\n"
+    assert (tmp_path / ".claude/skills/info-example/SKILL.md").read_text() == "edited"
+    only_codex = subprocess.run([sys.executable, str(SCRIPT), "--project-root", str(tmp_path), "--host", "codex"],
+                                text=True, capture_output=True)
+    assert only_codex.returncode == 0, only_codex.stderr
+

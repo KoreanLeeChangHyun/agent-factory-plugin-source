@@ -174,14 +174,14 @@ metadata:
 
 <a id="explicit-codex-export"></a>
 
-## 9. Explicit Codex export
+## 9. Explicit host export
 
 | Source | Derived destination |
 |---|---|
-| `docs/skills/` | `.codex/skills/` |
+| `docs/skills/` | `.codex/skills/` (Codex) and `.claude/skills/` (Claude Code) |
 
 - Only `docs/skills/` is projected. `docs/original/`, `docs/refined/`, `docs/progress/` and `docs/lessons-learned/` remain canonical
-  project storage; they require no Codex export or synchronization. Existing
+  project storage; they require no host export or synchronization. Existing
   `.codex/original/` and `.codex/processed/` content is left untouched.
 - Run `scripts/export_documents.py --project-root <project-root>` to preview; add `--apply` to copy. A missing `docs/skills/` root is an empty
   input; children must be packages with `SKILL.md`.
@@ -194,15 +194,17 @@ metadata:
 
 <a id="continuous-codex-synchronization"></a>
 
-## 10. Agent-invoked Codex synchronization
+## 10. Agent-invoked host synchronization
 
 - Run `python3 <plugin-root>/scripts/sync_documents.py --project-root <project-root>`
   after creating, modifying or deleting `docs/skills/` packages, using their actual project root.
   Inspect the result; resolve or report conflicts before claiming synchronization succeeded.
 - The plugin bundles no automatic hooks. Human edits synchronize only on a subsequent
   explicit invocation; this CLI is not a watcher. The legacy `--hook` entry is removed.
-- `docs/skills/` supplies only owned output under `.codex/skills/`.
-  `.codex/.document-sync/manifest.json` records managed paths, directories and SHA-256 hashes.
+- `docs/skills/` supplies only owned output under `.codex/skills/` and `.claude/skills/`.
+  Each host keeps its own `.<host>/.document-sync/manifest.json` of managed paths, directories
+  and SHA-256 hashes. A conflict in one host does not block the other; `--host codex|claude`
+  limits a run to one host.
   Unrelated destination packages and files are preserved.
 - A new package may be created only when its destination does not exist. Existing unowned
   packages conflict even when byte-identical; legacy mirrors and explicit exports are never
@@ -212,7 +214,7 @@ metadata:
   Ordinary synchronization does not authorize replacing these edits or adopting unowned files.
 - When the Human authorizes recovery using `docs/skills/` as authoritative, invoke the same
   command with `--reconcile`. It backs up affected output and existing control records under
-  `.codex/.document-sync/backups/` before rebuilding output and ownership. Inspect the returned
+  `.<host>/.document-sync/backups/` before rebuilding output and ownership. Inspect the returned
   backup path. Missing or corrupt ownership can recover source-named packages; unrelated
   packages remain untouched. Valid ownership and journals also identify obsolete managed
   packages. Destination-only edits within affected packages are preserved in the backup.

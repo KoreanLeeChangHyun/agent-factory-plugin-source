@@ -31,7 +31,7 @@ def test_preview_apply_and_repeat_project_only_skills(tmp_path):
         package(tmp_path, kind)
     preview = run(tmp_path)
     assert preview.returncode == 0, preview.stderr
-    assert len(json.loads(preview.stdout)["packages"]) == 1
+    assert len(json.loads(preview.stdout)["packages"]) == 2  # .codex and .claude
     assert not (tmp_path / ".codex").exists()
     applied = run(tmp_path, "--apply")
     assert applied.returncode == 0, applied.stderr
@@ -40,6 +40,8 @@ def test_preview_apply_and_repeat_project_only_skills(tmp_path):
     assert (new / "SKILL.md").read_bytes() == (old / "SKILL.md").read_bytes()
     assert (new / "assets/data.bin").read_bytes() == bytes(range(256))
     assert (new / "assets/empty").is_dir()
+    claude = tmp_path / ".claude/skills/info-example"
+    assert (claude / "assets/data.bin").read_bytes() == bytes(range(256))
     for kind in ("original", "processed"):
         assert not (tmp_path / ".codex" / kind).exists()
         assert (tmp_path / "docs" / kind / "info-example/assets/data.bin").read_bytes() == bytes(range(256))

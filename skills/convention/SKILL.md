@@ -79,7 +79,7 @@ metadata:
 
 - `references/communication.md`: mandatory respectful Human-facing register.
 - Use [Document](../document/SKILL.md) for Document authoring, types, storage, single-source packages and
-  Codex synchronization.
+  Codex and Claude Code synchronization.
 - `references/development.md`: shared checkout boundaries, changes, technical documentation, comments,
   commits.
 - `references/work-contracts.md`: task-list contracts, required/optional fields, file-level
@@ -123,7 +123,7 @@ metadata:
 - Keep runtime state, logs and disposable execution scratch files in the producing
   run's storage. Use `docs/artifact/` for outputs intended to be inspected or reused.
 - Artifact files are not automatically cataloged as Documents, synchronized to
-  `.codex/skills/`, published or committed. Preserve the task's existing permissions.
+  `.codex/skills/`, `.claude/skills/`, published or committed. Preserve the task's existing permissions.
 - Verify the output using checks appropriate to its format and provide a clickable
   file link in the result. Distinguish a saved file from a rendered or visually checked
   result; do not claim browser or image inspection unless it occurred.
