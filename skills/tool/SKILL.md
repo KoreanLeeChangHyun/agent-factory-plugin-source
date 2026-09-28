@@ -30,13 +30,12 @@ metadata:
 | `search_documents.py` | [Document](../document/SKILL.md) |
 | `migrate_document_paths.py` | [Document](../document/SKILL.md) |
 
-- `exec.py`: start, message, inspect, cancel and reconcile one managed agent run
-  (`submit`, `send`, `status`, `result`, `cancel`, `list`, `inbox`, `doctor`, `announce-tasks`).
-- `loop.py`: drive a Work/Verification loop over an announced task list
-  (`start`, `status`, `reconcile`, `recover-receipt`, `skip`, `close`, `refresh-progress`).
-- `lessons.py`: record, resolve, retrieve and audit lessons; publish evaluated rules.
-- `sync_documents.py`: synchronize `docs/skills/` into `.codex/skills/` and `.claude/skills/`.
-- `export_documents.py`: preview or apply a one-time copy of `docs/skills/` packages.
-- `catalog_documents.py`: build the live catalog of project Documents.
-- `search_documents.py`: search that catalog.
-- `migrate_document_paths.py`: preview, back up and apply contract-listed document moves.
+- `exec.py`: one managed agent run.
+- `loop.py`: a Work/Verification loop over an announced task list.
+- `lessons.py`: lesson records and published rules.
+- `sync_documents.py`: continuous `docs/skills/` synchronization to host skill folders.
+- `export_documents.py`: one-time copy of `docs/skills/` packages.
+- `catalog_documents.py`: the live catalog of project Documents.
+- `search_documents.py`: search over that catalog.
+- `migrate_document_paths.py`: contract-listed document moves.
+- Subcommands and arguments are listed only in `references/usage.md`; rules only in the owner Skill.

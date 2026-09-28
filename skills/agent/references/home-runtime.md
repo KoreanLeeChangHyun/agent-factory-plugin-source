@@ -235,8 +235,7 @@
   acceptance, inspect the Agent's existing runs; recover using the original key
   and immutable inputs. Loops manage this binding automatically.
 
-- `<plugin-root>/scripts/exec.py`: `submit`, `send`, `status`, `result`, `inbox`,
-  `list`, `cancel`, `reconcile`.
+- Subcommands and arguments of `exec.py` and `loop.py`: [Tool usage](../../tool/references/usage.md).
 - `submit` and `send` accept either the existing text inputs or `--input-file`.
   - The latter is a versioned `agent-input` JSON document containing `message` and up to
     eight sibling PNG, JPEG, GIF or WebP filenames.
@@ -254,8 +253,8 @@
   `send`. Clients must require that flag before using `agent-input`; a missing or
   false flag identifies a runtime that cannot guarantee image delivery and must not be
   downgraded to attachment-reference text.
-- `<plugin-root>/scripts/loop.py`: `start`, `status`, `reconcile` (one transition), `recover-receipt`,
-  `skip --actor human --authorization-reference REF --decision-evidence TEXT`. Missing skip evidence or non-Human actors fail closed. Timing and END
+- `loop.py reconcile` performs one transition. `loop.py skip` requires a Human actor,
+  authorization reference and decision evidence; missing evidence fails closed. Timing and END
   follow [the Agent graph](../SKILL.md#roles-and-graph).
 - Completed runs publish validated `receipt.json` beside `result.md`.
 - Work receipts identify the request, project-root-relative changed paths and addressed
