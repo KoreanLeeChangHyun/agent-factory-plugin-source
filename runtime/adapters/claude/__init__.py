@@ -22,7 +22,9 @@ def discover_policy(args, working_root, *, sandbox=None, approval=None):
     import json
     from pathlib import Path
     mode = None
-    for path in (Path.home() / ".claude" / "settings.json", Path(working_root) / ".claude" / "settings.json",
+    import os
+    config = Path(os.environ["CLAUDE_CONFIG_DIR"]) if os.environ.get("CLAUDE_CONFIG_DIR") else Path.home() / ".claude"
+    for path in (config / "settings.json", Path(working_root) / ".claude" / "settings.json",
                  Path(working_root) / ".claude" / "settings.local.json"):
         try:
             value = json.loads(path.read_text(encoding="utf-8")).get("permissions", {}).get("defaultMode")
@@ -30,6 +32,7 @@ def discover_policy(args, working_root, *, sandbox=None, approval=None):
             continue
         if isinstance(value, str):
             mode = value
+    # Unknown or absent modes fall back to read-only rather than widening access.
     sandbox = sandbox or POLICY_FOR_MODE.get(mode, "read-only")
     raw = {"type": sandbox}
     if sandbox == "workspace-write":
@@ -51,7 +54,8 @@ def fatal_error_events(session):
 
 
 def before_stop(state_path, state, *, cancel=False):
-    # Parent containment stops the print process and its tools.
+    # Nothing to negotiate: containment sends SIGTERM to the whole process group (Claude and its
+    # tools included) and waits PROCESS_TERM_TIMEOUT before SIGKILL, so Claude can close its session.
     pass
 
 

@@ -234,12 +234,12 @@ class ClaudeAdapterTests(unittest.TestCase):
                     self.assertEqual(emitted[-1]["type"], "error")
 
     def test_capabilities_and_session_creation_use_claude_executable(self):
-        help_text = "--print --output-format --input-format --json-schema --permission-prompts --system-prompt-snapshot --replay-user-messages"
+        help_text = " ".join(claude.capabilities.REQUIRED_OPTIONS)
         with mock.patch.object(claude.capabilities.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=help_text)):
             capabilities = claude.inspect_capabilities("claude")
         with mock.patch.object(claude.capabilities.subprocess, "run", return_value=mock.Mock(
                 returncode=0, stdout=help_text.replace("--replay-user-messages", ""))):
-            self.assertFalse(claude.inspect_capabilities("claude")["submit"]["model"])
+            self.assertFalse(claude.inspect_capabilities("claude", refresh=True)["submit"]["model"])
         self.assertEqual(capabilities["submit"]["taskModes"], list(claude.capabilities.TASK_MODES))
         self.assertIn("plan-work-verification", capabilities["submit"]["taskModes"])
         self.assertTrue(capabilities["submit"]["plan"])
@@ -275,3 +275,79 @@ class ClaudeAdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClaudeAdapterCompletenessTests(unittest.TestCase):
+    def events(self):
+        session_id = str(uuid.uuid4())
+        events = claude.Events(session_id)
+        events.translate({"type": "system", "subtype": "init", "session_id": session_id})
+        return events
+
+    def test_every_file_editing_tool_is_a_file_change(self):
+        events = self.events()
+        started = events.translate({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "w", "name": "Write", "input": {"file_path": "a.py"}},
+            {"type": "tool_use", "id": "m", "name": "MultiEdit", "input": {"file_path": "b.py", "edits": []}},
+            {"type": "tool_use", "id": "n", "name": "NotebookEdit", "input": {"notebook_path": "c.ipynb"}},
+            {"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": "d.py"}}]}})
+        self.assertEqual([(e["item"]["type"], e["item"].get("changes", [{}])[0].get("path")) for e in started],
+                         [("file_change", "a.py"), ("file_change", "b.py"), ("file_change", "c.ipynb"), ("mcp_tool_call", None)])
+
+    def test_tool_results_keep_their_text_and_real_error_message(self):
+        events = self.events()
+        events.translate({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "g", "name": "Grep", "input": {}},
+            {"type": "tool_use", "id": "e", "name": "Edit", "input": {"file_path": "x"}}]}})
+        done = events.translate({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "g", "content": [{"type": "text", "text": "3 matches"}]},
+            {"type": "tool_result", "tool_use_id": "e", "content": "old_string not found", "is_error": True}]}})
+        self.assertEqual(done[0]["item"]["result"], "3 matches")
+        self.assertEqual(done[1]["item"]["error"], "old_string not found")
+        self.assertEqual(done[1]["item"]["status"], "failed")
+
+    def test_subagent_tools_are_visible_but_subagent_prose_and_usage_are_not(self):
+        events = self.events()
+        out = events.translate({"type": "assistant", "parent_tool_use_id": "task-1", "message": {
+            "usage": {"input_tokens": 9, "cache_read_input_tokens": 9, "cache_creation_input_tokens": 9},
+            "content": [{"type": "text", "text": "subagent thinking"},
+                        {"type": "tool_use", "id": "s", "name": "Bash", "input": {"command": "ls"}}]}})
+        self.assertEqual([e["type"] for e in out], ["item.started"])
+        self.assertEqual(out[0]["item"]["parentToolUseId"], "task-1")
+        self.assertIsNone(events.context_tokens)
+        done = events.translate({"type": "user", "parent_tool_use_id": "task-1", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "s", "content": "ok"}]}})
+        self.assertEqual(done[0]["item"]["status"], "completed")
+
+    def test_capability_probe_is_cached_and_names_missing_options(self):
+        with tempfile.TemporaryDirectory() as home:
+            full = mock.Mock(returncode=0, stdout=" ".join(claude.capabilities.REQUIRED_OPTIONS))
+            with mock.patch.object(claude.capabilities.subprocess, "run", return_value=full) as run:
+                first = claude.inspect_capabilities("/bin/true", runtime_home=home)
+                second = claude.inspect_capabilities("/bin/true", runtime_home=home)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(first, second)
+                claude.inspect_capabilities("/bin/true", runtime_home=home, refresh=True)
+                self.assertEqual(run.call_count, 2)
+            old = mock.Mock(returncode=0, stdout=full.stdout.replace("--include-partial-messages", ""))
+            with mock.patch.object(claude.capabilities.subprocess, "run", return_value=old):
+                result = claude.inspect_capabilities("/bin/true", runtime_home=home, refresh=True)
+            self.assertIn("--include-partial-messages", result["diagnostic"])
+            self.assertFalse(result["submit"]["model"])
+
+    def test_default_mode_uses_claude_config_dir_and_unknown_modes_stay_read_only(self):
+        with tempfile.TemporaryDirectory() as config, tempfile.TemporaryDirectory() as project:
+            (Path(config) / "settings.json").write_text(json.dumps({"permissions": {"defaultMode": "acceptEdits"}}))
+            with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": config}):
+                policy = claude.discover_policy(None, project)
+            self.assertEqual(policy["sandboxPolicy"]["type"], "workspace-write")
+            for mode in ("default", "plan", "dontAsk", "somethingNew"):
+                (Path(config) / "settings.json").write_text(json.dumps({"permissions": {"defaultMode": mode}}))
+                with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": config}):
+                    self.assertEqual(claude.discover_policy(None, project)["sandboxPolicy"]["type"], "read-only", mode)
+
+    def test_unsupported_reasoning_effort_is_rejected(self):
+        claude.policy.validate({"reasoningEffort": "minimal"})
+        with self.assertRaises(runtime.ContractError):
+            claude.policy.validate({"reasoningEffort": "extreme"})
+
