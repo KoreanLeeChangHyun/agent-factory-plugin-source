@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from home_fixtures import HomeRuntimeFixture, RUNTIME, paths, migration
-from adapters.codex import permissions
+from adapters.codex import policy as permissions
 
 class HomeRuntimeTests(HomeRuntimeFixture, unittest.TestCase):
     def test_discovery_does_not_initialize_and_init_is_idempotent(self):

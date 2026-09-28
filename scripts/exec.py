@@ -613,7 +613,7 @@ def __getattr__(name):
     import importlib
     legacy = {"native_codex": "adapters.codex.transport",
               "execution_preflight": "adapters.codex.preflight",
-              "runtime_permissions": "adapters.codex.permissions"}
+              "runtime_permissions": "adapters.codex.policy"}
     if name in legacy:
         return importlib.import_module(legacy[name])
     raise AttributeError(name)

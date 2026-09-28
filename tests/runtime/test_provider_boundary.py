@@ -98,7 +98,8 @@ class AdapterStructureTests(unittest.TestCase):
         for provider in ('codex', 'claude'):
             with self.subTest(provider=provider):
                 present = {path.stem for path in (adapters_root / provider).glob('*.py')}
-                self.assertLessEqual(self.COMMON_MODULES, present)
+                # Identical layouts: provider-specific code lives inside the common modules.
+                self.assertEqual(present, self.COMMON_MODULES)
 
     def test_every_provider_implements_the_whole_adapter_contract(self):
         import adapters

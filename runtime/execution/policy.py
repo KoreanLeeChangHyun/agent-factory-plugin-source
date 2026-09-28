@@ -278,20 +278,13 @@ def command_params(policy, run_directory):
     return provider_policy.command_params(policy, run_directory)
 
 
-def __getattr__(name):
-    if name == "permissions":
-        from adapters.codex import permissions
-        return permissions
-    raise AttributeError(name)
-
-
 def _last_context(filename):
     """Compatibility delegate for Codex parent permission observations."""
-    from adapters.codex import parent_policy
+    from adapters.codex import policy as parent_policy
     return parent_policy._last_context(filename)
 
 
 def _rollout_policy(thread_id):
     """Compatibility delegate for Codex parent permission observations."""
-    from adapters.codex import parent_policy
+    from adapters.codex import policy as parent_policy
     return parent_policy._rollout_policy(thread_id)

@@ -11,7 +11,17 @@ import time
 from pathlib import Path
 
 from system import portable
-from adapters.codex.errors import NativeError
+
+
+# Codex adapter errors, shared by capability probing and the transport.
+class NativeError(Exception):
+    pass
+
+
+class RpcError(NativeError):
+    def __init__(self, method, error):
+        self.code = error.get("code") if isinstance(error, dict) else None
+        super().__init__(f"{method}: {json.dumps(error)[:2000]}")
 
 
 def _probe_capabilities(codex: str) -> dict:

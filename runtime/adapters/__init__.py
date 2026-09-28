@@ -34,6 +34,6 @@ def inherited_host_policy():
     import os
     thread = os.environ.get("CODEX_THREAD_ID")
     if thread:
-        from adapters.codex.parent_policy import _rollout_policy
+        from adapters.codex.policy import _rollout_policy
         return _rollout_policy(thread)
     return None

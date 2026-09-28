@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from home_fixtures import HomeRuntimeFixture, paths
 from adapters.codex import transport as native_codex
-from adapters.codex import permissions
+from adapters.codex import policy as permissions
 
 
 class NativePermissionTests(HomeRuntimeFixture, unittest.TestCase):
@@ -28,10 +28,10 @@ for name in sys.argv[3:]:
     else: raise RuntimeError('non-run path was writable: '+name)
 """
         codex = os.environ.get('AF_VERIFY_CODEX', shutil.which('codex') or 'codex')
-        name, _ = permissions.profile(run)
+        name, _ = permissions.permission_profile(run)
         isolated_codex_home = self.base/'codex-home'; isolated_codex_home.mkdir()
         process = subprocess.Popen([codex, 'app-server', '--listen', 'stdio://',
-                                    *permissions.arguments(run)],
+                                    *permissions.permission_arguments(run)],
             cwd=self.root, env={**os.environ, 'CODEX_HOME':str(isolated_codex_home)},
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(process.kill)

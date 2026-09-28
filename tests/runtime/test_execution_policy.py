@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 import home_fixtures
+from adapters.codex import policy as codex_policy
 from execution import policy
 
 
@@ -151,7 +152,7 @@ class ExecutionPolicyTests(unittest.TestCase):
         self.assertEqual(value, original)
         expected = []
         for key, setting in config.items():
-            expected.extend(["-c", key + "=" + policy.permissions.toml(setting)])
+            expected.extend(["-c", key + "=" + codex_policy.permission_toml(setting)])
         self.assertEqual(policy.arguments(value, directory), expected)
 
     def test_full_access_selects_its_profile_over_inherited_named_permissions(self):
