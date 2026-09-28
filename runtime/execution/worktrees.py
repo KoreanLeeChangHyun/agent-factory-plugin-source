@@ -307,7 +307,7 @@ def command(runtime, args):
             if args.action != "create":
                 raise ContractError("session_missing", "Create a conversation first")
             options = runtime.parse_args(["submit", "--agent", args.agent, "--role", "main", "--codex", args.codex,
-                                          "--claude", args.claude, *(["--model", args.model] if args.model else [])])
+                                          "--claude", args.claude, "--agy", args.agy, *(["--model", args.model] if args.model else [])])
             options.resolved_execution_policy = runtime.resolve_execution_policy(args, root)
             options.resolved_human_approval_policy = args.human_approval_policy or "required"
             session = runtime.create_session(options, root)

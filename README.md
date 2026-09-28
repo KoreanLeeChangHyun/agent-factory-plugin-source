@@ -12,7 +12,7 @@ distributions are generated from it and must not be edited directly.
 | `runtime/tasks/` | Task modes, bindings, announcements, plan receipts and loop progress |
 | `runtime/contracts/` | Receipt and capability contracts and their preflight |
 | `runtime/runs/` | Run lifecycle: records, worker launch, attempts, and inspection/control commands |
-| `runtime/adapters/` | Provider adapters (`codex`, `claude`) |
+| `runtime/adapters/` | Provider adapters (`codex`, `claude`, `antigravity`) |
 | `scripts/` | Command entrypoints (`exec.py`, `loop.py`, document and lesson tools) |
 | `distribution/package.json` | Shared name, version, description and host repositories |
 | `distribution/hosts/<host>/` | Host-only manifests and README templates |

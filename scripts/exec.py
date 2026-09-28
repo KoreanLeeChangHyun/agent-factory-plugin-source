@@ -652,6 +652,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             provider = adapters.provider_for(args.model, args.provider, {**session, "sessionId": None} if session else None)
             executable = adapters.adapter(provider).executable(args, session)
             capabilities = dict(adapters.adapter(provider).inspect_capabilities(executable))
+            if session is not None and session.get("sessionId"):
+                # A started conversation keeps its provider; hosts can mark models on other providers.
+                capabilities["send"] = {**capabilities["send"], "sessionProvider": session.get("provider", "codex")}
             if session is not None and "executionPolicy" in session:
                 capabilities["executionMode"] = (
                     "bypass"

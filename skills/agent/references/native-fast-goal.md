@@ -75,9 +75,19 @@
   update the recorded Goal; the next run without Goal mode sends `/goal clear`. `reopen`
   sends a new run with the recorded objective. `refresh` returns the last record.
 
+<a id="antigravity-goal"></a>
+
+### 3.4. Antigravity Goal
+
+- agy sends `/goal <objective>` after the request in the same print run; that turn continues
+  until the condition holds and ends with `<!-- GOAL_COMPLETE -->`, which the runtime strips.
+  The Goal turn's result is terminal; without one, the request turn's result is kept.
+- The runtime records `active` when the conversation starts, `complete` on the marker and
+  `paused` otherwise. Controls match [Claude Goal](#claude-goal), including `/goal clear`.
+
 <a id="recovery-and-completion"></a>
 
-### 3.4. Recovery and completion
+### 3.5. Recovery and completion
 
 1. Confirm controls through later Goal events or refreshed state; acceptance alone is
    insufficient.

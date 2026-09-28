@@ -50,7 +50,7 @@ assert 'adapters.codex.preflight' not in sys.modules
         from adapters.contracts import ProviderAdapter
         import adapters
         methods = [key for key, value in ProviderAdapter.__dict__.items() if callable(value) and not key.startswith('_')]
-        for name in ('codex', 'claude'):
+        for name in ('codex', 'claude', 'antigravity'):
             provider = adapters.adapter(name)
             for method in methods:
                 self.assertTrue(callable(getattr(provider, method, None)), (name, method))
@@ -62,7 +62,7 @@ assert 'adapters.codex.preflight' not in sys.modules
             root = Path(directory)
             _, _, _ = native_fixture(root, goal=False)
             args = SimpleNamespace(project_root=root, agent="main-test", action="get")
-            for provider in ("codex", "claude"):
+            for provider in ("codex", "claude", "antigravity"):
                 session_path = runtime.session_file(root, "main-test")
                 session = runtime.safe_read_json(session_path)
                 session["provider"] = provider
@@ -81,7 +81,7 @@ assert 'adapters.codex.preflight' not in sys.modules
 spec = importlib.util.spec_from_file_location('isolated_exec', sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-assert not any(name.startswith(('adapters.codex', 'adapters.claude')) for name in sys.modules)
+assert not any(name.startswith(('adapters.codex', 'adapters.claude', 'adapters.antigravity')) for name in sys.modules)
 '''
         subprocess.run([sys.executable, '-c', probe, str(path)], check=True, capture_output=True)
 
@@ -95,7 +95,7 @@ class AdapterStructureTests(unittest.TestCase):
 
     def test_every_provider_has_the_common_module_layout(self):
         adapters_root = Path(__file__).parents[2] / 'runtime' / 'adapters'
-        for provider in ('codex', 'claude'):
+        for provider in ('codex', 'claude', 'antigravity'):
             with self.subTest(provider=provider):
                 present = {path.stem for path in (adapters_root / provider).glob('*.py')}
                 # Identical layouts: provider-specific code lives inside the common modules.
@@ -105,7 +105,7 @@ class AdapterStructureTests(unittest.TestCase):
         import adapters
         from adapters.contracts import ProviderAdapter
         required = {name for name in vars(ProviderAdapter) if not name.startswith('_')}
-        for provider in ('codex', 'claude'):
+        for provider in ('codex', 'claude', 'antigravity'):
             with self.subTest(provider=provider):
                 module = adapters.adapter(provider)
                 self.assertEqual({name for name in required if not callable(getattr(module, name, None))}, set())

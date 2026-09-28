@@ -104,9 +104,10 @@ def native_executable(executable: str, command: str = "codex") -> str:
     parsing differs from CreateProcess. Codex ships ``codex.exe`` in a per-platform
     package (nested, hoisted, or in older releases inside ``@openai/codex``) under
     ``vendor/<target>/bin`` or ``vendor/<target>/codex``; Claude Code ships
-    ``bin/claude.exe``. Unresolvable shims and non-Windows hosts are unchanged.
+    ``bin/claude.exe``. The Antigravity CLI is already a native binary.
+    Unresolvable shims and non-Windows hosts are unchanged.
     """
-    if not WINDOWS:
+    if not WINDOWS or command in ("agy", "antigravity"):
         return executable
     import re
     from pathlib import Path

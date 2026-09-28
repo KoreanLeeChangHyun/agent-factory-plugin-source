@@ -35,7 +35,7 @@ One of: `--request-file` | `--message` | `--input-file`
 - `--human-approval-policy {required,bypass}`: Main delegation approval policy; omitted sends preserve the session policy
 - `--task-mode {direct,work,plan,verification,plan-work,work-verification,plan-work-verification}`: Captured execution route; new Main requests default to direct
 - `--model MODEL`
-- `--provider {codex,claude}`
+- `--provider {codex,claude,antigravity}`
 - `--reasoning-effort {none,minimal,low,medium,high,xhigh,max,ultra}`
 - `--agent-permissions AGENT_PERMISSIONS`: Captured Human-selected role permission overrides as JSON
 - `--fast | --no-fast`
@@ -47,6 +47,7 @@ One of: `--request-file` | `--message` | `--input-file`
 - `--capability-binding-file CAPABILITY_BINDING_FILE`: strict Agent capability/authority/effects binding to preserve in this run
 - `--codex CODEX`
 - `--claude CLAUDE`
+- `--agy AGY`
 - `--sandbox {read-only,workspace-write,danger-full-access}`
 - `--execution-policy-file EXECUTION_POLICY_FILE`
 - `--approval-policy {never,on-request,untrusted,on-failure}`
@@ -70,7 +71,7 @@ One of: `--request-file` | `--message` | `--input-file`
 - `--human-approval-policy {required,bypass}`: Main delegation approval policy; omitted sends preserve the session policy
 - `--task-mode {direct,work,plan,verification,plan-work,work-verification,plan-work-verification}`: Captured execution route; new Main requests default to direct
 - `--model MODEL`
-- `--provider {codex,claude}`
+- `--provider {codex,claude,antigravity}`
 - `--reasoning-effort {none,minimal,low,medium,high,xhigh,max,ultra}`
 - `--agent-permissions AGENT_PERMISSIONS`: Captured Human-selected role permission overrides as JSON
 - `--fast | --no-fast`
@@ -102,7 +103,8 @@ Required: `--agent AGENT`, `--run-id RUN_ID`
 ## `capabilities`
 - `--codex CODEX`
 - `--claude CLAUDE`
-- `--provider {codex,claude}`
+- `--agy AGY`
+- `--provider {codex,claude,antigravity}`
 - `--model MODEL`
 - `--agent AGENT`
 
@@ -120,6 +122,7 @@ Required: `--agent AGENT`, `action {status,create,merge,repositories}`
 - `--target TARGET`
 - `--codex CODEX`
 - `--claude CLAUDE`
+- `--agy AGY`
 - `--model MODEL`
 - `--human-approval-policy {required,bypass}`
 - `--sandbox {read-only,workspace-write,danger-full-access}`
