@@ -77,3 +77,14 @@ def goal_command(runtime, args, root, session):
     send_args.goal_action = "get" if args.action == "refresh" else args.action
     return runtime.submit(send_args, False)
 
+
+def before_stop(state_path, state, *, cancel=False):
+    if state.get("backend") != "app-server":
+        return
+    try:
+        if not cancel:
+            request_native_pause(state_path)
+        wait_native_pause(state_path)
+    except Exception:
+        with contextlib.suppress(Exception):
+            record_goal_uncertainty(state_path, "Native pause could not be confirmed; refresh Goal before reopening")

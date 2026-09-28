@@ -12,6 +12,7 @@
 
 - Agent entrypoints, support code and role prompts belong in `scripts/`, `runtime/` and `skills/agent/prompt/`, respectively. `skills/` holds host-neutral documents only; never add executable code there.
 - Place runtime code in its domain package under `runtime/` (`storage`, `system`, `execution`, `runs`, `tasks`, `contracts`, `adapters`); import it as `from <domain> import <module>`.
+  Every provider under `runtime/adapters/<provider>/` has the same modules: `capabilities`, `policy`, `preflight`, `command`, `events`, `transport`, `control` and an `__init__` exposing the `ProviderAdapter` contract; provider-only extras sit beside them.
   `scripts/exec.py` keeps only the CLI entrypoint and `submit`; domain functions it exposes take the script (`runtime`) as their first argument and are bound with `partial`, so names patched on the script stay effective.
 - Resolve runtime storage through `runtime/storage/paths.py`, outside the checkout; never create a checkout `.agent-factory/` runtime.
 - The MCP service is independent of the extension/plugin service; keep its usage guidance, implementation and assets out of this product.

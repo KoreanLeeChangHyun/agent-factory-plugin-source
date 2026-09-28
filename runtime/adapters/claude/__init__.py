@@ -2,7 +2,8 @@
 from execution import policy as execution_policy
 from storage.errors import ContractError
 from .capabilities import inspect_capabilities, MODELS, EFFORTS, TASK_MODES
-from .policy import validate, check, POLICY_FOR_MODE
+from .policy import validate, POLICY_FOR_MODE
+from .preflight import check
 from .transport import build_command, cli_command, Events
 
 def executable(args, session=None):
@@ -54,16 +55,13 @@ def fatal_error_events(session):
 
 
 def before_stop(state_path, state, *, cancel=False):
-    # Nothing to negotiate: containment sends SIGTERM to the whole process group (Claude and its
-    # tools included) and waits PROCESS_TERM_TIMEOUT before SIGKILL, so Claude can close its session.
-    pass
+    from .control import before_stop as stop
+    stop(state_path, state, cancel=cancel)
 
 
 def goal_command(runtime, args, root, session):
-    if args.action == "get":
-        runtime.emit({"schemaVersion": runtime.schema_version, "kind": "goal", "agentId": args.agent, "goal": None})
-        return 0
-    raise ContractError("claude_feature_unsupported", "Claude does not support native Goal controls")
+    from .control import goal_command as command
+    return command(runtime, args, root, session)
 
 
 def persisted_fields(session):

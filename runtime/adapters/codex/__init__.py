@@ -91,17 +91,8 @@ def fatal_error_events(session):
 
 
 def before_stop(state_path, state, *, cancel=False):
-    if state.get("backend") != "app-server":
-        return
-    from . import control
-    import contextlib
-    try:
-        if not cancel:
-            control.request_native_pause(state_path)
-        control.wait_native_pause(state_path)
-    except Exception:
-        with contextlib.suppress(Exception):
-            control.record_goal_uncertainty(state_path, "Native pause could not be confirmed; refresh Goal before reopening")
+    from .control import before_stop as stop
+    stop(state_path, state, cancel=cancel)
 
 
 def persisted_fields(session):

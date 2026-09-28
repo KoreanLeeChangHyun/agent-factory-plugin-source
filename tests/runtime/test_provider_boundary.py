@@ -88,3 +88,23 @@ assert not any(name.startswith(('adapters.codex', 'adapters.claude')) for name i
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class AdapterStructureTests(unittest.TestCase):
+    COMMON_MODULES = {"__init__", "capabilities", "policy", "preflight", "command", "events", "transport", "control"}
+
+    def test_every_provider_has_the_common_module_layout(self):
+        adapters_root = Path(__file__).parents[2] / 'runtime' / 'adapters'
+        for provider in ('codex', 'claude'):
+            with self.subTest(provider=provider):
+                present = {path.stem for path in (adapters_root / provider).glob('*.py')}
+                self.assertLessEqual(self.COMMON_MODULES, present)
+
+    def test_every_provider_implements_the_whole_adapter_contract(self):
+        import adapters
+        from adapters.contracts import ProviderAdapter
+        required = {name for name in vars(ProviderAdapter) if not name.startswith('_')}
+        for provider in ('codex', 'claude'):
+            with self.subTest(provider=provider):
+                module = adapters.adapter(provider)
+                self.assertEqual({name for name in required if not callable(getattr(module, name, None))}, set())
