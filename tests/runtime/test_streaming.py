@@ -144,3 +144,21 @@ class CodexStreamingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EventLogDurabilityTests(unittest.TestCase):
+    def test_previews_skip_fsync_but_remain_in_order(self):
+        from unittest import mock
+        import process_transport
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.jsonl"
+            writer = process_transport.EventLogWriter(path)
+            with mock.patch.object(process_transport.os, "fsync") as fsync:
+                writer.append('{"type": "native.delta", "text": "a"}\n', durable=False)
+                writer.append('{"type": "native.delta", "text": "b"}\n', durable=False)
+                self.assertEqual(fsync.call_count, 0)
+                writer.append('{"type": "turn.completed"}\n')
+                self.assertEqual(fsync.call_count, 1)
+            writer.close()
+            self.assertEqual([json.loads(line)["type"] for line in path.read_text().splitlines()],
+                             ["native.delta", "native.delta", "turn.completed"])

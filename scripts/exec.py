@@ -1266,7 +1266,8 @@ def run_codex_attempt(
                 raise AttemptFailure(
                     "event_invalid", "codex emitted an invalid event", started, True
                 )
-            if not event_writer.append(line):
+            # Live text previews are superseded by later events; avoid one fsync per streamed fragment.
+            if not event_writer.append(line, durable=not line.startswith('{"type": "native.delta"')):
                 stop_attempt()
                 raise AttemptFailure(
                     "event_log_limit_exceeded",

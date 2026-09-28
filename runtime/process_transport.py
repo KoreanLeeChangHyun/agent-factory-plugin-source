@@ -363,7 +363,8 @@ class EventLogWriter:
     def __init__(self, path):
         self.path, self.descriptor = path, None
 
-    def append(self, line):
+    def append(self, line, durable=True):
+        """Append one event; ``durable=False`` skips fsync for ephemeral previews (the next durable event flushes them)."""
         reject_symlink(self.path)
         if self.descriptor is None:
             self.descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -380,7 +381,8 @@ class EventLogWriter:
             if written <= 0:
                 raise OSError("short runtime event write")
             view = view[written:]
-        os.fsync(self.descriptor)
+        if durable:
+            os.fsync(self.descriptor)
         return True
 
     def close(self):
