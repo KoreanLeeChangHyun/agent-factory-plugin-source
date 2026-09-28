@@ -19,6 +19,7 @@ class Events:
         self.started = False
         self.finished = False
         self.tools = {}
+        self.hidden_tools = set()
         self.context_tokens = None
         self.structured = None
         self.request_id = request_id
@@ -94,6 +95,9 @@ class Events:
                     continue
                 if block.get("type") == "text" and kind == "assistant" and not parent:
                     result.append({"type": "native.commentary", "text": block.get("text", "")})
+                elif block.get("type") == "tool_use" and block.get("name") == "StructuredOutput" and not parent:
+                    # The final answer's transport; it arrives as the result, not a visible tool.
+                    self.hidden_tools.add(block.get("id"))
                 elif block.get("type") == "tool_use":
                     name, arguments = block.get("name"), block.get("input", {})
                     if not isinstance(arguments, dict):
@@ -109,6 +113,8 @@ class Events:
                         item["parentToolUseId"] = parent
                     self.tools[block["id"]] = item
                     result.append({"type": "item.started", "item": dict(item)})
+                elif block.get("type") == "tool_result" and block.get("tool_use_id") in self.hidden_tools:
+                    self.hidden_tools.discard(block.get("tool_use_id"))
                 elif block.get("type") == "tool_result":
                     item = self.tools.pop(block.get("tool_use_id"), None)
                     if item:

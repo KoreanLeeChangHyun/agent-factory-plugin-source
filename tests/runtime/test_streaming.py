@@ -84,6 +84,10 @@ class ClaudeStreamingTests(unittest.TestCase):
             out += events.translate(self.stream({"type": "content_block_delta", "index": 0,
                                                  "delta": {"type": "input_json_delta", "partial_json": document[index:index + 5]}}))
         out += events.translate(self.stream({"type": "content_block_stop", "index": 0}))
+        # The final answer's transport tool is never shown as a tool call.
+        out += events.translate({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_final", "name": "StructuredOutput", "input": {}}]}})
+        out += events.translate({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_final", "content": "ok"}]}})
+        self.assertFalse([event for event in out if event.get("item", {}).get("tool") == "StructuredOutput"])
         out += events.translate({"type": "result", "subtype": "success", "is_error": False, "session_id": session_id,
                                  "structured_output": json.loads(document), "usage": {}})
         self.assertEqual(deltas(out, "commentary"), "Working now")
