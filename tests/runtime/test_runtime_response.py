@@ -76,7 +76,7 @@ class RuntimeResponseTests(unittest.TestCase):
                 self.assertEqual(saved["usageAttempts"]["1"]["reports"], 1)
 
     def test_native_attempt_sends_structured_parts_with_current_inline_request(self):
-        from prompt_delivery import PromptParts
+        from execution.prompts import PromptParts
         state = self.new_run(request=b'current native request')
         self.attempt(state, self.envelope(state), backend='app-server')
         parts = PromptParts.decode(self.process_input.sent)

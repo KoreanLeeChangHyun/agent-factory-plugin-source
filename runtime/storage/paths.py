@@ -13,7 +13,7 @@ import stat
 import uuid
 from pathlib import Path
 
-import portable
+from system import portable
 
 VERSION = 1
 PROJECT_ID = re.compile(r"project-[a-f0-9]{32}\Z")
@@ -240,7 +240,7 @@ def rebind(home, identity, old_root, new_root):
             raise ValueError('rebind source mismatch or destination already registered')
         runtime = base / 'projects' / identity
         # Never move a live session to a different working directory.
-        import migration
+        from storage import migration
         members = {str(path): {} for path in (runtime / 'agents').rglob('*') if path.is_file()}
         with migration.quiet({'files': members}):
             for state_path in (runtime / 'agents').glob('*/loops/*/state.json'):
@@ -270,7 +270,7 @@ def project_json(path, value):
         return value
     mapping = {}
     if marker.exists():
-        import migration
+        from storage import migration
         record = read(marker)
         expected = Path(binding['home']) / 'migrations' / record['planId'] / 'plan.json'
         if record.get('schemaVersion') != 1 or record.get('planPath') != str(expected):
@@ -349,7 +349,7 @@ def require_ready(binding):
 
 def map_evidence(root, original):
     """Return only a manifest-bound historical file, with its immutable digest."""
-    import migration
+    from storage import migration
     binding = resolve(root)
     if not binding['registered']:
         raise ValueError('unregistered project has no migration map')

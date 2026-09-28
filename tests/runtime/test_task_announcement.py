@@ -15,7 +15,7 @@ from test_agent_exec import load_module
 class TaskAnnouncementTests(unittest.TestCase):
     def setUp(self):
         self.runtime = load_module()
-        import task_announcement
+        from tasks import announcement as task_announcement
         self.announcement = task_announcement
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -65,7 +65,7 @@ class TaskAnnouncementTests(unittest.TestCase):
             self.assertEqual(task['workAgentId'], 'one-worker')
         self.assertEqual(result['requestFile'], saved['tasks'][0]['requestFile'])
         self.assertEqual(result['taskId'], saved['tasks'][0]['id'])
-        import task_binding
+        from tasks import binding as task_binding
         binding = task_binding.load(self.runtime.safe_read_json, Path(result['taskListFile']),
                                     result['taskId'], saved['tasks'][0]['requestHash'])
         self.assertEqual(binding['workflowId'], result['taskFlow']['id'])

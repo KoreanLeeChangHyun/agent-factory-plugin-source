@@ -6,7 +6,7 @@ import errno
 import re
 from functools import lru_cache
 
-from runtime_errors import ContractError
+from storage.errors import ContractError
 
 
 # Public XNU bsd/sys/proc_info.h: proc_bsdinfo and PROC_PIDTBSDINFO.

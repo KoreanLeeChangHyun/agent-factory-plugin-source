@@ -1,7 +1,7 @@
 """Claude CLI capabilities and supported public model aliases."""
 import subprocess
 
-from task_modes import TASK_MODES
+from tasks.modes import TASK_MODES
 
 MODELS = {"claude-opus": "opus", "claude-sonnet": "sonnet", "claude-haiku": "haiku"}
 EFFORTS = ("low", "medium", "high", "xhigh", "max")

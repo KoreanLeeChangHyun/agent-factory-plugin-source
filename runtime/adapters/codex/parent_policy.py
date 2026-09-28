@@ -2,7 +2,7 @@
 import os
 import re
 from pathlib import Path
-from execution_policy import PolicyError, _open_regular, _json, _path, normalize
+from execution.policy import PolicyError, _open_regular, _json, _path, normalize
 
 def _last_context(filename):
     # Walk backward so long-running session histories need no full-file scan.

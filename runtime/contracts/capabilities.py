@@ -10,8 +10,8 @@ import stat
 from pathlib import Path
 from typing import Any
 
-import portable
-from runtime_errors import ContractError
+from system import portable
+from storage.errors import ContractError
 
 SCHEMA_VERSION = "0.1.0"
 MAX_CAPABILITY_BINDING_BYTES = 256 * 1024

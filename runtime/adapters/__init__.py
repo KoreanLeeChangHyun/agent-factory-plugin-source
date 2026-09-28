@@ -1,5 +1,5 @@
 """Provider selection. Historical sessions without a provider remain Codex-owned."""
-from runtime_errors import ContractError
+from storage.errors import ContractError
 from adapters.contracts import ProviderAdapter
 
 

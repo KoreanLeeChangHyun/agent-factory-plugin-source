@@ -4,10 +4,10 @@ import json
 import time
 import uuid
 from pathlib import Path
-import paths as runtime_paths
-from runtime_storage import update_json, session_file, safe_read_json
-from process_transport import append_event
-from runtime_errors import ContractError
+from storage import paths as runtime_paths
+from storage.files import update_json, session_file, safe_read_json
+from system.transport import append_event
+from storage.errors import ContractError
 
 def request_native_pause(path: Path) -> None:
     update_json(path, path.parent / ".state.lock", lambda value: value.update({

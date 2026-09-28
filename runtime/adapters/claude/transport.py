@@ -17,11 +17,11 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from adapters.claude.policy import validate, effort, permission_arguments
-import paths as runtime_paths
-from prompt_delivery import PromptParts
-from runtime_errors import ContractError
-from runtime_storage import atomic_write, atomic_write_json, safe_read_bytes, safe_read_json
-from stream_text import DeltaBuffer, JsonStringField
+from storage import paths as runtime_paths
+from execution.prompts import PromptParts
+from storage.errors import ContractError
+from storage.files import atomic_write, atomic_write_json, safe_read_bytes, safe_read_json
+from execution.streaming import DeltaBuffer, JsonStringField
 
 from adapters.claude.capabilities import MODELS
 
@@ -226,7 +226,7 @@ class Events:
 
 def finish_planning(state, structured, *, execute_next):
     """Mirror the Codex Plan contract: keep plan.json, stop on a decision, record plan-only completion."""
-    from plan_receipt import record_plan, record_plan_only_receipt
+    from tasks.plan_receipt import record_plan, record_plan_only_receipt
     text = str(structured.get("resultText", "")).strip()
     if structured.get("status") == "failed" or not text:
         raise ValueError("Claude planning result is invalid")

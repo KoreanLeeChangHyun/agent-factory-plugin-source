@@ -59,16 +59,16 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = PLUGIN_ROOT / "skills" / "agent" / "prompt"
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(PLUGIN_ROOT / "runtime"))
-import sandbox_diagnostics
-import lesson_capture
-import worktrees
-from runtime_storage import response_operation
-import execution_policy
-from runtime_errors import ContractError
-from token_usage import UsageAccumulator, record_attempt
-import portable
-import process_containment
-from process_containment import (
+from system import sandbox as sandbox_diagnostics
+from execution import lessons as lesson_capture
+from execution import worktrees
+from storage.files import response_operation
+from execution import policy as execution_policy
+from storage.errors import ContractError
+from execution.usage import UsageAccumulator, record_attempt
+from system import portable
+from system import containment as process_containment
+from system.containment import (
     require_managed_platform,
     now,
     parse_time,
@@ -97,26 +97,26 @@ from process_containment import (
     release_contained_process,
     abort_contained_process,
 )
-import runtime_storage
-from runtime_storage import (
+from storage import files as runtime_storage
+from storage.files import (
     emit, error_document, validate_id, resolve_project_root, ensure_directory,
     reject_symlink, atomic_write, find_project_anchor, atomic_write_json,
     safe_read_bytes, safe_read_json, agent_root, agent_directory, run_directory,
     file_lock, update_json, role_path, read_request, new_run_id, session_file,
     dispatch_reservation_file, state_file,
 )
-import capability_contracts
-from capability_contracts import (
+from contracts import capabilities as capability_contracts
+from contracts.capabilities import (
     _bounded_text, validate_capability_bindings, read_capability_bindings,
     safe_read_caller_file,
 )
-import receipt_contracts
-from receipt_contracts import (
+from contracts import receipts as receipt_contracts
+from contracts.receipts import (
     receipt_schema_document, _exact_keys, _string_list,
     _require_managed_directory, _require_managed_file, validate_receipt,
 )
-import process_transport
-from process_transport import (
+from system import transport as process_transport
+from system.transport import (
     AttemptFailure, build_prompt, build_prompt_parts, build_codex_command,
     response_schema_document, inline_result, validate_terminal_result, publish_terminal_result,
     stderr_reports_sandbox_unavailable, process_exit_failure,
@@ -124,8 +124,8 @@ from process_transport import (
     EventLogWriter, append_event, read_process_lines, stream_stderr, process_group_exists,
     terminate_attempt_group, terminate_verified_group,
 )
-from public_state import public_state as project_public_state
-from exec_cli import (
+from storage.public_state import public_state as project_public_state
+from execution.cli import (
     JsonArgumentParser, add_project_argument, add_request_arguments, parse_args,
     validate_submit_options,
 )
@@ -133,8 +133,8 @@ from exec_cli import (
 # Diagnostic/refusal paths must load even where runtime imports cannot.
 if sys.platform in portable.SUPPORTED_PLATFORMS:
     import adapters
-    import paths as runtime_paths
-    import image_input
+    from storage import paths as runtime_paths
+    from execution import images as image_input
 VALID_ROLES = {"main", "work", "verification"}
 CAPABILITY_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 AUTHORITY_KINDS = {
@@ -686,7 +686,7 @@ def submit(args: argparse.Namespace, new_agent: bool) -> int:
         execution_options.setdefault("taskMode", "direct")
     adapters.adapter(provider).validate({**(stored_session or {}), **execution_options,
                                          "role": role, "executionPolicy": policy})
-    from task_modes import validate_mode
+    from tasks.modes import validate_mode
     if "taskMode" in execution_options:
         validate_mode(execution_options["taskMode"])
         if (role == "verification" and not standalone) or (role == "work" and execution_options["taskMode"] in ("direct", "verification")):
@@ -697,7 +697,7 @@ def submit(args: argparse.Namespace, new_agent: bool) -> int:
     if role == "work":
         # Each bounded execution/revision owns a fresh objective, including long requests.
         # The complete request is delivered by the native bridge, never truncated here.
-        from task_modes import work_goal_options
+        from tasks.modes import work_goal_options
         execution_options = work_goal_options(execution_options, request_text)
     if role == "verification" and (execution_options.get("goalMode") is True or goal_action):
         raise ContractError("goal_role_invalid", "Verification cannot use native Goal continuation")
@@ -708,7 +708,7 @@ def submit(args: argparse.Namespace, new_agent: bool) -> int:
     request_hash = hashlib.sha256(request).hexdigest()
     binding = None
     if role in {"work", "verification"}:
-        import task_binding
+        from tasks import binding as task_binding
         task_list_file = getattr(args, "task_list_file", None)
         task_id = getattr(args, "task_id", None)
         if task_list_file is None or not task_id:
@@ -718,7 +718,7 @@ def submit(args: argparse.Namespace, new_agent: bool) -> int:
         accepted_retry = parent is not None and any(value.get("dispatchId") == dispatch_id
                              for value in iter_run_states(project_root, args.agent))
         if parent is not None and not accepted_retry:
-            import task_announcement
+            from tasks import announcement as task_announcement
             with file_lock(agent_directory(project_root, parent["agentId"]) / ".dispatch.lock"):
                 require_current_parent_conversation(project_root, parent)
                 task_announcement.check_submission(safe_read_json,
@@ -1071,7 +1071,7 @@ def run_codex_attempt(
         raise AttemptFailure("worktree_binding_changed", "Run working directory no longer matches its conversation", False)
     session["workingDirectory"] = str(working_directory)
     if session.get("worktree"):
-        from prompt_delivery import PromptParts
+        from execution.prompts import PromptParts
         location_guidance = ("\nConversation working directory: " + str(working_directory)
             + ". Perform source edits, commands and tests in this directory. Original workspace: "
             + str(project_root) + ". This explicit conversation worktree overrides the default shared-checkout rule. "
@@ -2157,7 +2157,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "goal":
             return command_goal(args)
         if args.command == "announce-tasks":
-            import task_announcement
+            from tasks import announcement as task_announcement
             emit(task_announcement.prepare(sys.modules[__name__], args))
             return 0
         if args.command == "submit":

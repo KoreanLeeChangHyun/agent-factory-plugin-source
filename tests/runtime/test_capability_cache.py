@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'runtime'))
-import native_codex as native
+from adapters.codex import transport as native
 
 
 class CapabilityCacheTests(unittest.TestCase):
@@ -50,7 +50,7 @@ for name in ('TurnStartParams', 'ThreadStartParams', 'ThreadResumeParams'):
         return len((self.root / 'probes').read_text().splitlines())
 
     def child(self):
-        source = 'import sys; sys.path.insert(0, sys.argv[1]); import native_codex; native_codex.inspect_capabilities(sys.argv[2], refresh=True, runtime_home=sys.argv[3])'
+        source = 'import sys; sys.path.insert(0, sys.argv[1]); from adapters.codex import transport as native_codex; native_codex.inspect_capabilities(sys.argv[2], refresh=True, runtime_home=sys.argv[3])'
         return subprocess.Popen([sys.executable, '-c', source, str(Path(__file__).resolve().parents[2] / 'runtime'),
                                  str(self.binary), str(self.root / 'runtime')], env=dict(os.environ))
 
@@ -160,7 +160,7 @@ path.write_text(json.dumps(json.loads(path.read_text()) + ['config/read', 'threa
             self.probe()
             self.probe()
         self.assertFalse(self.cache.exists())
-        import paths
+        from storage import paths
         with mock.patch.object(paths, 'mkdir', side_effect=PermissionError('read-only cache')):
             self.probe()
         with mock.patch.object(paths, 'write', side_effect=PermissionError('read-only cache')):

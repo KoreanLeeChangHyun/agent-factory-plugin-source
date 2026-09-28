@@ -16,7 +16,7 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts/exec.py"
 spec = importlib.util.spec_from_file_location("worktree_runtime", SCRIPT)
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)
-import worktrees
+from execution import worktrees
 
 
 class WorktreeTests(unittest.TestCase):

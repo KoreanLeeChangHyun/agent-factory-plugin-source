@@ -9,8 +9,8 @@ from pathlib import Path
 from unittest import mock
 
 from native_fixtures import native, runtime, native_fixture
-from task_modes import route_instruction
-from prompt_delivery import PromptParts
+from tasks.modes import route_instruction
+from execution.prompts import PromptParts
 
 
 class TaskModeTests(unittest.TestCase):

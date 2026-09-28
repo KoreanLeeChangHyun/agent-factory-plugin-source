@@ -19,9 +19,9 @@ from pathlib import Path
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import portable
-from prompt_delivery import PromptParts
-from stream_text import DeltaBuffer, JsonStringField
+from system import portable
+from execution.prompts import PromptParts
+from execution.streaming import DeltaBuffer, JsonStringField
 
 
 class NativeError(Exception):
@@ -141,7 +141,7 @@ def inspect_capabilities(codex: str, *, refresh: bool = False, runtime_home=None
         return _probe_capabilities(codex)
     result = None
     try:
-        import paths
+        from storage import paths
         identity = _capability_identity(codex)
         directory = paths.home_path(runtime_home) / "cache" / "native-capabilities"
         file = directory / "capabilities.json"
@@ -697,7 +697,7 @@ class Bridge:
         try:
             if not self.setup(prompt):
                 return
-            from runtime_storage import ChangedJsonReader
+            from storage.files import ChangedJsonReader
             control_reader = ChangedJsonReader(Path(self.state["statePath"]), self.runtime.safe_read_json)
             while True:
                 current = control_reader.read()
@@ -800,7 +800,7 @@ class Bridge:
                                 or plan.get("status") not in {"planned", "needs-human-decision"}
                                 or not isinstance(plan.get("plan"), str) or not plan["plan"].strip()):
                             raise NativeError("Native planning result is invalid")
-                        from plan_receipt import record_plan, record_plan_only_receipt
+                        from tasks.plan_receipt import record_plan, record_plan_only_receipt
                         record_plan(self.state, plan)
                         if plan["status"] == "needs-human-decision":
                             self.last_message = json.dumps({"status": "needs-human-decision", "resultPath": self.state["resultPath"], "resultText": plan["plan"], "decisionKind": "clarification"})

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from native_fixtures import native_fixture
 from adapters import claude
-from stream_text import DeltaBuffer, JsonStringField
+from execution.streaming import DeltaBuffer, JsonStringField
 
 
 def deltas(events, stream):
@@ -149,7 +149,7 @@ if __name__ == "__main__":
 class EventLogDurabilityTests(unittest.TestCase):
     def test_previews_skip_fsync_but_remain_in_order(self):
         from unittest import mock
-        import process_transport
+        from system import transport as process_transport
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "events.jsonl"
             writer = process_transport.EventLogWriter(path)

@@ -18,7 +18,7 @@ SCRIPT = Path(__file__).resolve().parents[2] / 'scripts/exec.py'
 spec = importlib.util.spec_from_file_location('macos_exec_test', SCRIPT)
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)
-import macos_process_identity as macos
+from system import macos
 
 BOOT = '12345678-1234-1234-1234-123456789abc'
 

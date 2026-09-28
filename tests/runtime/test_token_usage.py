@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from native_fixtures import native_fixture, runtime
-from token_usage import UsageAccumulator, record_attempt
+from execution.usage import UsageAccumulator, record_attempt
 
 
 def native_event(total, last, **extra):

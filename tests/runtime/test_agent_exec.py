@@ -117,7 +117,7 @@ class AgentExecTests(unittest.TestCase):
         self.addCleanup(capability.stop)
 
     def test_cli_error_has_structured_operation_and_context_does_not_leak(self) -> None:
-        import runtime_storage
+        from storage import files as runtime_storage
         output = io.StringIO()
         with mock.patch.object(self.module, "emit", side_effect=lambda value: runtime_storage.emit(value, output)), mock.patch.object(
             self.module, "require_managed_platform", side_effect=self.module.ContractError("unavailable", "test host")

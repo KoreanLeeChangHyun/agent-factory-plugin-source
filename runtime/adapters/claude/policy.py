@@ -3,8 +3,8 @@ import json
 import subprocess
 import sys
 import uuid
-import execution_policy
-from runtime_errors import ContractError
+from execution import policy as execution_policy
+from storage.errors import ContractError
 from .capabilities import EFFORTS, EFFORT_ALIASES
 
 # Nearest Claude permission mode for each Agent Factory sandbox type. Claude tool permissions are
@@ -38,7 +38,7 @@ def permission_arguments(session, working_directory):
 def check(session, policy, working_directory, run_directory, request_path):
     validate({**session, "executionPolicy": policy})
     # This is an unsandboxed host readiness check, never sandbox evidence.
-    from execution_canary import CANARY
+    from execution.canary import CANARY
     result = subprocess.run([sys.executable, "-I", "-c", CANARY, str(request_path), str(working_directory),
                              str(run_directory), ".agent-factory-preflight-" + uuid.uuid4().hex,
                              "danger-full-access"], capture_output=True, text=True, timeout=8)

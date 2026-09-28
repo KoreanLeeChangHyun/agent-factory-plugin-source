@@ -5,8 +5,8 @@ import sys
 import unittest
 from pathlib import Path
 from home_fixtures import HomeRuntimeFixture, paths
-import native_codex
-import permissions
+from adapters.codex import transport as native_codex
+from adapters.codex import permissions
 
 
 class NativePermissionTests(HomeRuntimeFixture, unittest.TestCase):

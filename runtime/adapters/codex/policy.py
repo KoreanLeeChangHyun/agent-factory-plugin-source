@@ -3,7 +3,7 @@ import json
 import subprocess
 from pathlib import Path
 from . import permissions
-from execution_policy import PolicyError, normalize, _path, session_policy, SNAPSHOT_ENV, PARENT_STATE_ENV
+from execution.policy import PolicyError, normalize, _path, session_policy, SNAPSHOT_ENV, PARENT_STATE_ENV
 
 def _native_selected_policy(rpc, project_root, sandbox, approval):
     params = {"cwd": project_root, "ephemeral": True}

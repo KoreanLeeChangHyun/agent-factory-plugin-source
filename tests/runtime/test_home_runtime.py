@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from home_fixtures import HomeRuntimeFixture, RUNTIME, paths, migration
-import permissions
+from adapters.codex import permissions
 
 class HomeRuntimeTests(HomeRuntimeFixture, unittest.TestCase):
     def test_discovery_does_not_initialize_and_init_is_idempotent(self):
@@ -38,7 +38,7 @@ class HomeRuntimeTests(HomeRuntimeFixture, unittest.TestCase):
             paths.rebind(self.home, moved['projectId'], new, copy)
 
     def test_concurrent_initialization_has_one_identity(self):
-        code = 'import paths,json,sys; print(json.dumps(paths.resolve(sys.argv[1], create=True)))'
+        code = 'from storage import paths; import json,sys; print(json.dumps(paths.resolve(sys.argv[1], create=True)))'
         env = {**os.environ, 'PYTHONPATH': str(RUNTIME)}
         children = [subprocess.Popen([sys.executable, '-c', code, str(self.root)], env=env, stdout=subprocess.PIPE, text=True) for _ in range(4)]
         values = [json.loads(child.communicate(timeout=10)[0]) for child in children]
@@ -62,7 +62,7 @@ class HomeRuntimeTests(HomeRuntimeFixture, unittest.TestCase):
 
     def test_external_rebind_rejects_cached_client_with_existing_old_root(self):
         binding = paths.resolve(self.root, create=True)
-        spec = importlib.util.spec_from_file_location('independent_paths', RUNTIME / 'paths.py')
+        spec = importlib.util.spec_from_file_location('independent_paths', RUNTIME / 'storage/paths.py')
         other = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(other)
         destination = self.base / 'destination'

@@ -15,7 +15,7 @@ class TaskBindingTests(unittest.TestCase):
             return_value={"submit": {"goal": True}, "send": {"goal": True}, "diagnostic": None})
         capability.start()
         self.addCleanup(capability.stop)
-        import task_binding
+        from tasks import binding as task_binding
         self.binding = task_binding
         self.request = 'Implement the named change'
         self.digest = hashlib.sha256(self.request.encode()).hexdigest()

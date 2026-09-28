@@ -21,8 +21,8 @@ import adapters
 provider = adapters.adapter('claude')
 assert provider.session_fields('claude')['provider'] == 'claude'
 assert not any(name.startswith('adapters.codex') for name in sys.modules)
-assert 'native_codex' not in sys.modules
-assert 'preflight' not in sys.modules
+assert 'adapters.codex.transport' not in sys.modules
+assert 'adapters.codex.preflight' not in sys.modules
 '''
         subprocess.run([sys.executable, '-c', probe, str(directory)], check=True, capture_output=True)
 

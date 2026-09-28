@@ -15,21 +15,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, IO, Iterator
 
-import portable
-from process_containment import now
-from runtime_errors import ContractError
-from capability_contracts import safe_read_caller_file
+from system import portable
+from system.containment import now
+from storage.errors import ContractError
+from contracts.capabilities import safe_read_caller_file
 
 SCHEMA_VERSION = "0.1.0"
 AGENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 ROLE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_REQUEST_BYTES = None
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 PROMPTS = PLUGIN_ROOT / "skills" / "agent" / "prompt"
 VALID_ROLES = {"main", "work", "verification"}
 response_operation: ContextVar[dict[str, Any] | None] = ContextVar("response_operation", default=None)
 if sys.platform in portable.SUPPORTED_PLATFORMS:
-    import paths as runtime_paths
+    from storage import paths as runtime_paths
 
 def emit(value: dict[str, Any], stream: IO[str] = sys.stdout) -> None:
     operation = response_operation.get()

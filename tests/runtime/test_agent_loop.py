@@ -80,7 +80,7 @@ class FakeRuntime:
         if values["role"] == "work" and values["execution"].get("taskMode"):
             dispatch_tuple.setdefault("executionOptions", {})["taskMode"] = values["execution"]["taskMode"]
         if values["role"] == "work":
-            from task_modes import work_goal_options
+            from tasks.modes import work_goal_options
             dispatch_tuple["executionOptions"] = work_goal_options(
                 dispatch_tuple.get("executionOptions", {}), request.decode("utf-8"))
         if binding_hash is not None:

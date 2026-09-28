@@ -10,8 +10,8 @@ import unittest
 from unittest import mock
 
 import home_fixtures
-import execution_policy
-import preflight
+from execution import policy as execution_policy
+from adapters.codex import preflight
 
 
 def policy(mode):
@@ -37,7 +37,7 @@ class ExecutionPreflightTests(unittest.TestCase):
         self.request.write_text("bounded task")
 
     def test_full_access_uses_selected_codex_profile_without_a_model_turn(self):
-        from native_codex import Rpc
+        from adapters.codex.transport import Rpc
         fake = mock.Mock()
         fake.poll.return_value = 0
         with mock.patch.object(preflight.subprocess, "Popen", return_value=fake) as popen, \
@@ -62,7 +62,7 @@ class ExecutionPreflightTests(unittest.TestCase):
         self.assertEqual(self.request.read_text(), "bounded task")
 
     def test_restricted_uses_exact_same_config_and_command_policy(self):
-        from native_codex import Rpc
+        from adapters.codex.transport import Rpc
         for mode in ("read-only", "workspace-write"):
             value = policy(mode)
             fake = mock.Mock()
@@ -85,7 +85,7 @@ class ExecutionPreflightTests(unittest.TestCase):
         self.assertEqual(command.call_count, 1)
 
     def test_rpc_timeout_terminates_the_owned_process_group(self):
-        from native_codex import Rpc, NativeError
+        from adapters.codex.transport import Rpc, NativeError
         fake = mock.Mock()
         fake.poll.return_value = None
         with mock.patch.object(preflight.subprocess, "Popen", return_value=fake), \

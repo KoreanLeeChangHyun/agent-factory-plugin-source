@@ -20,13 +20,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, IO, Sequence
 
-from runtime_errors import ContractError
-import sandbox_diagnostics
+from storage.errors import ContractError
+from system import sandbox as sandbox_diagnostics
 
 WINDOWS = sys.platform == "win32"
 if WINDOWS:
     import msvcrt
-    import windows_process
+    from system import windows as windows_process
 
 PROCESS_TERM_TIMEOUT = 5.0
 PROCESS_KILL_TIMEOUT = 5.0
@@ -40,7 +40,7 @@ SYSTEMD_REQUIRED_OPTIONS = (
 )
 ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 CGROUP_ROOT = Path("/sys/fs/cgroup")
-EXEC_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "exec.py"
+EXEC_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "exec.py"
 
 def require_managed_platform() -> None:
     issue = sandbox_diagnostics.platform_issue()
@@ -108,7 +108,7 @@ def boot_id() -> str:
     if WINDOWS:
         return windows_process.boot_id()
     if sys.platform == "darwin":
-        import macos_process_identity
+        from system import macos as macos_process_identity
         return macos_process_identity.boot_id()
     return linux_boot_id()
 
@@ -117,7 +117,7 @@ def process_identity(pid: int) -> dict[str, Any]:
     if WINDOWS:
         return windows_process.process_identity(pid)
     if sys.platform == "darwin":
-        import macos_process_identity
+        from system import macos as macos_process_identity
         return macos_process_identity.process_identity(pid)
     require_managed_platform()
     return linux_process_identity(pid)

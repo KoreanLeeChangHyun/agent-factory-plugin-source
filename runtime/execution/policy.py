@@ -9,7 +9,7 @@ import re
 import stat
 import subprocess
 
-from runtime_storage import AGENT_ID
+from storage.files import AGENT_ID
 
 SANDBOXES = ("read-only", "workspace-write", "danger-full-access")
 APPROVALS = ("never", "on-request", "untrusted", "on-failure")
@@ -115,7 +115,7 @@ def _managed_parent(snapshot, project_root):
     binding = state.get("runtimeBinding")
     if not isinstance(binding, dict) or binding.get("projectRoot") != project_root:
         raise PolicyError("policy_parent_mismatch", "managed parent belongs to another project")
-    import paths
+    from storage import paths
     paths.bind(binding)
     agent_id, run_id = state.get("agentId"), state.get("runId")
     if any(not isinstance(value, str) or not AGENT_ID.fullmatch(value)
@@ -190,7 +190,7 @@ def resolve(args, project_root, *, fallback_policy=None, allow_session_change=Fa
     selected = normalize(_read(policy_file)) if policy_file else parent
     authorized = authorized_role_policy(getattr(args, "role", None), parent, project_root) if parent is not None else None
     if authorized is not None:
-        from worktrees import relocate_policy
+        from execution.worktrees import relocate_policy
         authorized = relocate_policy(authorized, Path(project_root), Path(working_root))
     if authorized is not None and not policy_file:
         selected = authorized

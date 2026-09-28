@@ -6,8 +6,8 @@ import hashlib
 import re
 from pathlib import Path
 
-import task_binding
-from runtime_errors import ContractError
+from tasks import binding as task_binding
+from storage.errors import ContractError
 
 
 def check_submission(read_json, parent_path, parent, document):

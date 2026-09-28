@@ -10,7 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / 'scripts/exec.py'
-SPEC = importlib.util.spec_from_file_location('sandbox_diagnostics', ROOT / 'runtime/sandbox_diagnostics.py')
+SPEC = importlib.util.spec_from_file_location('sandbox_diagnostics', ROOT / 'runtime/system/sandbox.py')
 diagnostics = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(diagnostics)
 
@@ -69,7 +69,7 @@ def test_cli_diagnostics_and_refusal_do_not_import_posix_runtime(platform, argum
     code = '''import sys, runpy, shutil, subprocess
 class BlockRuntime:
     def find_spec(self, fullname, *args):
-        if fullname in {'paths', 'native_codex'}:
+        if fullname in {'storage.paths', 'adapters.codex.transport'}:
             raise ImportError('POSIX runtime must not be loaded')
 sys.meta_path.insert(0, BlockRuntime())
 sys.platform = sys.argv[1]

@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from capability_contracts import safe_read_caller_file
-from runtime_errors import ContractError
+from contracts.capabilities import safe_read_caller_file
+from storage.errors import ContractError
 
 SCHEMA_VERSION = "0.1.0"
 MAX_CONTRACT_BYTES = None

@@ -15,10 +15,10 @@ SCRIPT = Path(__file__).resolve().parents[2] / 'scripts/exec.py'
 spec = importlib.util.spec_from_file_location('windows_exec_test', SCRIPT)
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)
-import portable
-import process_containment
-import sandbox_diagnostics
-import windows_process
+from system import portable
+from system import containment as process_containment
+from system import sandbox as sandbox_diagnostics
+from system import windows as windows_process
 
 IDENTITY = {'pid': 4242, 'bootId': 'windows', 'startTicks': 133_000_000_000_000_000}
 

@@ -12,16 +12,16 @@ import sys
 from pathlib import Path
 from typing import Any, IO
 
-from task_modes import route_instruction
-import sandbox_diagnostics
-from process_containment import (
+from tasks.modes import route_instruction
+from system import sandbox as sandbox_diagnostics
+from system.containment import (
     process_group_exists,
     terminate_attempt_group,
     terminate_verified_group,
 )
-from runtime_errors import ContractError
-from prompt_delivery import PromptParts
-from runtime_storage import reject_symlink, role_path, safe_read_bytes, safe_read_json, atomic_write
+from storage.errors import ContractError
+from execution.prompts import PromptParts
+from storage.files import reject_symlink, role_path, safe_read_bytes, safe_read_json, atomic_write
 
 HUMAN_APPROVAL_POLICIES = ("required", "bypass")
 MAX_REQUEST_BYTES = None
@@ -30,10 +30,10 @@ MAX_INLINE_REQUEST_BYTES = 64 * 1024
 MAX_EVENT_BYTES = None
 MAX_EVENTS_BYTES = None
 MAX_STDERR_BYTES = None
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 EXEC_SCRIPT = PLUGIN_ROOT / "scripts" / "exec.py"
 if sys.platform in {"linux", "darwin", "win32"}:
-    import paths as runtime_paths
+    from storage import paths as runtime_paths
 
 class AttemptFailure(Exception):
     def __init__(

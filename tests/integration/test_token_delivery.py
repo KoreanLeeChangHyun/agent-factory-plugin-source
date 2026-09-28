@@ -13,8 +13,8 @@ from contextlib import redirect_stdout
 
 from mock_responses_provider import MockResponsesProvider
 from native_fixtures import native, native_fixture
-from prompt_delivery import PromptParts
-from token_usage import UsageAccumulator
+from execution.prompts import PromptParts
+from execution.usage import UsageAccumulator
 
 
 class TokenDeliveryTests(unittest.TestCase):

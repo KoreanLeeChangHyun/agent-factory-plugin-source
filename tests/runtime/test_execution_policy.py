@@ -11,7 +11,7 @@ import unittest
 from unittest import mock
 
 import home_fixtures
-import execution_policy as policy
+from execution import policy
 
 
 def snapshot(mode="danger-full-access", **sandbox):
@@ -180,7 +180,7 @@ class ExecutionPolicyTests(unittest.TestCase):
             policy._read(link)
 
     def test_managed_parent_snapshot_checks_registered_run_and_session_identity(self):
-        import paths
+        from storage import paths
         home = self.root / "runtime-home"
         project = self.root / "project"
         project.mkdir()
@@ -222,7 +222,7 @@ class ExecutionPolicyTests(unittest.TestCase):
             policy.resolve(args(), project)
 
     def test_dotted_managed_parent_inherits_policy_and_rejects_invalid_bindings(self):
-        import paths
+        from storage import paths
         project = self.root / "project"
         project.mkdir()
         binding = paths.resolve(project, home=self.root / "runtime-home", create=True)
@@ -264,7 +264,7 @@ class ExecutionPolicyTests(unittest.TestCase):
                     policy.resolve(args(), project)
 
     def test_standalone_queries_effective_config_without_starting_a_thread(self):
-        from native_codex import Rpc
+        from adapters.codex.transport import Rpc
         process = mock.Mock()
         process.poll.return_value = 0
         config = {"sandbox_mode": "workspace-write", "approval_policy": "on-request",
@@ -280,7 +280,7 @@ class ExecutionPolicyTests(unittest.TestCase):
         self.assertTrue(result["sandboxPolicy"]["exclude_slash_tmp"])
 
     def test_missing_config_uses_native_ephemeral_defaults_without_a_model_turn(self):
-        from native_codex import Rpc
+        from adapters.codex.transport import Rpc
         process = mock.Mock()
         process.poll.return_value = 0
         native = {"cwd": str(self.root), "sandbox": {"type": "workspaceWrite", "networkAccess": False},

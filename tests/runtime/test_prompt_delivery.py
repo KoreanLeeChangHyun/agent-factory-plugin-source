@@ -10,8 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 from native_fixtures import native, runtime, native_fixture
-from prompt_delivery import PromptParts
-import process_transport
+from execution.prompts import PromptParts
+from system import transport as process_transport
 
 
 class PromptDeliveryTests(unittest.TestCase):
@@ -115,7 +115,7 @@ class PromptDeliveryTests(unittest.TestCase):
                     process_transport.validate_terminal_result(invalid, state)
 
     def test_development_sources_follow_local_runtime_for_every_role(self):
-        root = Path(process_transport.__file__).resolve().parents[1]
+        root = Path(process_transport.__file__).resolve().parents[2]
         with mock.patch.dict(os.environ, {"AGENT_FACTORY_DEV_PLUGIN_ROOT": str(root)}):
             for role in ("main", "work", "verification"):
                 parts = self.parts(role)

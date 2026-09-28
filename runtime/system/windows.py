@@ -13,7 +13,7 @@ import sys
 from ctypes import wintypes
 from functools import lru_cache
 
-from runtime_errors import ContractError
+from storage.errors import ContractError
 
 BOOT_ID = "windows"
 PROCESS_TERMINATE = 0x0001

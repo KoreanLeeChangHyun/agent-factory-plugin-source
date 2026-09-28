@@ -1,7 +1,7 @@
 """Check declared contract write requirements before accepting a task list."""
 from pathlib import PurePosixPath
 
-from runtime_errors import ContractError
+from storage.errors import ContractError
 
 
 def validate_contract(document):

@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "runtime"))
-from contract_preflight import validate_contract
-from runtime_errors import ContractError
+from contracts.preflight import validate_contract
+from storage.errors import ContractError
 
 
 class ContractPreflightTests(unittest.TestCase):

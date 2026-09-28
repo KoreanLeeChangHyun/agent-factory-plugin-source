@@ -1,6 +1,6 @@
 """Claude provider lifecycle and capability boundary."""
-import execution_policy
-from runtime_errors import ContractError
+from execution import policy as execution_policy
+from storage.errors import ContractError
 from .capabilities import inspect_capabilities, MODELS, EFFORTS, TASK_MODES
 from .policy import validate, check, POLICY_FOR_MODE
 from .transport import build_command, cli_command, Events

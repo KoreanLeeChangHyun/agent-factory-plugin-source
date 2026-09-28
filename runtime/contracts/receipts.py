@@ -10,9 +10,9 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from capability_contracts import validate_capability_bindings
-from runtime_errors import ContractError
-from runtime_storage import agent_root, resolve_project_root, safe_read_bytes, validate_id
+from contracts.capabilities import validate_capability_bindings
+from storage.errors import ContractError
+from storage.files import agent_root, resolve_project_root, safe_read_bytes, validate_id
 
 SCHEMA_VERSION = "0.1.0"
 AGENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")

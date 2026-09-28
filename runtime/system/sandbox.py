@@ -61,8 +61,8 @@ def diagnose(*, codex="codex", probe=False):
     result["codexExecutable"] = shutil.which(codex)
     if sys.platform == "win32":
         import os
-        import windows_process
-        from runtime_errors import ContractError
+        from system import windows as windows_process
+        from storage.errors import ContractError
         try:
             windows_process.process_identity(os.getpid())
             result["windowsProcessIdentityAvailable"] = True
@@ -83,8 +83,8 @@ def diagnose(*, codex="codex", probe=False):
         return result
     if sys.platform == "darwin":
         import os
-        import macos_process_identity
-        from runtime_errors import ContractError
+        from system import macos as macos_process_identity
+        from storage.errors import ContractError
         try:
             macos_process_identity.process_identity(os.getpid())
             result["macosProcessIdentityAvailable"] = True

@@ -14,8 +14,8 @@ import stat
 import sys
 from pathlib import Path
 sys.dont_write_bytecode = True
-import paths
-import portable
+from storage import paths
+from system import portable
 
 ACTIVE = {'accepted', 'queued', 'starting', 'running', 'cancelling'}
 KEYS = {'schemaVersion', 'kind', 'home', 'projects', 'files', 'directories', 'mapping', 'archiveOnly', 'planId'}
@@ -61,7 +61,7 @@ def runtime_owner():
     import importlib.util
     module = globals().get('_runtime_owner')
     if module is None:
-        spec = importlib.util.spec_from_file_location('migration_runtime_owner', Path(__file__).parents[1] / 'scripts/exec.py')
+        spec = importlib.util.spec_from_file_location('migration_runtime_owner', Path(__file__).resolve().parents[2] / 'scripts/exec.py')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         globals()['_runtime_owner'] = module

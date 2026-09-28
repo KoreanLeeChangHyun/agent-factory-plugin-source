@@ -13,8 +13,8 @@ from contextlib import redirect_stdout
 
 from native_fixtures import runtime
 from adapters import provider_for, claude
-from prompt_delivery import PromptParts
-from token_usage import UsageAccumulator
+from execution.prompts import PromptParts
+from execution.usage import UsageAccumulator
 
 POLICY = runtime.execution_policy.normalize({"schemaVersion": 1,
     "sandboxPolicy": {"type": "danger-full-access"}, "approvalPolicy": "never"})

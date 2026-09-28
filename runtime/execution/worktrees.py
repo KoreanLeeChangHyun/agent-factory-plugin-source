@@ -7,7 +7,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from runtime_errors import ContractError
+from storage.errors import ContractError
 
 
 def git(root, *arguments, check=True, data=None):

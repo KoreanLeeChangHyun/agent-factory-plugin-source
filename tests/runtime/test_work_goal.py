@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from native_fixtures import FakeRpc, native, native_fixture, runtime
-from task_modes import work_goal_options
+from tasks.modes import work_goal_options
 
 
 class WorkGoalTests(unittest.TestCase):

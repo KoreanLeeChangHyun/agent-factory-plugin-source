@@ -182,7 +182,7 @@ def main():
                 'pollIntervalSeconds': args.poll_interval, 'timeoutSeconds': args.timeout,
                 'environment': {'platform': platform.platform(), 'python': sys.version,
                     'execPath': str(exec_path), 'execSha256': hashlib.sha256(exec_path.read_bytes()).hexdigest(),
-                    'nativeSha256': hashlib.sha256((exec_path.parent.parent / 'runtime/native_codex.py').read_bytes()).hexdigest()},
+                    'nativeSha256': hashlib.sha256((exec_path.parent.parent / 'runtime/adapters/codex/transport.py').read_bytes()).hexdigest()},
                 'isolation': {'privateCodexHome': True, 'environmentPolicy': 'allowlist',
                     'sandbox': args.sandbox, 'externalProviderCalls': None,
                     'externalProviderCallsBasis': 'No network packet audit; provider selection is configured and fixture requests are counted.'}}

@@ -6,9 +6,9 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
-import execution_policy
-from task_modes import TASK_MODES
-from runtime_errors import ContractError
+from execution import policy as execution_policy
+from tasks.modes import TASK_MODES
+from storage.errors import ContractError
 
 ACTORS = ("main", "human")
 HUMAN_APPROVAL_POLICIES = ("required", "bypass")
