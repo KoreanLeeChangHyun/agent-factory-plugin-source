@@ -91,7 +91,7 @@ a bounded agent workflow, evidence exploration, and shared project conventions.
 
 ## Skills
 
-The plugin exposes three public Skills:
+The plugin exposes four public Skills:
 
 - [Agent](skills/agent/SKILL.md): Dispatches Work and Verification agents and manages
   their sessions, execution progress, and results.
@@ -99,6 +99,7 @@ The plugin exposes three public Skills:
   user decisions, development, testing, research, and interviews.
 - [Document](skills/document/SKILL.md): Guides project document writing, organization,
   storage, and search, and synchronizes project specifications to Codex Skills.
+- [Tool](skills/tool/SKILL.md): Lists the plugin scripts and points to the Skill that owns each one.
 
 ### Agent execution
 

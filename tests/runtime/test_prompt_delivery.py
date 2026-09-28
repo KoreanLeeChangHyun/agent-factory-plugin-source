@@ -119,7 +119,7 @@ class PromptDeliveryTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"AGENT_FACTORY_DEV_PLUGIN_ROOT": str(root)}):
             for role in ("main", "work", "verification"):
                 parts = self.parts(role)
-                for name in ("agent", "convention", "document"):
+                for name in ("agent", "convention", "document", "tool"):
                     self.assertIn(str(root / "skills" / name / "SKILL.md"), parts.fixed)
                 self.assertIn("supersede installed/cache catalog paths", parts.fixed)
         with mock.patch.dict(os.environ, {"AGENT_FACTORY_DEV_PLUGIN_ROOT": ""}):

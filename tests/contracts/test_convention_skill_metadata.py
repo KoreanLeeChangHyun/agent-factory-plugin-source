@@ -10,7 +10,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / "skills"
-PUBLIC_SKILLS = {"agent", "convention", "document"}
+PUBLIC_SKILLS = {"agent", "convention", "document", "tool"}
 
 
 class ConventionSkillMetadataTests(unittest.TestCase):
@@ -290,3 +290,14 @@ class ConventionSkillMetadataTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ToolCatalogTests(unittest.TestCase):
+    def test_tool_catalog_lists_exactly_the_plugin_scripts(self) -> None:
+        text = (SKILLS / "tool" / "SKILL.md").read_text(encoding="utf-8")
+        listed = set(re.findall(r"^\| `([a-z_]+\.py)` \|", text, re.M))
+        self.assertEqual(listed, {path.name for path in (ROOT / "scripts").glob("*.py")})
+        for target in re.findall(r"\]\((\.\./[^)#]+)", text):
+            with self.subTest(link=target):
+                self.assertTrue((SKILLS / "tool" / target).resolve().is_file())
+

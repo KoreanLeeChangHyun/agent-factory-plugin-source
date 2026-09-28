@@ -3,8 +3,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Agent Factory is a Claude Code plugin for Human-directed software delivery. It provides
-three Skills: `agent` for managed Work and Verification execution, `convention` for
-shared project rules, and `document` for authoring and synchronizing project documents.
+four Skills: `agent` for managed Work and Verification execution, `convention` for
+shared project rules, `document` for authoring and synchronizing project documents, and
+`tool`, a catalog of the plugin scripts and the Skill that owns each one.
 
 Version: `{{hostVersion}}`
 

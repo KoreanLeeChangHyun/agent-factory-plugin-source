@@ -42,7 +42,7 @@ def cli_command(session, state, parts, phase=None):
     root = Path(__file__).resolve().parents[3]  # plugin root
     bindings = f"\n\nAgent Factory plugin root (`<plugin-root>`): {root}\n" + \
         "Agent Factory installed skill sources (read only when needed):\n" + "\n".join(
-        f"- agent-factory:{name}: {root / 'skills' / name / 'SKILL.md'}" for name in ("agent", "convention", "document"))
+        f"- agent-factory:{name}: {root / 'skills' / name / 'SKILL.md'}" for name in ("agent", "convention", "document", "tool"))
     atomic_write(fixed, (parts.fixed + bindings).encode("utf-8"))
     # Claude's validator does not register the 2020-12 meta-schema. Our result
     # contract uses only shared object/const/enum/type keywords; retain all of

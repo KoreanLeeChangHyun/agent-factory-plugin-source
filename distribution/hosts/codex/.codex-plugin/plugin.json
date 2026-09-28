@@ -25,7 +25,7 @@
   "interface": {
     "displayName": "Agent Factory",
     "shortDescription": "Run managed agents with shared project conventions.",
-    "longDescription": "Provides three public Skills: Agent for complete local workflows in direct, work, work-verification, and plan-work-verification modes Convention for shared rules, authority, and core semantics, and Document for authoring, storage, and Codex synchronization. No MCP package, server, account, tenant, connection, or authenticated resource is required.",
+    "longDescription": "Provides four public Skills: Agent for complete local workflows in direct, work, work-verification, and plan-work-verification modes, Convention for shared rules, authority, and core semantics, Document for authoring, storage, and Codex synchronization, and Tool, a catalog of the plugin scripts. No MCP package, server, account, tenant, connection, or authenticated resource is required.",
     "developerName": "Agent Factory",
     "category": "Productivity",
     "websiteURL": "{{repository}}",

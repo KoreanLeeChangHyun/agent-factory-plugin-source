@@ -255,7 +255,7 @@ The following validated content is the complete `{role}` system-prompt source:
             raise ContractError("development_plugin_invalid", "Development run must use the local plugin runtime")
         bindings = "\n".join(
             f"- agent-factory:{name}: {root / 'skills' / name / 'SKILL.md'}"
-            for name in ("agent", "convention", "document")
+            for name in ("agent", "convention", "document", "tool")
         )
         fixed += (
             "\n\n<agent-factory-development-sources>\n"
