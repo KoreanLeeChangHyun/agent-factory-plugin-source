@@ -2,6 +2,10 @@
 
 ## 1. Storage and delivery
 
+- **Mandatory:** never create a directory the Human has not agreed to, anywhere in the
+  project, including temporary, scratch, output, backup, test or tool directories. Use
+  existing directories, paths the task explicitly names, or `docs/artifact/`.
+- `docs/artifact/` is the agreed home for generated outputs; use it by default and actively.
 - Use `<project-root>/docs/artifact/` for AI-created files outside Document packages:
   HTML previews or interactive explanations, SVG illustrations, screenshots,
   generated images and other task deliverables. Create it when an output is needed.

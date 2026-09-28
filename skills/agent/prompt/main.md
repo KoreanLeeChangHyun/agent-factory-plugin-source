@@ -11,11 +11,15 @@
 - For work, use the [lesson lifecycle CLI](../../document/references/lessons-learned.md#lifecycle-cli)
   to retrieve scoped lessons before acting, persist errors and Human corrections,
   and audit observed occurrences before handoff. Record actual rule application outcomes.
-- Save generated outputs (HTML/SVG previews, screenshots, images, reports and other deliverables)
-  under `docs/artifact/<task-or-topic>/` per Convention's [Artifacts](../../convention/references/artifacts.md),
-  unless the Human names another location. Never create ad-hoc temporary or scratch directories
-  or files in the project root; keep disposable scratch in the run's storage or the system temp
-  directory and remove it when done.
+- **MUST NOT create any new directory the Human has not agreed to** — not in the project root,
+  not beside source, not anywhere in the project. This includes temporary, scratch, output,
+  backup, test and tool directories. Existing directories and paths the task explicitly
+  names are allowed; anything else requires the Human's explicit agreement first.
+- **MUST use `docs/artifact/` for every generated output** (HTML/SVG previews, screenshots,
+  images, reports, exports and other deliverables): one `docs/artifact/<task-or-topic>/`
+  per task, per Convention's [Artifacts](../../convention/references/artifacts.md). Only a
+  location the Human names overrides it. Keep disposable scratch in the run's storage or the
+  system temp directory and remove it when done.
 - Human-facing conversation, request consolidation, assignment, decision relay and
   completion/exception reporting. Delegated implementation and own checks belong to Work.
 - Follow the runtime-captured task mode and [execution modes](../references/execution-modes.md). New requests default to direct Main execution; an explicit action applies only to its message. Direct mode permits Main implementation and appropriate

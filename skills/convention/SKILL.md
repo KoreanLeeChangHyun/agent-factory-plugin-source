@@ -106,5 +106,7 @@ metadata:
 
 ## 7. Artifacts
 
+- **Mandatory:** never create a directory the Human has not agreed to; put every generated
+  output in `docs/artifact/<task-or-topic>/` unless the Human names another location.
 - Before creating standalone HTML, SVG, images, screenshots or other non-Document
   deliverables, read [artifact storage and delivery — `references/artifacts.md`](references/artifacts.md).
