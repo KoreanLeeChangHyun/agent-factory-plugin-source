@@ -219,6 +219,103 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(worktrees.checked_path(restored), self.root)
         self.assertEqual(restored["executionPolicy"]["sandboxPolicy"]["writable_roots"], [str(self.root)])
 
+    def unit(self, name="feature", **kwargs):
+        return self.command("create", "--name", name, "--branch", name, "--base", "main", "--changes", "keep", **kwargs)
+
+    def test_unit_uses_selected_base_and_preserves_dirty_source(self):
+        self.git("checkout", "-b", "source")
+        (self.root / "file.txt").write_text("source commit")
+        self.git("commit", "-am", "source")
+        (self.root / "file.txt").write_text("uncommitted")
+        before = self.git("status", "--porcelain")
+        result = self.unit()
+        self.assertEqual((Path(result["workingDirectory"]) / "file.txt").read_text(), "base\n")
+        self.assertEqual(self.git("status", "--porcelain"), before)
+        self.assertEqual(result["worktree"]["targetBranch"], "main")
+
+    def test_duplicate_branch_rejected_without_suffix_or_binding(self):
+        self.git("branch", "taken")
+        with self.assertRaisesRegex(runtime.ContractError, "already exists"):
+            self.unit("taken")
+        self.assertNotIn("worktree", runtime.load_session(self.root, "main-one"))
+        self.assertEqual(self.git("branch", "--list", "taken*"), "taken")
+
+    def test_unit_merge_cleans_and_archives_without_squashing(self):
+        value = self.unit(); path = Path(value["workingDirectory"])
+        (path / "new.txt").write_text("new")
+        self.git("add", ".", root=path); self.git("commit", "-m", "new", root=path)
+        commit = self.git("rev-parse", "HEAD", root=path)
+        result = self.command("merge", "--target", "main")
+        self.assertTrue(result["worktree"]["cleaned"])
+        self.assertFalse(path.exists())
+        self.assertFalse(self.git("branch", "--list", "feature"))
+        self.git("merge-base", "--is-ancestor", commit, "main")
+        with self.assertRaisesRegex(runtime.ContractError, "read-only"):
+            worktrees.checked_path(runtime.load_session(self.root, "main-one"))
+        with self.assertRaisesRegex(runtime.ContractError, "read-only"):
+            self.unit("another")
+
+    def test_unit_cleanup_preserves_ignored_data_and_can_retry(self):
+        path = Path(self.unit()["workingDirectory"])
+        (path / ".gitignore").write_text("private.txt\n")
+        self.git("add", ".gitignore", root=path); self.git("commit", "-m", "ignore", root=path)
+        (path / "private.txt").write_text("keep")
+        with self.assertRaisesRegex(runtime.ContractError, "unpreserved"):
+            self.command("merge")
+        self.assertTrue((path / "private.txt").exists())
+        self.assertEqual(self.command("status")["worktree"]["phase"], "merged")
+        (path / "private.txt").rename(Path(self.temp.name) / "preserved.txt")
+        self.assertTrue(self.command("merge")["worktree"]["cleaned"])
+
+    def test_unit_conflict_never_cleans_and_resolution_can_finish(self):
+        path = Path(self.unit()["workingDirectory"])
+        for root,text in ((path,"feature"),(self.root,"main")):
+            (root / "file.txt").write_text(text)
+            self.git("commit", "-am", text, root=root)
+        with self.assertRaises(runtime.ContractError): self.command("merge")
+        self.assertTrue(path.exists())
+        self.assertTrue(worktrees.merge_pending(self.root))
+        (self.root / "file.txt").write_text("resolved")
+        self.git("add", "."); self.git("commit", "--no-edit")
+        self.assertTrue(self.command("merge")["worktree"]["cleaned"])
+
+    def test_discovery_stops_at_repository_and_ignores_symlink(self):
+        nested = self.root / "nested"; nested.mkdir(); self.git("init", "-b", "main", root=nested)
+        self.assertEqual([x["path"] for x in worktrees.repositories(self.root)], [str(self.root)])
+        home = Path(self.temp.name) / "home"; home.mkdir()
+        (home / "linked").symlink_to(self.root, target_is_directory=True)
+        child = home / "child"; child.mkdir(); self.git("init", "-b", "main", root=child)
+        self.assertEqual([x["path"] for x in worktrees.repositories(home)], [str(child)])
+
+    def test_unit_rejects_repository_outside_project(self):
+        with self.assertRaisesRegex(runtime.ContractError, "Select a repository"):
+            self.command("create", "--name", "unit", "--branch", "unit", "--repository", self.temp.name)
+
+    def test_unit_obeys_target_merge_configuration(self):
+        path = Path(self.unit()["workingDirectory"])
+        (path / "added").write_text("value"); self.git("add", ".", root=path); self.git("commit", "-m", "unit", root=path)
+        self.git("config", "merge.ff", "false")
+        self.command("merge")
+        self.assertEqual(len(self.git("rev-list", "--parents", "-n", "1", "HEAD").split()), 3)
+
+    def test_project_home_supports_same_branch_name_in_distinct_repositories(self):
+        first = self.root
+        second = Path(self.temp.name) / "second"; second.mkdir()
+        self.git("init", "-b", "main", root=second)
+        self.git("config", "user.name", "Test", root=second)
+        self.git("config", "user.email", "test@example.invalid", root=second)
+        self.git("commit", "--allow-empty", "-m", "base", root=second)
+        self.root = Path(self.temp.name)
+        runtime.runtime_paths.resolve(self.root, create=True)
+        self.session("main-first"); self.session("main-second")
+        repositories = self.command("repositories")["repositories"]
+        self.assertEqual({x["path"] for x in repositories}, {str(first), str(second)})
+        one = self.command("create", "--name", "same", "--branch", "same", "--base", "main", "--repository", str(first), "--changes", "keep", agent="main-first")
+        two = self.command("create", "--name", "same", "--branch", "same", "--base", "main", "--repository", str(second), "--changes", "keep", agent="main-second")
+        self.assertNotEqual(one["workingDirectory"], two["workingDirectory"])
+        self.assertEqual(one["worktree"]["branch"], two["worktree"]["branch"])
+        self.assertEqual(worktrees.checked_path(runtime.load_session(self.root, "main-first")), Path(one["workingDirectory"]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -157,8 +157,9 @@ The plugin exposes three public Skills:
 
 ## Compatibility
 
-- **Operating system:** Execution supports Linux and macOS; WSL must meet the Linux requirements.
-  Native Windows is unsupported. macOS requires validation in your actual environment.
+- **Operating system:** Execution supports Linux, macOS and native Windows; WSL must meet the Linux requirements.
+  On Windows, use a native Python (python.org or Microsoft Store), for example from Git Bash;
+  MSYS2/Cygwin Python builds are unsupported. macOS and Windows require validation in your actual environment.
 - **Python:** Python 3.10+.
 - **Codex:** Codex CLI must be installed. Required capabilities and environment readiness are checked before execution.
 - See [host readiness](skills/agent/references/home-runtime.md#host-readiness-and-diagnostics)

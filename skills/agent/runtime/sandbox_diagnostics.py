@@ -12,15 +12,15 @@ from pathlib import Path
 def platform_issue(platform=None):
     """Describe Agent Factory support independently of native Codex support."""
     platform = sys.platform if platform is None else platform
-    if platform in {"linux", "darwin"}:
+    if platform in {"linux", "darwin", "win32"}:
         return None
-    name = {"darwin": "macOS", "win32": "Windows"}.get(platform, platform)
     return {
         "code": "managed_platform_unsupported",
-        "message": f"Agent Factory managed execution is not supported on {name}: "
-        "process identity and containment require Linux or macOS. Use a supported "
-        "host (including a separately checked Linux VM/WSL environment). Native Codex "
-        "platform support does not imply Agent Factory runtime support.",
+        "message": f"Agent Factory managed execution is not supported on {platform}: "
+        "process identity and containment require Linux, macOS or native Windows Python "
+        "(for example from Git Bash). MSYS/Cygwin Python builds are not supported; use "
+        "the python.org or Microsoft Store Python. Native Codex platform support does "
+        "not imply Agent Factory runtime support.",
     }
 
 
@@ -42,7 +42,8 @@ def sandbox_failure(text):
         return "macOS sandbox initialization failed; check the native sandbox profile and host policy. Keep the requested permissions; no automatic sandbox fallback is allowed."
     if "Windows sandbox" in text and any(marker in text for marker in (
         "setup failed", "initialization failed")):
-        return "Windows sandbox initialization failed; check native sandbox setup. " + platform_issue("win32")["message"]
+        return ("Windows sandbox initialization failed; check the native Codex Windows sandbox setup. "
+                "Keep the requested permissions; no automatic sandbox fallback is allowed.")
     return None
 
 
@@ -58,6 +59,28 @@ def diagnose(*, codex="codex", probe=False):
     if issue:
         return result
     result["codexExecutable"] = shutil.which(codex)
+    if sys.platform == "win32":
+        import os
+        import windows_process
+        from runtime_errors import ContractError
+        try:
+            windows_process.process_identity(os.getpid())
+            result["windowsProcessIdentityAvailable"] = True
+        except ContractError as error:
+            result["windowsProcessIdentityAvailable"] = False
+            result["issue"] = {"code": error.code, "message": str(error)}
+        result["containmentBackend"] = "windows-job"
+        result["weakerDescendantContainment"] = False
+        result["note"] = (
+            "Windows uses a kill-on-close Job Object per managed process. Background "
+            "workers and loop drivers deliberately break away; if an outer job forbids "
+            "breakaway they stay nested and end with their caller. Stops are immediate "
+            "(no SIGTERM grace period). Codex enforces the requested sandbox independently. "
+            "The bubblewrap probe is Linux-only; native sandbox readiness remains unknown."
+        )
+        if probe:
+            result["probe"] = {"status": "not-applicable"}
+        return result
     if sys.platform == "darwin":
         import os
         import macos_process_identity

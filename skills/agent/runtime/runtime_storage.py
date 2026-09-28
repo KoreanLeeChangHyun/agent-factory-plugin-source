@@ -15,12 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, IO, Iterator
 
-try:
-    import fcntl
-except ImportError:  # Windows
-    fcntl = None
-    import msvcrt
-
+import portable
 from process_containment import now
 from runtime_errors import ContractError
 from capability_contracts import safe_read_caller_file
@@ -33,7 +28,7 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = SKILL_ROOT / "prompt"
 VALID_ROLES = {"main", "work", "verification"}
 response_operation: ContextVar[dict[str, Any] | None] = ContextVar("response_operation", default=None)
-if sys.platform in {"linux", "darwin"}:
+if sys.platform in portable.SUPPORTED_PLATFORMS:
     import paths as runtime_paths
 
 def emit(value: dict[str, Any], stream: IO[str] = sys.stdout) -> None:
@@ -87,10 +82,10 @@ def ensure_directory(path: Path, anchor: Path) -> None:
                 os.mkdir(cursor, 0o700)
             except FileExistsError:
                 current = os.lstat(cursor)
-                if stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode):
+                if portable.is_link(current) or not stat.S_ISDIR(current.st_mode):
                     raise ContractError("runtime_path_unsafe", "runtime path is unsafe")
             continue
-        if stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode):
+        if portable.is_link(current) or not stat.S_ISDIR(current.st_mode):
             raise ContractError("runtime_path_unsafe", "runtime path is unsafe")
 
 
@@ -99,7 +94,7 @@ def reject_symlink(path: Path) -> None:
         current = os.lstat(path)
     except FileNotFoundError:
         return
-    if stat.S_ISLNK(current.st_mode):
+    if portable.is_link(current):
         raise ContractError("runtime_path_unsafe", "runtime file must not be a symlink")
 
 
@@ -118,7 +113,7 @@ def atomic_write(path: Path, content: bytes) -> None:
             os.fsync(stream.fileno())
         os.close(descriptor)
         descriptor = -1
-        os.replace(temporary, path)
+        portable.replace(temporary, path)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -216,23 +211,14 @@ def file_lock(path: Path, *, blocking: bool = True) -> Iterator[None]:
     stream = os.fdopen(descriptor, "a+")
     try:
         try:
-            if fcntl is not None:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-            else:
-                stream.seek(0)
-                if stream.read(1) == "":
-                    stream.write("\0")
-                    stream.flush()
-                stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
+            portable.lock_descriptor(stream.fileno(), blocking=blocking)
         except (BlockingIOError, OSError) as error:
             raise ContractError("lock_busy", "session is busy") from error
         yield
     finally:
-        if fcntl is None:
+        if portable.WINDOWS:
             with contextlib.suppress(OSError):
-                stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                portable.unlock_descriptor(stream.fileno())
         stream.close()
 
 

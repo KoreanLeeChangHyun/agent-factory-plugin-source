@@ -60,7 +60,7 @@ def cli_command(session, state, parts, phase=None):
     schema = dict(safe_read_json(Path(state["responseSchemaPath"])))
     schema.pop("$schema", None)
     command = [session["claude"], "-p", "--input-format", "stream-json", "--output-format", "stream-json",
-               "--verbose", "--append-system-prompt-file", str(fixed), "--system-prompt-snapshot", "off",
+               "--verbose", "--replay-user-messages", "--append-system-prompt-file", str(fixed), "--system-prompt-snapshot", "off",
                "--json-schema", json.dumps(schema)]
     working_directory = session.get("workingDirectory", session.get("projectRoot"))
     if phase == "plan":
@@ -74,18 +74,18 @@ def cli_command(session, state, parts, phase=None):
     if effort(session.get("reasoningEffort")):
         command += ["--effort", effort(session["reasoningEffort"])]
     if phase == "execute":
-        return command, {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": EXECUTE_REQUEST}]}}
+        return command, {"type": "user", "uuid": str(uuid.uuid4()), "message": {"role": "user", "content": [{"type": "text", "text": EXECUTE_REQUEST}]}}
     text = parts.dynamic if phase != "plan" else parts.dynamic + "\n\n" + PLAN_REQUEST
     content = [{"type": "text", "text": text}]
     for image in state.get("imageInputs", []):
         content.append({"type": "image", "source": {"type": "base64", "media_type": image["mediaType"],
                        "data": base64.b64encode(safe_read_bytes(Path(image["path"]), None)).decode("ascii")}})
-    return command, {"type": "user", "message": {"role": "user", "content": content}}
+    return command, {"type": "user", "uuid": str(uuid.uuid4()), "message": {"role": "user", "content": content}}
 
 
 class Events:
     """Translate only observed facts; never treat assistant prose as terminal JSON."""
-    def __init__(self, expected_session=None, *, terminal=True):
+    def __init__(self, expected_session=None, *, terminal=True, request_id=None):
         self.session = expected_session
         self.terminal = terminal
         self.started = False
@@ -93,6 +93,8 @@ class Events:
         self.tools = {}
         self.context_tokens = None
         self.structured = None
+        self.request_id = request_id
+        self.acknowledged = request_id is None
 
     def translate(self, event):
         if not isinstance(event, dict):
@@ -112,6 +114,14 @@ class Events:
             self.session, self.started = observed, True
             return [{"type": "thread.started", "thread_id": observed},
                     {"type": "provider.model", "provider": "claude", "model": event.get("model")}]
+        if not self.acknowledged and kind in ("assistant", "user", "result"):
+            # Resume can drain a prior/background turn before processing stdin.
+            # Its result (including a schema-less no-op) does not finish our request.
+            if (kind == "user" and event.get("uuid") == self.request_id
+                    and not event.get("parent_tool_use_id")
+                    and self.started and event.get("session_id") == self.session):
+                self.acknowledged = True
+            return []
         if kind in ("assistant", "user") and not event.get("parent_tool_use_id"):
             result = []
             usage = event.get("message", {}).get("usage") if kind == "assistant" else None
@@ -227,7 +237,7 @@ def main():
                                        encoding="utf-8", env=environment)
             process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
             process.stdin.close()
-            events = Events(session_id, terminal=phase != "plan")
+            events = Events(session_id, terminal=phase != "plan", request_id=message["uuid"])
             for line in process.stdout:
                 translated = events.translate(json.loads(line))
                 # A resumed execution phase re-announces the same thread; the runtime saw it already.
@@ -236,6 +246,8 @@ def main():
                 for event in translated:
                     emit(event)
             code = process.wait()
+            if not events.acknowledged:
+                raise ValueError(f"Claude exited with {code} before acknowledging the current request")
             if code != 0 or not events.finished:
                 raise ValueError(f"Claude exited with {code}; terminal result received: {events.finished}")
             session_id = events.session

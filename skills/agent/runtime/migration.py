@@ -6,7 +6,6 @@ through an explicit locator overlay. Invalid inactive records remain archive-onl
 from __future__ import annotations
 import argparse
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -16,6 +15,7 @@ import sys
 from pathlib import Path
 sys.dont_write_bytecode = True
 import paths
+import portable
 
 ACTIVE = {'accepted', 'queued', 'starting', 'running', 'cancelling'}
 KEYS = {'schemaVersion', 'kind', 'home', 'projects', 'files', 'directories', 'mapping', 'archiveOnly', 'planId'}
@@ -27,7 +27,7 @@ def digest(value):
 
 def read_bytes(path):
     paths.inspect(path)
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    fd = os.open(path, os.O_RDONLY | portable.O_NOFOLLOW | portable.O_NONBLOCK | portable.O_BINARY)
     with os.fdopen(fd, 'rb') as stream:
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode):
@@ -203,9 +203,9 @@ def quiet(plan):
         for filename in plan['files']:
             path = Path(filename)
             if path.name.endswith('.lock'):
-                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                fd = os.open(path, os.O_RDONLY | portable.O_NOFOLLOW)
                 handles.append(fd)
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                portable.lock_descriptor(fd, blocking=False)
             if path.name == 'state.json' and any(part in {'agent', 'agents'} for part in path.parts):
                 try:
                     state = json.loads(read_bytes(path))
@@ -325,11 +325,11 @@ def copy_member(source, target, proof):
             if not content.startswith(prefix):
                 raise ValueError('interrupted staging conflicts')
             offset = len(prefix)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_APPEND
+        flags = os.O_WRONLY | os.O_CREAT | portable.O_NOFOLLOW | os.O_APPEND | portable.O_BINARY
         fd = os.open(temporary, flags, 0o600)
         with os.fdopen(fd, 'ab') as stream:
             stream.write(content[offset:]); stream.flush(); os.fsync(stream.fileno())
-        os.replace(temporary, target)
+        portable.replace(temporary, target)
     if len(content) != proof['size'] or hashlib.sha256(content).hexdigest() != proof['sha256']:
         raise ValueError('copy bytes conflict with immutable manifest')
 

@@ -89,7 +89,7 @@
 | --- | --- | --- |
 | Linux, including Ubuntu | Requires `/proc` identity and usable containment/sandbox facilities | Inspect `doctor`; use `--probe` for system bubblewrap evidence. |
 | macOS | Requires kernel boot/process identity and private process groups | Use Python 3.10+ and inspect `doctor`; validate the selected native Codex sandbox on the actual Mac. |
-| Native Windows | Unsupported by this managed runtime | Use a separately checked Linux host or WSL environment. |
+| Native Windows (for example Git Bash) | Requires native Python 3.10+ (not MSYS2/Cygwin), kernel process identity and Job Objects | Inspect `doctor`; call `python` or `py -3` where `python3` is absent; validate the selected native Codex sandbox on the actual host. |
 | Other operating systems | Unsupported | Use a supported host. |
 
 - macOS `doctor --probe` reports the Linux bubblewrap probe as `not-applicable`; it reads native
@@ -97,6 +97,13 @@
   - For custom `AGENT_FACTORY_HOME`, use an absolute path with no symlink ancestors (for example,
     `/private/tmp/...` rather than the macOS `/tmp` alias).
   - The runtime does not weaken its path checks to accommodate aliases.
+- Windows identifies a process by PID plus kernel creation time and contains it in a private
+  kill-on-close Job Object owned by the bootstrap root.
+  - Background workers and loop drivers break away from the caller's job so they outlive it;
+    if an outer job forbids breakaway they stay nested and end with their caller.
+  - Stops terminate immediately; there is no POSIX `SIGTERM` grace period.
+  - POSIX owner/mode checks do not apply; runtime files rely on the per-user profile ACL.
+  - npm `codex.cmd` shims resolve to the vendored native `codex.exe` when present.
 - Native API references: [process info](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info.h), [boot session UUID](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sysctl.c).
 - Unsupported hosts return `managed_platform_unsupported`; use a supported host without
   broadening permissions.
