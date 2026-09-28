@@ -12,8 +12,8 @@ metadata:
 - This is a catalog only. Before running a tool, follow the owning Skill's rules; they
   remain the single source for arguments, authority and failure handling.
 - Run every tool as `python3 <plugin-root>/scripts/<script> ...`.
-- `references/usage.md`: every script's and subcommand's arguments, generated from its
-  `--help`. Read only the section for the tool you are about to run.
+- Each script name links to its usage file with subcommands and arguments, generated from
+  its `--help`. Read only the file (and subcommand section) for the tool you will run.
 
 <a id="catalog"></a>
 
@@ -21,14 +21,14 @@ metadata:
 
 | Script | Owner |
 |---|---|
-| `exec.py` | [Agent](../agent/SKILL.md) |
-| `loop.py` | [Agent](../agent/SKILL.md) |
-| `lessons.py` | [Document](../document/references/lessons-learned.md#lifecycle-cli) |
-| `sync_documents.py` | [Document](../document/SKILL.md#continuous-codex-synchronization) |
-| `export_documents.py` | [Document](../document/SKILL.md#explicit-codex-export) |
-| `catalog_documents.py` | [Document](../document/SKILL.md) |
-| `search_documents.py` | [Document](../document/SKILL.md) |
-| `migrate_document_paths.py` | [Document](../document/SKILL.md) |
+| [`exec.py`](references/usage/exec.md) | [Agent](../agent/SKILL.md) |
+| [`loop.py`](references/usage/loop.md) | [Agent](../agent/SKILL.md) |
+| [`lessons.py`](references/usage/lessons.md) | [Document](../document/references/lessons-learned.md#lifecycle-cli) |
+| [`sync_documents.py`](references/usage/sync_documents.md) | [Document](../document/SKILL.md#continuous-codex-synchronization) |
+| [`export_documents.py`](references/usage/export_documents.md) | [Document](../document/SKILL.md#explicit-codex-export) |
+| [`catalog_documents.py`](references/usage/catalog_documents.md) | [Document](../document/SKILL.md) |
+| [`search_documents.py`](references/usage/search_documents.md) | [Document](../document/SKILL.md) |
+| [`migrate_document_paths.py`](references/usage/migrate_document_paths.md) | [Document](../document/SKILL.md) |
 
 - `exec.py`: one managed agent run.
 - `loop.py`: a Work/Verification loop over an announced task list.
@@ -38,4 +38,4 @@ metadata:
 - `catalog_documents.py`: the live catalog of project Documents.
 - `search_documents.py`: search over that catalog.
 - `migrate_document_paths.py`: contract-listed document moves.
-- Subcommands and arguments are listed only in `references/usage.md`; rules only in the owner Skill.
+- Subcommands and arguments are listed only in `references/usage/`; rules only in the owner Skill.

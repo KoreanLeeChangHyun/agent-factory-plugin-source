@@ -29,4 +29,5 @@
 - Follow Convention's [development contract](skills/convention/references/development.md) for shared change and Git authority boundaries.
 </agent-factory>
 </INSTRUCTIONS>
-- After adding or changing a script or its arguments, run `python3 distribution/tool_usage.py` to regenerate `skills/tool/references/usage.md`.
+- After adding or changing a script or its arguments, run `python3 distribution/tool_usage.py` to regenerate `skills/tool/references/usage/`.
+- Keep Skill reading cheap: SKILL.md routes, references hold detail and are read one at a time; state each fact in one document only. `python3 distribution/skill_budget.py` reports token cost and the contract test enforces its budgets.

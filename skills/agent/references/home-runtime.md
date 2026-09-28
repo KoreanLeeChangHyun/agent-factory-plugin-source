@@ -235,7 +235,7 @@
   acceptance, inspect the Agent's existing runs; recover using the original key
   and immutable inputs. Loops manage this binding automatically.
 
-- Subcommands and arguments of `exec.py` and `loop.py`: [Tool usage](../../tool/references/usage.md).
+- Subcommands and arguments of `exec.py` and `loop.py`: [exec.py usage](../../tool/references/usage/exec.md), [loop.py usage](../../tool/references/usage/loop.md).
 - `submit` and `send` accept either the existing text inputs or `--input-file`.
   - The latter is a versioned `agent-input` JSON document containing `message` and up to
     eight sibling PNG, JPEG, GIF or WebP filenames.

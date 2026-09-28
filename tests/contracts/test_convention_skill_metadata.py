@@ -295,9 +295,9 @@ if __name__ == "__main__":
 class ToolCatalogTests(unittest.TestCase):
     def test_tool_catalog_lists_exactly_the_plugin_scripts(self) -> None:
         text = (SKILLS / "tool" / "SKILL.md").read_text(encoding="utf-8")
-        listed = set(re.findall(r"^\| `([a-z_]+\.py)` \|", text, re.M))
+        listed = set(re.findall(r"^\| \[`([a-z_]+\.py)`\]\(references/usage/[a-z_]+\.md\) \|", text, re.M))
         self.assertEqual(listed, {path.name for path in (ROOT / "scripts").glob("*.py")})
-        for target in re.findall(r"\]\((\.\./[^)#]+)", text):
+        for target in re.findall(r"\]\(((?:\.\./|references/)[^)#]+)", text):
             with self.subTest(link=target):
                 self.assertTrue((SKILLS / "tool" / target).resolve().is_file())
 
@@ -306,5 +306,12 @@ class ToolCatalogTests(unittest.TestCase):
         import sys
         result = subprocess.run([sys.executable, str(ROOT / "distribution" / "tool_usage.py"), "--check"],
                                 capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_skill_documents_stay_within_reading_budgets(self) -> None:
+        import subprocess
+        import sys
+        result = subprocess.run([sys.executable, str(ROOT / "distribution" / "skill_budget.py"), "--check"],
+                                capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
 
