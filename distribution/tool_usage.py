@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate skills/tool/references/usage/<script>.md from each plugin script's own --help.
+"""Generate skills/tool/references/usage/<script>.md from each plugin script's argparse definition.
 
 One file per script, so an agent reads only the tool it is about to run.
 
@@ -19,32 +19,87 @@ OUTPUT = ROOT / "skills" / "tool" / "references" / "usage"
 ENVIRONMENT = {**os.environ, "COLUMNS": "100", "AGENT_FACTORY_HOME": os.environ.get("AGENT_FACTORY_HOME", "/nonexistent")}
 
 
-def run_help(script: Path, *prefix: str) -> str:
-    result = subprocess.run([sys.executable, str(script), *prefix, "--help"], capture_output=True, text=True,
+# Runs in a child interpreter: capture the script's argparse tree instead of printing --help.
+PROBE = r"""
+import argparse, json, runpy, sys
+def describe(parser):
+    groups = [[o for a in g._group_actions for o in a.option_strings[:1]] for g in parser._mutually_exclusive_groups]
+    options, commands = [], []
+    for action in parser._actions:
+        if isinstance(action, argparse._HelpAction) or action.help == argparse.SUPPRESS:
+            continue
+        if isinstance(action, argparse._SubParsersAction):
+            helps = {c.dest: c.help for c in action._choices_actions}
+            for name, sub in action.choices.items():
+                if not name.startswith("_"):
+                    commands.append({"name": name, "help": helps.get(name) or sub.description, **describe(sub)})
+            continue
+        flags = [o for o in action.option_strings if not o.startswith("--no-")] or [action.dest]
+        value = None
+        if action.nargs != 0:
+            value = "{" + ",".join(map(str, action.choices)) + "}" if action.choices else (action.metavar or action.dest.upper())
+        options.append({"flags": flags, "value": value, "help": action.help, "required": action.required,
+                        "negatable": any(o.startswith("--no-") for o in action.option_strings), "positional": not action.option_strings})
+    return {"description": parser.description, "options": options, "groups": groups, "commands": commands}
+def capture(self, *args, **kwargs):
+    print(json.dumps(describe(self)))
+    raise SystemExit(0)
+argparse.ArgumentParser.parse_known_args = capture
+sys.argv = [sys.argv[1]]
+import os; sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+
+def describe(script: Path) -> dict:
+    import json
+    result = subprocess.run([sys.executable, "-c", PROBE, str(script)], capture_output=True, text=True,
                             env=ENVIRONMENT, timeout=30, check=False)
-    text = (result.stdout or result.stderr).strip()
-    # Python 3.10 prints "optional arguments:"; 3.12+ prints "options:".
-    return text.replace("optional arguments:", "options:")
+    return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def subcommands(help_text: str) -> list[str]:
-    """Public subcommands of a subparser-based script (names starting with _ are internal)."""
-    match = re.search(r"^positional arguments:\n\s+\{([^}]+)\}", help_text, re.M)
-    if not match or " ..." not in help_text.split("\n\n", 1)[0]:
-        return []
-    return [name for name in match.group(1).split(",") if not name.startswith("_")]
+def option_text(option: dict) -> str:
+    flag = option["flags"][0]
+    if option["negatable"]:
+        flag += f" | --no-{flag[2:]}"
+    return f"`{flag}{' ' + option['value'] if option['value'] else ''}`"
+
+
+def render_options(tree: dict, skip: set[str]) -> list[str]:
+    lines = []
+    required = [option_text(o) for o in tree["options"] if o["required"] or o["positional"]]
+    if required:
+        lines.append("Required: " + ", ".join(required))
+    for group in tree["groups"]:
+        lines.append("One of: " + " | ".join(f"`{flag}`" for flag in group))
+    for option in tree["options"]:
+        if option["flags"][0] in skip or option["required"] or option["positional"]:
+            continue
+        help_text = " ".join((option["help"] or "").split())
+        lines.append(f"- {option_text(option)}" + (f": {help_text}" if help_text else ""))
+    return lines
 
 
 def render() -> dict[str, str]:
     files = {}
     for script in sorted((ROOT / "scripts").glob("*.py")):
-        text = run_help(script)
+        tree = describe(script)
         parts = [f"# `{script.name}` usage", "",
-                 "Generated from `--help` by `distribution/tool_usage.py`; do not edit by hand.",
-                 "Rules for when and why to run it stay in the owning Skill listed in [SKILL.md](../../SKILL.md).", "",
-                 "```text", text, "```", ""]
-        for name in subcommands(text):
-            parts += [f"## `{name}`", "", "```text", run_help(script, name), "```", ""]
+                 "Generated from argparse by `distribution/tool_usage.py`; do not edit by hand.",
+                 "Rules for when and why to run it stay in the owning Skill listed in [SKILL.md](../../SKILL.md).", ""]
+        commands = tree["commands"]
+        # Options every subcommand shares are listed once.
+        with_options = [c for c in commands if c["options"]]
+        common = set.intersection(*[{o["flags"][0] for o in c["options"] if not o["required"]} for c in with_options]) if len(with_options) > 1 else set()
+        if common:
+            shared = [o for o in with_options[0]["options"] if o["flags"][0] in common]
+            parts += ["Every subcommand with options also accepts: " + ", ".join(option_text(o) for o in shared) + ".", ""]
+        parts += render_options(tree, set())
+        while parts and parts[-1] == "": parts.pop()
+        for command in commands:
+            summary = " ".join((command["help"] or "").split())
+            parts += ["", f"## `{command['name']}`" + (f": {summary}" if summary else "")]
+            parts += render_options(command, common) or (["No options."] if not command["options"] else [])
         files[script.stem + ".md"] = "\n".join(parts).rstrip() + "\n"
     return files
 
