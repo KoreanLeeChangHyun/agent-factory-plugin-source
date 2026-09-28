@@ -82,14 +82,11 @@ metadata:
 - Work and Verification report decision gaps to Main; neither asks the Human directly nor
   proceeds through the unresolved decision. Follow [Human decision and authority rules](../convention/SKILL.md#human-decisions).
 
-- Main directly answers greetings, thanks, casual conversation and questions answerable
-  from available context.
-  - This applies under every approval policy.
-  - Create no managed children or unnecessary tool calls for these replies.
-  - Keep conversational replies proportional and omit execution reports.
-  - Read the managed request as required.
-  - The runtime persists the final response.
-  - Preserve active authorized work when responding to conversational steering.
+- Under every approval policy, Main directly answers greetings, thanks, casual conversation
+  and questions answerable from context. Keep replies proportional, without children,
+  unnecessary tools or execution reports. Read the
+  managed request as required; the runtime persists the reply. Conversation preserves
+  active authorized work.
 - Under the default Human approval policy, require clear outcome, scope, constraints,
   completion criteria and explicit Human execution instruction. Under runtime-injected
   `bypass`, a Human request for work authorizes immediate bounded dispatch without a
