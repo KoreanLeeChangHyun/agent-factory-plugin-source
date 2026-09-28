@@ -21,6 +21,7 @@ import paths as runtime_paths
 from prompt_delivery import PromptParts
 from runtime_errors import ContractError
 from runtime_storage import atomic_write, atomic_write_json, safe_read_bytes, safe_read_json
+from stream_text import DeltaBuffer, JsonStringField
 
 from adapters.claude.capabilities import MODELS
 
@@ -60,8 +61,9 @@ def cli_command(session, state, parts, phase=None):
     # those constraints and leave the persisted runtime schema unchanged.
     schema = dict(safe_read_json(Path(state["responseSchemaPath"])))
     schema.pop("$schema", None)
+    # Partial messages stream text as it is generated; every CLI with the options below supports them.
     command = [session["claude"], "-p", "--input-format", "stream-json", "--output-format", "stream-json",
-               "--verbose", "--replay-user-messages", "--append-system-prompt-file", str(fixed), "--system-prompt-snapshot", "off",
+               "--verbose", "--include-partial-messages", "--replay-user-messages", "--append-system-prompt-file", str(fixed), "--system-prompt-snapshot", "off",
                "--json-schema", json.dumps(schema)]
     working_directory = session.get("workingDirectory", session.get("projectRoot"))
     if phase == "plan":
@@ -96,6 +98,9 @@ class Events:
         self.structured = None
         self.request_id = request_id
         self.acknowledged = request_id is None
+        self.deltas = DeltaBuffer()
+        self.message_id = None
+        self.blocks = {}
 
     def translate(self, event):
         if not isinstance(event, dict):
@@ -115,6 +120,8 @@ class Events:
             self.session, self.started = observed, True
             return [{"type": "thread.started", "thread_id": observed},
                     {"type": "provider.model", "provider": "claude", "model": event.get("model")}]
+        if kind == "stream_event":
+            return self.stream(event) if self.acknowledged and not event.get("parent_tool_use_id") else []
         if not self.acknowledged and kind in ("assistant", "user", "result"):
             # Resume can drain a prior/background turn before processing stdin.
             # Its result (including a schema-less no-op) does not finish our request.
@@ -124,7 +131,8 @@ class Events:
                 self.acknowledged = True
             return []
         if kind in ("assistant", "user") and not event.get("parent_tool_use_id"):
-            result = []
+            # Complete blocks supersede their live preview; emit pending deltas first.
+            result = self.deltas.flush()
             usage = event.get("message", {}).get("usage") if kind == "assistant" else None
             if isinstance(usage, dict):
                 parts = [usage.get(key) for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")]
@@ -167,6 +175,7 @@ class Events:
                 raise ValueError("Claude returned no schema-validated structured_output")
             self.finished = True
             self.structured = terminal
+            pending = self.deltas.flush()
             usage = event.get("usage", {})
             def count(key):
                 value = usage.get(key)
@@ -183,8 +192,35 @@ class Events:
             context = ([{"type": "provider.context", "usedTokens": self.context_tokens, "contextWindowTokens": max(windows)}]
                        if windows and self.context_tokens is not None else [])
             if not self.terminal:
-                return [completed, *context]
-            return [completed, *context, {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(terminal, ensure_ascii=False)}}]
+                return [*pending, completed, *context]
+            return [*pending, completed, *context, {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(terminal, ensure_ascii=False)}}]
+        return []
+
+    def stream(self, event):
+        """Preview main-thread text blocks and the terminal resultText while Claude generates them."""
+        data = event.get("event")
+        if not isinstance(data, dict):
+            return []
+        kind, index = data.get("type"), data.get("index")
+        if kind == "message_start":
+            message = data.get("message")
+            self.message_id = message.get("id") if isinstance(message, dict) else None
+            self.blocks = {}
+        elif kind == "content_block_start" and isinstance(data.get("content_block"), dict):
+            block = data["content_block"]
+            if block.get("type") == "text":
+                self.blocks[index] = ("commentary", f"{self.message_id}:{index}", None)
+            elif block.get("type") == "tool_use" and block.get("name") == "StructuredOutput" and self.terminal:
+                self.blocks[index] = ("final", str(block.get("id") or index), JsonStringField())
+        elif kind == "content_block_delta" and index in self.blocks and isinstance(data.get("delta"), dict):
+            stream, identity, field = self.blocks[index]
+            delta = data["delta"]
+            if stream == "commentary" and delta.get("type") == "text_delta":
+                return self.deltas.add(stream, identity, str(delta.get("text", "")))
+            if stream == "final" and delta.get("type") == "input_json_delta":
+                return self.deltas.add(stream, identity, field.feed(str(delta.get("partial_json", ""))))
+        elif kind == "content_block_stop" and index in self.blocks:
+            return self.deltas.flush(self.blocks.pop(index)[1])
         return []
 
 

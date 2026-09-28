@@ -109,6 +109,7 @@ class ClaudeAdapterTests(unittest.TestCase):
             session = {"claude": "/local/claude", "sessionId": str(uuid.uuid4()), "model": "claude-sonnet", "reasoningEffort": "high",
                        "executionPolicy": POLICY, "projectRoot": root}
             command, message = claude.cli_command(session, state, PromptParts("fixed instruction", "current request"))
+            self.assertIn("--include-partial-messages", command)
             self.assertEqual(command[command.index("--permission-mode") + 1], "bypassPermissions")
             planned, plan_message = claude.cli_command(session, state, PromptParts("fixed instruction", "current request"), "plan")
             self.assertEqual(planned[planned.index("--permission-mode") + 1], "plan")

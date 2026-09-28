@@ -21,6 +21,7 @@ if __name__ == "__main__":
 
 import portable
 from prompt_delivery import PromptParts
+from stream_text import DeltaBuffer, JsonStringField
 
 
 class NativeError(Exception):
@@ -380,6 +381,9 @@ class Bridge:
         self.goal = None
         self.last_message = None
         self.turn_messages = {}
+        # Live previews of agent messages keyed by item id; see stream_text.
+        self.deltas = DeltaBuffer()
+        self.streams = {}
         self.completed_turns = {}
         self.control_id = None
         self.next_completion_check = 0.0
@@ -712,6 +716,8 @@ class Bridge:
                 try:
                     event = self.rpc.event()
                 except queue.Empty:
+                    for pending in self.deltas.flush():
+                        emit(pending)
                     # A native idle/status transition can lag turn completion.
                     # Recheck authoritative history, never treat an empty queue
                     # itself as evidence that all native work is complete.
@@ -751,6 +757,14 @@ class Bridge:
                     item = dict(params.get("item", {}))
                     kind = item.get("type")
                     if kind == "agentMessage":
+                        identity = str(item.get("id", ""))
+                        if method == "item/started":
+                            # Commentary streams verbatim; the final message is schema JSON, so preview its resultText.
+                            self.streams[identity] = ("commentary", None) if item.get("phase") == "commentary" else ("final", JsonStringField())
+                        else:
+                            for pending in self.deltas.flush(identity):
+                                emit(pending)
+                            self.streams.pop(identity, None)
                         if method == "item/completed" and item.get("phase") != "commentary":
                             owner = params.get("turnId", self.turn_id)
                             if not isinstance(owner, str):
@@ -764,6 +778,13 @@ class Bridge:
                         if "exitCode" in item:
                             item["exit_code"] = item.pop("exitCode")
                         emit({"type": method.replace("/", "."), "item": item})
+                elif method == "item/agentMessage/delta":
+                    identity = str(params.get("itemId", ""))
+                    if identity in self.streams:
+                        stream, field = self.streams[identity]
+                        text = str(params.get("delta", ""))
+                        for pending in self.deltas.add(stream, identity, field.feed(text) if field else text):
+                            emit(pending)
                 elif method == "turn/completed":
                     turn = params["turn"]
                     if self.turn_id == turn["id"]:
