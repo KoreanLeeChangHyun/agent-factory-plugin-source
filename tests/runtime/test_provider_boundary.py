@@ -72,7 +72,7 @@ assert 'adapters.codex.preflight' not in sys.modules
                     self.assertEqual(runtime.command_goal(args), 0)
                 self.assertIsNone(emit.call_args.args[0]["goal"])
             args.action = "resume"
-            with self.assertRaisesRegex(runtime.ContractError, "Claude does not support"):
+            with self.assertRaisesRegex(runtime.ContractError, "Goal was cleared"):
                 runtime.command_goal(args)
 
     def test_orchestrator_import_does_not_eagerly_load_providers(self):

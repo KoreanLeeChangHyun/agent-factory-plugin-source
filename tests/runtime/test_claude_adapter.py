@@ -243,7 +243,7 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(capabilities["submit"]["taskModes"], list(claude.capabilities.TASK_MODES))
         self.assertIn("plan-work-verification", capabilities["submit"]["taskModes"])
         self.assertTrue(capabilities["submit"]["plan"])
-        self.assertFalse(capabilities["submit"]["goal"])
+        self.assertTrue(capabilities["submit"]["goal"])
         self.assertTrue(capabilities["submit"]["worktrees"])
         with tempfile.TemporaryDirectory() as root, mock.patch.object(claude, "inspect_capabilities", return_value=capabilities):
             args = runtime.parse_args(["submit", "--agent", "claude-test", "--role", "main", "--model", "claude-opus", "--claude", "/bin/true", "--message", "hi"])

@@ -116,6 +116,7 @@ class ImageInputContractTests(unittest.TestCase):
         with self.assertRaises(ContractError) as raised:
             image_input.validate_execution([{"content": b"image"}], {"goalMode": True})
         self.assertEqual(raised.exception.code, "image_goal_unsupported")
+        image_input.validate_execution([{"content": b"image"}], {"goalMode": True, "provider": "claude"})
 
     def test_capabilities_advertise_image_transport_for_submit_and_send(self) -> None:
         capabilities = {

@@ -13,7 +13,7 @@ MAX_TOOL_OUTPUT_CHARACTERS = 64 * 1024
 
 class Events:
     """Translate only observed facts; never treat assistant prose as terminal JSON."""
-    def __init__(self, expected_session=None, *, terminal=True, request_id=None):
+    def __init__(self, expected_session=None, *, terminal=True, request_id=None, setup_ids=()):
         self.session = expected_session
         self.terminal = terminal
         self.started = False
@@ -23,6 +23,12 @@ class Events:
         self.structured = None
         self.request_id = request_id
         self.acknowledged = request_id is None
+        # Slash commands (/goal) sent before the request. Work they start is ours to show,
+        # but only a result after the request itself finishes the run.
+        self.setup_ids = frozenset(setup_ids)
+        self.visible = self.acknowledged
+        self.setup_replies = []
+        self.result_event = None
         self.deltas = DeltaBuffer()
         self.message_id = None
         self.blocks = {}
@@ -34,6 +40,13 @@ class Events:
         if self.finished:
             # Trailing hook/system events after the result do not change the outcome.
             return []
+        if kind == "rate_limit_event":
+            # Account-wide limits apply whichever turn reported them; utilization is a 0-1 ratio.
+            window = ((event.get("rate_limit_info") or {}).get("unifiedWindows") or {}).get("seven_day")
+            used = window.get("utilization") if isinstance(window, dict) else None
+            if type(used) in (int, float) and 0 <= used <= 1:
+                return [{"type": "provider.rate_limits", "weeklyUsedPercent": round(used * 100, 2)}]
+            return []
         if kind == "system" and event.get("subtype") == "init":
             observed = event.get("session_id")
             if not isinstance(observed, str) or str(uuid.UUID(observed)) != observed:
@@ -41,20 +54,31 @@ class Events:
             if self.session and observed != self.session:
                 raise ValueError("Claude resumed a different session")
             if self.started:
-                raise ValueError("Claude emitted a second initialization")
+                # A local slash command (/goal clear) completes without a model turn; the
+                # request's turn then initializes the same session again.
+                return []
             self.session, self.started = observed, True
             return [{"type": "thread.started", "thread_id": observed},
                     {"type": "provider.model", "provider": "claude", "model": event.get("model")}]
         if kind == "stream_event":
-            return self.stream(event) if self.acknowledged and not event.get("parent_tool_use_id") else []
+            return self.stream(event) if self.visible and not event.get("parent_tool_use_id") else []
         if not self.acknowledged and kind in ("assistant", "user", "result"):
             # Resume can drain a prior/background turn before processing stdin.
             # Its result (including a schema-less no-op) does not finish our request.
-            if (kind == "user" and event.get("uuid") == self.request_id
-                    and not event.get("parent_tool_use_id")
-                    and self.started and event.get("session_id") == self.session):
-                self.acknowledged = True
-            return []
+            ours = (not event.get("parent_tool_use_id") and self.started and event.get("session_id") == self.session)
+            if kind == "user" and ours and event.get("uuid") == self.request_id:
+                self.acknowledged = self.visible = True
+                return []
+            if kind == "user" and ours and event.get("uuid") in self.setup_ids:
+                self.visible = True
+                return []
+            if kind == "assistant" and ours and self.setup_ids and not self.visible:
+                # A local slash command answers with plain text before its replay (e.g. "Goal set: …").
+                self.setup_replies += [block.get("text", "") for block in event.get("message", {}).get("content", [])
+                                       if isinstance(block, dict) and block.get("type") == "text"]
+                return []
+            if not self.visible or kind == "result":
+                return []
         if kind in ("assistant", "user"):
             parent = event.get("parent_tool_use_id")
             # Complete blocks supersede their live preview; emit pending deltas first.
@@ -110,6 +134,7 @@ class Events:
                 raise ValueError("Claude returned no schema-validated structured_output")
             self.finished = True
             self.structured = terminal
+            self.result_event = event
             pending = self.deltas.flush()
             usage = event.get("usage", {})
             def count(key):

@@ -118,9 +118,9 @@
   session ID to Claude, or vice versa. Existing run history is retained.
 - `capabilities --model <model>` reports the selected provider before submission.
   Do not infer Claude capabilities from Codex's app-server schema.
-- Claude supports every task mode. Work runs to completion in one print run, so native Goal
-  and Fast options are accepted as no-ops. Plan runs in Claude's `plan` permission mode;
-  plan-work routes then resume the same session to execute the approved plan.
+- Claude supports every task mode. Fast is accepted as a no-op; Goal uses Claude's `/goal`
+  (see [Native Fast and Goal](native-fast-goal.md#claude-goal)). Plan runs in Claude's `plan`
+  permission mode; plan-work routes then resume the same session to execute the approved plan.
 - Execution policies map to the nearest Claude permission mode, always with
   `--permission-prompts none`:
 

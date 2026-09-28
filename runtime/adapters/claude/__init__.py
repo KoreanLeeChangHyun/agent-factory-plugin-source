@@ -42,8 +42,16 @@ def discover_policy(args, working_root, *, sandbox=None, approval=None):
 
 
 def prepare(session, state, request):
+    from pathlib import Path
+    from storage.files import update_json
+    from .control import goal_objective
     validate({**session, **state.get("executionOptions", {}), "goalAction": state.get("goalAction")})
     session["backend"] = "claude-print"
+    objective = goal_objective(session, state, request)
+    state["goalObjective"] = objective
+    path = Path(state["statePath"])
+    update_json(path, path.parent / ".state.lock", lambda value: value.update({
+        "goalObjective": objective, "goal": session.get("goal"), "goalError": session.get("goalError")}))
 
 
 def uses_prompt_parts(session):

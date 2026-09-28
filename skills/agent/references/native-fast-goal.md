@@ -62,9 +62,22 @@
 - `cancel` / `clear`: remove objective.
 - `disable`: clear objective and turn Goal mode off.
 
+<a id="claude-goal"></a>
+
+### 3.3. Claude Goal
+
+- Claude sets the objective with `/goal <objective>` before the request in the same print run;
+  its Stop hook keeps working until the condition holds, and the Goal persists across resume.
+  Objectives over 4000 characters become a bounded "complete this run's request" condition.
+- The runtime records the Goal: `active` once Claude confirms it, `complete` on a successful
+  result, `paused` on failure. Tokens and time come from the run result; there is no budget.
+- Claude has no live control: `pause`, `cancel`, `clear` and `disable` stop an active run and
+  update the recorded Goal; the next run without Goal mode sends `/goal clear`. `reopen`
+  sends a new run with the recorded objective. `refresh` returns the last record.
+
 <a id="recovery-and-completion"></a>
 
-### 3.3. Recovery and completion
+### 3.4. Recovery and completion
 
 1. Confirm controls through later Goal events or refreshed state; acceptance alone is
    insufficient.

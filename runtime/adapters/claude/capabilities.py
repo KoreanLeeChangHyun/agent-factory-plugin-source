@@ -65,8 +65,8 @@ def _probe(executable):
                           if missing else f"Claude CLI --help exited with {result.returncode}")
     except (OSError, subprocess.TimeoutExpired) as error:
         diagnostic = f"Claude CLI unavailable: {error}"
-    # Fast and native Goal controls have no Claude equivalent; a print run already continues to completion.
-    supported = {"model": available, "reasoning": available, "fast": False, "goal": False,
+    # Claude has no Fast tier. Goal uses Claude's own /goal command, which print mode supports.
+    supported = {"model": available, "reasoning": available, "fast": False, "goal": available,
                  "plan": available, "instructionDelivery": available, "images": available,
                  "taskModes": list(TASK_MODES) if available else [], "automaticRequestHash": True,
                  "worktrees": available}

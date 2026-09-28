@@ -151,8 +151,22 @@ def command_inbox(runtime, args: argparse.Namespace) -> int:
 
 
 def command_cancel(runtime, args: argparse.Namespace) -> int:
-    root = runtime.resolve_project_root(args.project_root)
-    path = runtime.state_file(root, args.agent, args.run_id)
+    stop_run(runtime, runtime.resolve_project_root(args.project_root), args.agent, args.run_id)
+    runtime.emit(
+        {
+            "schemaVersion": runtime.SCHEMA_VERSION,
+            "kind": "ack",
+            "status": "cancelling",
+            "agentId": args.agent,
+            "runId": args.run_id,
+        }
+    )
+    return 0
+
+
+def stop_run(runtime, root: Path, agent: str, run_id: str) -> None:
+    """Request cancellation and empty the run's containment without emitting a response."""
+    path = runtime.state_file(root, agent, run_id)
     state = runtime.safe_read_json(path)
     if state.get("status") in runtime.TERMINAL_STATES:
         raise runtime.ContractError("run_terminal", "run is already terminal")
@@ -204,16 +218,6 @@ def command_cancel(runtime, args: argparse.Namespace) -> int:
             runtime.force_containment_stop(containment)
         if not runtime.wait_containment_empty(containment, runtime.PROCESS_KILL_TIMEOUT):
             raise runtime.ContractError("containment_not_empty", "managed containment did not become empty")
-    runtime.emit(
-        {
-            "schemaVersion": runtime.SCHEMA_VERSION,
-            "kind": "ack",
-            "status": "cancelling",
-            "agentId": args.agent,
-            "runId": args.run_id,
-        }
-    )
-    return 0
 
 
 def heartbeat_stale(runtime, state: dict[str, Any], session: dict[str, Any]) -> bool:
@@ -395,5 +399,6 @@ def command_goal(runtime, args: argparse.Namespace) -> int:
     root = runtime.resolve_project_root(args.project_root)
     session = runtime.load_session(root, args.agent)
     services = GoalServices(runtime.emit, runtime.agent_directory, runtime.file_lock, runtime.iter_run_states, runtime.update_json,
-                            runtime.parse_args, runtime.submit, frozenset(runtime.ACTIVE_STATES), runtime.SCHEMA_VERSION)
+                            runtime.parse_args, runtime.submit, frozenset(runtime.ACTIVE_STATES), runtime.SCHEMA_VERSION,
+                            lambda agent, run_id: stop_run(runtime, root, agent, run_id))
     return runtime.adapters.for_session(session).goal_command(services, args, root, session)

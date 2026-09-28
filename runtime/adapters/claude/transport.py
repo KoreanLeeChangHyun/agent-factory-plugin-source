@@ -6,6 +6,7 @@ Launch arguments live in command.py and stream translation in events.py.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -16,14 +17,15 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from adapters.claude.command import (  # noqa: F401 - re-exported for callers and tests
-    EXECUTE_REQUEST, PLAN_MODES, PLAN_REQUEST, build_command, cli_command, planning_phases,
+    EXECUTE_REQUEST, PLAN_MODES, PLAN_REQUEST, build_command, cli_command, planning_phases, setup_messages,
 )
+from adapters.claude.control import goal_record, publish_goal
 from adapters.claude.events import Events  # noqa: F401
 from adapters.claude.policy import validate
 from execution.prompts import PromptParts
 from storage import paths as runtime_paths
 from storage.errors import ContractError
-from storage.files import safe_read_json
+from storage.files import now, safe_read_json
 
 
 def finish_planning(state, structured, *, execute_next):
@@ -55,8 +57,52 @@ def emit(event):
     print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
+class GoalTracker:
+    """Record the Goal Claude confirmed for this run and its outcome."""
+    def __init__(self, session, state):
+        self.session, self.state = session, state
+        self.objective = state.get("goalObjective")
+        self.clearing = not self.objective and bool(session.get("goal"))
+        self.confirmed = False
+        self.session_id = None
+
+    def publish(self, goal, error=None):
+        publish_goal(self.state, self.session, goal, now(), error)
+        emit({"type": "goal.updated", "thread_id": self.session_id, "goal": goal})
+        if error:
+            emit({"type": "goal.error", "message": error})
+
+    def observe(self, events):
+        """Publish once Claude answers the setup command, before the goal work streams."""
+        if self.confirmed or not events.visible or not events.setup_ids:
+            return
+        self.confirmed, self.session_id = True, events.session
+        reply = " ".join(events.setup_replies).strip()
+        if self.objective and not reply.startswith("Goal set:"):
+            self.objective = None
+            self.publish(None, "Claude did not set the Goal: " + (reply or "no confirmation"))
+        elif self.objective:
+            self.publish(goal_record(self.session_id, self.objective, "active"))
+        elif self.clearing:
+            self.publish(None)
+
+    def finish(self, events, *, succeeded):
+        if not self.objective or not self.confirmed:
+            return
+        result = events.result_event or {}
+        usage = result.get("usage", {})
+        tokens = sum(value for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
+                     if type(value := usage.get(key)) is int and value >= 0)
+        seconds = result.get("duration_ms")
+        seconds = seconds // 1000 if type(seconds) is int and seconds >= 0 else 0
+        # Claude stops successfully only after its Stop hook judged the condition met.
+        self.publish(goal_record(self.session_id, self.objective, "complete" if succeeded else "paused",
+                                 tokens=tokens, seconds=seconds))
+
+
 def main():
     process = None
+    goal = events = None
     try:
         state = safe_read_json(Path(sys.argv[1]))
         runtime_paths.bind(state["runtimeBinding"])
@@ -68,20 +114,28 @@ def main():
                        if key not in ("CODEX_THREAD_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")}
         phases = planning_phases(state)
         session_id = session.get("sessionId")
+        goal = None
         for index, phase in enumerate(phases):
             command, message = cli_command({**session, "sessionId": session_id}, state, parts, phase)
+            setup = setup_messages(session, state, phase) if goal is None else []
+            if setup:
+                goal = GoalTracker(session, state)
             # No new session/group: parent runtime containment must include all descendants.
             process = subprocess.Popen(command, cwd=session.get("workingDirectory", session["projectRoot"]),
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, text=True,
                                        encoding="utf-8", env=environment)
-            process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+            for line in (*setup, message):
+                process.stdin.write(json.dumps(line, ensure_ascii=False) + "\n")
             process.stdin.close()
-            events = Events(session_id, terminal=phase != "plan", request_id=message["uuid"])
+            events = Events(session_id, terminal=phase != "plan", request_id=message["uuid"],
+                            setup_ids=[line["uuid"] for line in setup])
             for line in process.stdout:
                 translated = events.translate(json.loads(line))
                 # A resumed execution phase re-announces the same thread; the runtime saw it already.
                 if index and translated and translated[0].get("type") == "thread.started":
                     translated = translated[2:]
+                if setup:
+                    goal.observe(events)
                 for event in translated:
                     emit(event)
             code = process.wait()
@@ -89,12 +143,17 @@ def main():
                 raise ValueError(f"Claude exited with {code} before acknowledging the current request")
             if code != 0 or not events.finished:
                 raise ValueError(f"Claude exited with {code}; terminal result received: {events.finished}")
+            if setup:
+                goal.finish(events, succeeded=True)
             session_id = events.session
             process.stdout.close()
             if phase == "plan" and not finish_planning(state, events.structured, execute_next=len(phases) > 1):
                 return 0
         return 0
     except (OSError, ValueError, KeyError, ContractError) as error:
+        if goal is not None:
+            with contextlib.suppress(Exception):
+                goal.finish(events, succeeded=False)
         emit({"type": "error", "message": str(error)})
         return 1
     finally:

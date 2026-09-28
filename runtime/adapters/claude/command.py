@@ -8,6 +8,7 @@ import sys
 import uuid
 
 from adapters.claude.capabilities import MODELS
+from adapters.claude.control import goal_commands
 from adapters.claude.policy import effort, permission_arguments, validate
 from storage.files import atomic_write, atomic_write_json, safe_read_bytes, safe_read_json
 
@@ -72,3 +73,11 @@ def cli_command(session, state, parts, phase=None):
         content.append({"type": "image", "source": {"type": "base64", "media_type": image["mediaType"],
                        "data": base64.b64encode(safe_read_bytes(Path(image["path"]), None)).decode("ascii")}})
     return command, {"type": "user", "uuid": str(uuid.uuid4()), "message": {"role": "user", "content": content}}
+
+
+def setup_messages(session, state, phase=None):
+    """User messages sent before the request; the plan phase never sets or clears a Goal."""
+    if phase == "plan":
+        return []
+    return [{"type": "user", "uuid": str(uuid.uuid4()), "message": {"role": "user", "content": command}}
+            for command in goal_commands(session, state)]

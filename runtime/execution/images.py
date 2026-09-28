@@ -21,7 +21,8 @@ IMAGE_TYPES = {
 
 
 def validate_execution(images: list[dict[str, Any]], effective: dict[str, Any]) -> None:
-    if images and effective.get("goalMode") is True:
+    # Codex Goal activation has no image field; Claude sends /goal as a separate message.
+    if images and effective.get("goalMode") is True and effective.get("provider") != "claude":
         raise ContractError(
             "image_goal_unsupported",
             "Native Goal activation cannot accept images; disable Goal mode for this turn",

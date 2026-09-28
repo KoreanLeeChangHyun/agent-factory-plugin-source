@@ -214,11 +214,11 @@ def create_session(runtime, args: argparse.Namespace, project_root: Path) -> dic
     codex = runtime.portable.native_executable(codex, provider)
     options = runtime.requested_execution(args)
     capabilities = runtime.adapters.adapter(provider).inspect_capabilities(codex, refresh=True, runtime_home=runtime.runtime_paths.resolve(project_root, create=True)["home"])
-    # Claude print runs already continue to completion and have no Fast tier; both options are no-ops there.
-    if provider != "claude" and (options.get("fast") is True or options.get("goalMode") is True):
-        for key, field in (("fast", "fast"), ("goalMode", "goal")):
-            if options.get(key) is True and not capabilities["submit"][field]:
-                raise runtime.ContractError("native_unsupported", capabilities["diagnostic"] or f"Native {field} unsupported")
+    # Claude has no Fast tier; the option is a no-op there. Goal must be supported by every provider.
+    checked = (("goalMode", "goal"),) if provider == "claude" else (("fast", "fast"), ("goalMode", "goal"))
+    for key, field in checked:
+        if options.get(key) is True and not capabilities["submit"][field]:
+            raise runtime.ContractError("native_unsupported", capabilities["diagnostic"] or f"Native {field} unsupported")
     created_at = runtime.now()
     session = {
         **provider_adapter.session_fields(codex, capabilities),
