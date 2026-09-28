@@ -144,6 +144,11 @@ class ClaudeAdapterTests(unittest.TestCase):
             {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "echo hello"}}]}})
         self.assertEqual(started[0]["type"], "native.commentary")
         self.assertEqual(started[1]["item"]["command"], "echo hello")
+        self.assertEqual(events.translate({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
+            "five_hour": {"utilization": 0.25}, "seven_day": {"utilization": 0.19}}}}),
+            [{"type": "provider.rate_limits", "weeklyUsedPercent": 19.0}])
+        self.assertEqual(events.translate({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
+            "five_hour": {"utilization": 0.25}}}}), [])
         done = events.translate({"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": "failure", "is_error": True}]}})
         self.assertEqual(done[0]["item"]["status"], "failed")

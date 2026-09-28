@@ -305,7 +305,11 @@ def run_codex_attempt(
                     and type(event.get("contextWindowTokens")) is int):
                 context_usage = {"usedTokens": event["usedTokens"], "contextWindowTokens": event["contextWindowTokens"]}
                 runtime.update_json(state_path, state_path.parent / ".state.lock",
-                            lambda value: value.update({"contextUsage": context_usage}))
+                            lambda value: value.update({"contextUsage": {**(value.get("contextUsage") or {}), **context_usage}}))
+            if event.get("type") == "provider.rate_limits" and type(event.get("weeklyUsedPercent")) in (int, float):
+                weekly = {"weeklyUsedPercent": event["weeklyUsedPercent"]}
+                runtime.update_json(state_path, state_path.parent / ".state.lock",
+                            lambda value: value.update({"contextUsage": {**(value.get("contextUsage") or {}), **weekly}}))
             if event.get("type") == "goal.error":
                 runtime.record_goal_uncertainty(state_path, str(event.get("message", "Native Goal state unconfirmed")))
             if event.get("type") == "thread.started":
