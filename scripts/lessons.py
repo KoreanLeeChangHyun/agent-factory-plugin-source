@@ -5,13 +5,13 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime
-import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import tempfile
+import time
 
 import yaml
 from catalog_documents import read_lesson
@@ -57,6 +57,30 @@ def atomic(path, content):
 def locked(root):
     # Outside the document tree; coordinates concurrent managed writers.
     key = hashlib.sha256(str(root).encode()).hexdigest()
+    if os.name == 'nt':
+        # Per-user %TEMP% is already private through the profile ACL.
+        import getpass
+        import msvcrt
+        owner = ''.join(c if c.isalnum() else '_' for c in getpass.getuser())
+        directory = Path(tempfile.gettempdir()) / f'agent-factory-lessons-{owner}'
+        directory.mkdir(exist_ok=True)
+        if directory.is_symlink():
+            raise ValueError('Unsafe lesson lock directory')
+        fd = os.open(directory / key, os.O_CREAT | os.O_RDWR, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            while True:
+                try:
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
     directory = Path(tempfile.gettempdir()) / f'agent-factory-lessons-{os.getuid()}'
     directory.mkdir(mode=0o700, exist_ok=True)
     if directory.is_symlink() or directory.stat().st_uid != os.getuid():

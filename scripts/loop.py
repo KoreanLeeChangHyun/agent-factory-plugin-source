@@ -997,6 +997,17 @@ def launch_driver(args, result):
             raise OSError("The loop driver service was not accepted: " + launched.stderr.strip())
         return
     with open(log_path, "ab") as log:
+        if sys.platform == "win32":
+            # Leave Main's kill-on-close job so the driver outlives the Main run.
+            import windows_process
+            for detach in (True, False):
+                try:
+                    subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True,
+                                     creationflags=windows_process.creation_flags(detach=detach))
+                    return
+                except PermissionError:
+                    if not detach:
+                        raise
         subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                          start_new_session=True, close_fds=True)
 

@@ -66,6 +66,7 @@ from runtime_storage import response_operation
 import execution_policy
 from runtime_errors import ContractError
 from token_usage import UsageAccumulator, record_attempt
+import portable
 import process_containment
 from process_containment import (
     require_managed_platform,
@@ -129,8 +130,8 @@ from exec_cli import (
     validate_submit_options,
 )
 
-# Diagnostic/refusal paths must load even where POSIX runtime imports cannot.
-if sys.platform in {"linux", "darwin"}:
+# Diagnostic/refusal paths must load even where runtime imports cannot.
+if sys.platform in portable.SUPPORTED_PLATFORMS:
     import adapters
     import paths as runtime_paths
     import image_input
@@ -340,12 +341,13 @@ def create_session(args: argparse.Namespace, project_root: Path) -> dict[str, An
     if os.sep not in codex:
         from shutil import which
 
-        resolved = which(codex)
+        resolved = which(codex) or portable.find_cli(codex)
         if resolved is None:
             raise ContractError(f"{provider}_not_found", f"{provider} executable was not found")
         codex = resolved
     else:
         codex = str(Path(codex).resolve(strict=True))
+    codex = portable.native_executable(codex, provider)
     options = requested_execution(args)
     capabilities = adapters.adapter(provider).inspect_capabilities(codex, refresh=True, runtime_home=runtime_paths.resolve(project_root, create=True)["home"])
     # Claude print runs already continue to completion and have no Fast tier; both options are no-ops there.
@@ -538,6 +540,7 @@ def _launch_fallback_worker(
     try:
         process, identity, release_fd = spawn_contained_process(
             command,
+            detach=True,
             cwd=project_root,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -559,6 +562,10 @@ def _launch_fallback_worker(
                     "workerIdentity": identity,
                     "containmentAttempt": int(state.get("containmentAttempt", 0)) + 1,
                     "containment": {
+                        "kind": "windows-job",
+                        "identity": identity,
+                        "weakerDescendantContainment": False,
+                    } if portable.WINDOWS else {
                         "kind": "process-group",
                         "identity": identity,
                         "weakerDescendantContainment": True,
@@ -1753,6 +1760,9 @@ def command_inbox(args: argparse.Namespace) -> int:
 def pid_alive(pid: object) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
+    if portable.WINDOWS:
+        # os.kill(pid, 0) would terminate the process on Windows.
+        return process_containment.process_group_exists(pid)
     try:
         os.kill(pid, 0)
         return True
@@ -1802,7 +1812,7 @@ def command_cancel(args: argparse.Namespace) -> int:
                 os.kill(int(worker_identity["pid"]), signal.SIGTERM)
     else:
         containment = _validate_state_containment(state)
-        if containment["kind"] == "process-group":
+        if containment["kind"] in {"process-group", "windows-job"}:
             codex_identity = state.get("codexIdentity")
             if codex_identity is not None and process_identity_status(codex_identity) in {"unknown", "mismatch"}:
                 raise ContractError(

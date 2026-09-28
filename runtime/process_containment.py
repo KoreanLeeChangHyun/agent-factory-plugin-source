@@ -1,4 +1,4 @@
-"""Linux/macOS process identity and containment for managed Agent runs."""
+"""Linux/macOS/Windows process identity and containment for managed Agent runs."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import hashlib
 import os
 import re
 import select
+import threading
 import shutil
 import signal
 import stat
@@ -21,6 +22,11 @@ from typing import Any, IO, Sequence
 
 from runtime_errors import ContractError
 import sandbox_diagnostics
+
+WINDOWS = sys.platform == "win32"
+if WINDOWS:
+    import msvcrt
+    import windows_process
 
 PROCESS_TERM_TIMEOUT = 5.0
 PROCESS_KILL_TIMEOUT = 5.0
@@ -99,6 +105,8 @@ def linux_process_identity(pid: int) -> dict[str, Any]:
 
 
 def boot_id() -> str:
+    if WINDOWS:
+        return windows_process.boot_id()
     if sys.platform == "darwin":
         import macos_process_identity
         return macos_process_identity.boot_id()
@@ -106,6 +114,8 @@ def boot_id() -> str:
 
 
 def process_identity(pid: int) -> dict[str, Any]:
+    if WINDOWS:
+        return windows_process.process_identity(pid)
     if sys.platform == "darwin":
         import macos_process_identity
         return macos_process_identity.process_identity(pid)
@@ -237,6 +247,16 @@ def validate_containment(value: object) -> dict[str, Any]:
         if not isinstance(identity, dict) or set(identity) != {"pid", "bootId", "startTicks"}:
             raise ContractError("containment_identity_invalid", "fallback containment identity is invalid")
         return value
+    if kind == "windows-job":
+        # Kill-on-close job owned by the bootstrap root: descendants cannot outlive it
+        # unless they deliberately break away (only Agent Factory's detached launches do).
+        expected = {"kind", "identity", "weakerDescendantContainment"}
+        if set(value) != expected or value.get("weakerDescendantContainment") is not False:
+            raise ContractError("containment_identity_invalid", "Windows job containment identity is invalid")
+        identity = value.get("identity")
+        if not isinstance(identity, dict) or set(identity) != {"pid", "bootId", "startTicks"}:
+            raise ContractError("containment_identity_invalid", "Windows job containment identity is invalid")
+        return value
     raise ContractError("containment_backend_invalid", "containment backend kind is invalid")
 
 
@@ -334,6 +354,9 @@ def containment_is_empty(containment: dict[str, Any]) -> bool:
     status = process_identity_status(identity)
     if status in {"unknown", "mismatch"}:
         raise ContractError("containment_identity_mismatch", "fallback containment identity does not match")
+    if WINDOWS:
+        # The root's exit closes the only job handle, which terminates the job.
+        return status == "dead"
     return status == "dead" and not process_group_exists(int(identity["pid"]))
 
 
@@ -359,6 +382,8 @@ def containment_bootstrap(args: argparse.Namespace) -> int:
         target = target[1:]
     if not target:
         raise ContractError("containment_target_invalid", "contained target is empty")
+    if WINDOWS:
+        return _windows_bootstrap(args, target)
     release = b""
     try:
         os.write(args.ready_fd, b"R")
@@ -374,9 +399,46 @@ def containment_bootstrap(args: argparse.Namespace) -> int:
     return 125
 
 
+def _windows_bootstrap(args: argparse.Namespace, target: list[str]) -> int:
+    """Windows has no exec: stay as the identified root and supervise the target."""
+    ready_fd = msvcrt.open_osfhandle(args.ready_fd, os.O_WRONLY)
+    release_fd = msvcrt.open_osfhandle(args.release_fd, os.O_RDONLY)
+    release = b""
+    try:
+        # Join the job before announcing readiness; failure leaves no "R".
+        windows_process.contain_current_process()
+        os.write(ready_fd, b"R")
+        release = os.read(release_fd, 1)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(ready_fd)
+        with contextlib.suppress(OSError):
+            os.close(release_fd)
+    if release != b"G":
+        return 125
+    # Console control events belong to the target; the root only relays its status.
+    for name in ("SIGINT", "SIGBREAK"):
+        with contextlib.suppress(AttributeError, ValueError, OSError):
+            signal.signal(getattr(signal, name), signal.SIG_IGN)
+    try:
+        child = subprocess.Popen(target)
+    except OSError:
+        return 127
+    returncode = child.wait()
+    # The job handle closes at process exit, terminating any remaining descendants.
+    return returncode if 0 <= returncode <= 255 else 1
+
+
 def spawn_contained_process(
-    command: Sequence[str], **popen_options: Any
+    command: Sequence[str], *, detach: bool = False, **popen_options: Any
 ) -> tuple[subprocess.Popen[str], dict[str, Any], int]:
+    """Start command behind a startup barrier in its own containment.
+
+    detach only matters on Windows: a detached process breaks away from the
+    caller's kill-on-close job so it can outlive the caller, like a new POSIX session.
+    """
+    if WINDOWS:
+        return _spawn_windows(command, detach=detach, **popen_options)
     boot_id()
     ready_read, ready_write = os.pipe()
     release_read, release_write = os.pipe()
@@ -441,6 +503,88 @@ def spawn_contained_process(
         os.close(ready_read)
 
 
+def _wait_ready(ready_read: int, timeout: float) -> bytes:
+    if not WINDOWS:
+        readable, _, _ = select.select([ready_read], [], [], timeout)
+        return os.read(ready_read, 1) if readable else b""
+    # Anonymous pipes cannot be selected on Windows; a daemon reader gives the bound.
+    received: list[bytes] = []
+
+    def read() -> None:
+        with contextlib.suppress(OSError):
+            received.append(os.read(ready_read, 1))
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(timeout)
+    return received[0] if received else b""
+
+
+def _spawn_windows(
+    command: Sequence[str], *, detach: bool, **popen_options: Any
+) -> tuple[subprocess.Popen[str], dict[str, Any], int]:
+    boot_id()
+    ready_read, ready_write = os.pipe()
+    release_read, release_write = os.pipe()
+    inherited = [msvcrt.get_osfhandle(ready_write), msvcrt.get_osfhandle(release_read)]
+    for handle in inherited:
+        os.set_handle_inheritable(handle, True)
+    bootstrap_command = [
+        sys.executable, str(EXEC_SCRIPT), "_bootstrap",
+        "--ready-fd", str(inherited[0]), "--release-fd", str(inherited[1]),
+        "--", *command,
+    ]
+    process: subprocess.Popen[str] | None = None
+    try:
+        try:
+            for flags in dict.fromkeys((
+                windows_process.creation_flags(detach=detach),
+                windows_process.creation_flags(detach=False),
+            )):
+                startup = subprocess.STARTUPINFO()
+                startup.lpAttributeList = {"handle_list": list(inherited)}
+                try:
+                    process = subprocess.Popen(
+                        bootstrap_command, close_fds=True, startupinfo=startup,
+                        creationflags=flags, **popen_options,
+                    )
+                    break
+                except PermissionError:
+                    # An outer job forbids breakaway: stay nested rather than fail.
+                    if flags == windows_process.creation_flags(detach=False):
+                        raise
+        finally:
+            os.close(ready_write)
+            os.close(release_read)
+    except Exception:
+        os.close(ready_read)
+        os.close(release_write)
+        raise
+    try:
+        identity = process_identity(process.pid)
+        if process_identity_status(identity) != "match":
+            raise ContractError(
+                "process_identity_mismatch",
+                "bootstrap identity changed immediately after process launch",
+            )
+        if _wait_ready(ready_read, CONTAINMENT_START_TIMEOUT) != b"R":
+            raise ContractError(
+                "containment_start_failed",
+                "contained process did not enter the startup barrier",
+            )
+        return process, identity, release_write
+    except Exception:
+        if "identity" in locals():
+            abort_contained_process(process, identity, release_write)
+        else:
+            os.close(release_write)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=PROCESS_TERM_TIMEOUT)
+        raise
+    finally:
+        os.close(ready_read)
+
+
 def release_contained_process(
     process: subprocess.Popen[str], identity: dict[str, Any], release_fd: int
 ) -> None:
@@ -450,7 +594,7 @@ def release_contained_process(
                 "process_identity_mismatch",
                 "contained process identity changed before startup release",
             )
-        if os.getpgid(process.pid) != process.pid:
+        if not WINDOWS and os.getpgid(process.pid) != process.pid:
             raise ContractError(
                 "process_group_invalid", "contained process group is not isolated"
             )
@@ -460,6 +604,9 @@ def release_contained_process(
 
 
 def process_group_exists(group_id: int) -> bool:
+    if WINDOWS:
+        # Job containment has no group query; the root process stands for the job.
+        return windows_process.pid_exists(group_id)
     try:
         os.killpg(group_id, 0)
         return True
@@ -486,6 +633,16 @@ def terminate_verified_group(
             "process_identity_mismatch",
             "active Codex identity no longer matches; refusing to signal",
         )
+    if WINDOWS:
+        if identity_status == "dead":
+            return
+        windows_process.terminate_identity(identity)
+        deadline = time.monotonic() + PROCESS_KILL_TIMEOUT
+        while process_identity_status(identity) == "match" and time.monotonic() < deadline:
+            if process is not None:
+                process.poll()
+            time.sleep(0.05)
+        return
     group_id = int(identity["pid"])
     if identity_status == "dead":
         if not process_group_exists(group_id):

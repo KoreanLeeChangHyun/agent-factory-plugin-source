@@ -22,6 +22,30 @@ class PreflightError(ValueError):
 from execution_canary import CANARY
 
 
+def _isolated_group():
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    return {"start_new_session": True}
+
+
+def _stop_group(process):
+    if sys.platform == "win32":
+        # taskkill /T follows the parent chain of the short-lived probe tree.
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        process.wait(timeout=0.5)
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=0.5)
+
+
 def _native_command(codex, policy, directory, project, canary):
     from .transport import Rpc, NativeError
     deadline = time.monotonic() + TIMEOUT - 1
@@ -31,7 +55,7 @@ def _native_command(codex, policy, directory, project, canary):
         process = subprocess.Popen([str(codex), "app-server", "--listen", "stdio://",
                                     *execution_policy.arguments(policy, directory)], cwd=project,
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                   text=True, start_new_session=True)
+                                   text=True, **_isolated_group())
         rpc = Rpc(process)
         rpc.call("initialize", {"clientInfo": {"name": "agent_factory_preflight", "version": "0.1.0"},
                                 "capabilities": {"experimentalApi": True}}, timeout=min(3, max(0.01, deadline - time.monotonic())))
@@ -52,15 +76,7 @@ def _native_command(codex, policy, directory, project, canary):
             if process.stdin:
                 process.stdin.close()
             if process.poll() is None:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    process.wait(timeout=0.5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=0.5)
+                _stop_group(process)
             if rpc is not None:
                 rpc.reader.join(timeout=0.1)
             if process.stdout:

@@ -10,6 +10,7 @@ import stat
 from pathlib import Path
 from typing import Any
 
+import portable
 from runtime_errors import ContractError
 
 SCHEMA_VERSION = "0.1.0"
@@ -89,12 +90,44 @@ def result_file_identity(info) -> dict[str, int]:
             ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")}
 
 
+def _open_caller_file_posix(absolute: Path, components: list[str],
+                            directory_flags: int, file_flags: int) -> int:
+    descriptor = os.open(absolute.anchor or os.sep, directory_flags)
+    try:
+        for component in components[:-1]:
+            next_descriptor = os.open(component, directory_flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+            if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise ContractError("capability_binding_invalid", "capability binding parent is unsafe")
+        file_descriptor = os.open(components[-1], file_flags, dir_fd=descriptor)
+    finally:
+        os.close(descriptor)
+    return file_descriptor
+
+
+def _open_caller_file_windows(absolute: Path) -> int:
+    """Without dir_fd, reject links on every component and bind the opened file to the final lstat."""
+    cursor = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        cursor /= part
+        if portable.is_link(cursor.lstat()):
+            raise ContractError("capability_binding_invalid", "capability binding path contains a link")
+    expected = cursor.lstat()
+    descriptor = os.open(absolute, os.O_RDONLY | portable.O_BINARY)
+    opened = os.fstat(descriptor)
+    if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+        os.close(descriptor)
+        raise ContractError("capability_binding_invalid", "capability binding changed while opening")
+    return descriptor
+
+
 def safe_read_caller_file(path: Path, limit: int, *,
                           stable: bool = False) -> bytes:
     """Read an explicit caller file without following any path component."""
     if ".." in path.parts:
         raise ContractError("capability_binding_invalid", "capability binding path contains traversal")
-    if (
+    if not portable.WINDOWS and (
         not hasattr(os, "O_NOFOLLOW")
         or not hasattr(os, "O_DIRECTORY")
         or not hasattr(os, "O_NONBLOCK")
@@ -108,20 +141,14 @@ def safe_read_caller_file(path: Path, limit: int, *,
     components = [part for part in absolute.parts if part not in {absolute.anchor, "."}]
     if not components:
         raise ContractError("capability_binding_invalid", "capability binding path is invalid")
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    directory_flags = os.O_RDONLY | portable.O_DIRECTORY | portable.O_NOFOLLOW
+    file_flags = os.O_RDONLY | portable.O_NOFOLLOW | portable.O_NONBLOCK
     descriptor = -1
     try:
-        descriptor = os.open(absolute.anchor or os.sep, directory_flags)
-        for component in components[:-1]:
-            next_descriptor = os.open(component, directory_flags, dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = next_descriptor
-            if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
-                raise ContractError("capability_binding_invalid", "capability binding parent is unsafe")
-        file_descriptor = os.open(components[-1], file_flags, dir_fd=descriptor)
-        os.close(descriptor)
-        descriptor = file_descriptor
+        if portable.WINDOWS:
+            descriptor = _open_caller_file_windows(absolute)
+        else:
+            descriptor = _open_caller_file_posix(absolute, components, directory_flags, file_flags)
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
             raise ContractError("capability_binding_invalid", "capability binding is not a regular file")

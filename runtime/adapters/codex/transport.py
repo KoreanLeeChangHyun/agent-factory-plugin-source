@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from collections import deque
 import contextlib
-import fcntl
 import hashlib
 import os
 import shutil
@@ -20,6 +19,7 @@ from pathlib import Path
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import portable
 from prompt_delivery import PromptParts
 
 
@@ -152,20 +152,15 @@ def inspect_capabilities(codex: str, *, refresh: bool = False, runtime_home=None
         paths.mkdir(directory)
         # A short bounded wait coalesces ordinary concurrent probes; a stuck
         # writer cannot add its full probe timeout to another caller's latency.
-        fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT | portable.O_NOFOLLOW | portable.O_NONBLOCK, 0o600)
         try:
             info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            if not stat.S_ISREG(info.st_mode) or not portable.private_to_user(info):
                 raise ValueError("unsafe capability cache lock")
-            deadline = time.monotonic() + .5
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        raise OSError("capability cache lock busy")
-                    time.sleep(.01)
+            try:
+                portable.lock_descriptor(fd, timeout=.5)
+            except BlockingIOError:
+                raise OSError("capability cache lock busy") from None
             cached = _cached_capabilities(paths, file, identity)
             if cached is not None:
                 return cached

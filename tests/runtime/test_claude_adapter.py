@@ -118,6 +118,9 @@ class ClaudeAdapterTests(unittest.TestCase):
             self.assertEqual(executed[executed.index("--resume") + 1], session["sessionId"])
             self.assertIn("plan above is approved", execute_message["message"]["content"][0]["text"])
             self.assertEqual(command[command.index("--resume") + 1], session["sessionId"])
+            self.assertIn("--replay-user-messages", command)
+            self.assertEqual(str(uuid.UUID(message["uuid"])), message["uuid"])
+            self.assertEqual(len({message["uuid"], plan_message["uuid"], execute_message["uuid"]}), 3)
             self.assertEqual(command[command.index("--model") + 1], "sonnet")
             transmitted_schema = json.loads(command[command.index("--json-schema") + 1])
             self.assertEqual(transmitted_schema, {key: value for key, value in original_schema.items() if key != "$schema"})
@@ -178,10 +181,64 @@ class ClaudeAdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             claude.Events(session_id).translate({"type": "system", "subtype": "init", "session_id": str(uuid.uuid4())})
 
+    def test_resume_drains_old_results_and_finishes_only_acknowledged_request(self):
+        session_id, request_id = str(uuid.uuid4()), str(uuid.uuid4())
+        init = {"type": "system", "subtype": "init", "session_id": session_id}
+        result = {"type": "result", "subtype": "success", "is_error": False, "session_id": session_id}
+        ack = {"type": "user", "uuid": request_id, "session_id": session_id,
+               "message": {"role": "user", "content": "current request"}}
+        events = claude.Events(session_id, request_id=request_id)
+        events.translate(init)
+        for stale in (result, {**result, "structured_output": {"resultText": "old answer"}},
+                      {**ack, "uuid": str(uuid.uuid4())}, {**ack, "parent_tool_use_id": "child"},
+                      {**ack, "session_id": str(uuid.uuid4())}):
+            self.assertEqual(events.translate(stale), [])
+            self.assertFalse(events.acknowledged)
+            self.assertFalse(events.finished)
+        events.translate(ack)
+        self.assertTrue(events.acknowledged)
+        with self.assertRaisesRegex(ValueError, "structured_output"):
+            events.translate(result)
+
+        # Exercise main's stream loop: it must not kill the child on an old result,
+        # launch a duplicate request, or report success when the current one is missing.
+        for ending, success in (([ack, {**result, "structured_output": {"resultText": "current answer"}}], True),
+                                ([], False), ([ack, result], False)):
+            with self.subTest(ending=ending), tempfile.TemporaryDirectory() as root:
+                state = {"runtimeBinding": {}, "role": "main"}
+                session = {"sessionId": session_id, "executionPolicy": POLICY, "projectRoot": root}
+                process = mock.Mock()
+                process.stdin = mock.Mock()
+                process.stdout = io.StringIO("\n".join(json.dumps(e) for e in [init, result, *ending]))
+                process.wait.return_value = 0
+                process.poll.return_value = 0
+                output = io.StringIO()
+                with mock.patch.object(claude.transport, "safe_read_json", side_effect=[state, session]), \
+                        mock.patch.object(claude.transport.runtime_paths, "bind"), \
+                        mock.patch.object(claude.transport, "cli_command", return_value=(["claude"], ack)), \
+                        mock.patch.object(claude.transport.subprocess, "Popen", return_value=process) as popen, \
+                        mock.patch.object(claude.transport.sys, "argv", ["transport", "state", "session"]), \
+                        mock.patch.object(claude.transport.sys, "stdin", io.StringIO(PromptParts("fixed", "request").encode())), \
+                        redirect_stdout(output):
+                    self.assertEqual(claude.transport.main(), 0 if success else 1)
+                popen.assert_called_once()
+                process.stdin.write.assert_called_once()
+                process.terminate.assert_not_called()
+                emitted = [json.loads(line) for line in output.getvalue().splitlines()]
+                finals = [e for e in emitted if e.get("item", {}).get("type") == "agent_message"]
+                self.assertEqual(len(finals), int(success))
+                if success:
+                    self.assertEqual(json.loads(finals[0]["item"]["text"])["resultText"], "current answer")
+                else:
+                    self.assertEqual(emitted[-1]["type"], "error")
+
     def test_capabilities_and_session_creation_use_claude_executable(self):
-        help_text = "--print --output-format --input-format --json-schema --permission-prompts --system-prompt-snapshot"
+        help_text = "--print --output-format --input-format --json-schema --permission-prompts --system-prompt-snapshot --replay-user-messages"
         with mock.patch.object(claude.capabilities.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=help_text)):
             capabilities = claude.inspect_capabilities("claude")
+        with mock.patch.object(claude.capabilities.subprocess, "run", return_value=mock.Mock(
+                returncode=0, stdout=help_text.replace("--replay-user-messages", ""))):
+            self.assertFalse(claude.inspect_capabilities("claude")["submit"]["model"])
         self.assertEqual(capabilities["submit"]["taskModes"], list(claude.capabilities.TASK_MODES))
         self.assertIn("plan-work-verification", capabilities["submit"]["taskModes"])
         self.assertTrue(capabilities["submit"]["plan"])

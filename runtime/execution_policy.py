@@ -82,7 +82,7 @@ def _json(text):
 
 def _open_regular(path):
     filename = Path(_path(path))
-    descriptor = os.open(filename, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    descriptor = os.open(filename, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise PolicyError("policy_invalid", "policy source must be a regular file")

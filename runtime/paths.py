@@ -6,13 +6,14 @@ Read-only discovery never initializes storage. Rebinding is an explicit operatio
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 import re
 import stat
 import uuid
 from pathlib import Path
+
+import portable
 
 VERSION = 1
 PROJECT_ID = re.compile(r"project-[a-f0-9]{32}\Z")
@@ -38,7 +39,7 @@ def inspect(path: Path, *, missing=False):
             if missing:
                 return
             raise
-        if stat.S_ISLNK(info.st_mode):
+        if portable.is_link(info):
             raise ValueError('runtime symlink is forbidden')
         if cursor != path and not stat.S_ISDIR(info.st_mode):
             raise ValueError('runtime ancestor is not a directory')
@@ -47,6 +48,16 @@ def inspect(path: Path, *, missing=False):
 
 def mkdir(path: Path):
     path = absolute(path)
+    if portable.WINDOWS:
+        # No directory descriptors: create component-wise and reject links each step.
+        cursor = Path(path.anchor)
+        for part in path.parts[1:]:
+            cursor /= part
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(cursor, 0o700)
+            if portable.is_link(cursor.lstat()) or not cursor.is_dir():
+                raise ValueError('runtime symlink is forbidden')
+        return
     # Traverse by descriptors so ancestor replacement cannot redirect mkdir.
     fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -59,7 +70,7 @@ def mkdir(path: Path):
             os.close(fd)
             fd = next_fd
         info = os.fstat(fd)
-        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        if not portable.private_to_user(info):
             raise ValueError('managed directory must be private and owned by this user')
     finally:
         os.close(fd)
@@ -67,12 +78,12 @@ def mkdir(path: Path):
 
 def read(path: Path):
     inspect(path)
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    fd = os.open(path, os.O_RDONLY | portable.O_NOFOLLOW | portable.O_NONBLOCK | portable.O_BINARY)
     with os.fdopen(fd, 'rb') as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > 4 * 1024 * 1024:
             raise ValueError('invalid registry file')
-        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        if not portable.private_to_user(info):
             raise ValueError('registry file must be private')
         return json.loads(stream.read(4 * 1024 * 1024 + 1))
 
@@ -80,29 +91,25 @@ def read(path: Path):
 def write(path: Path, value):
     inspect(path, missing=True)
     temporary = path.with_name('.' + path.name + '.' + uuid.uuid4().hex)
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as stream:
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | portable.O_NOFOLLOW | portable.O_BINARY, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
         json.dump(value, stream, sort_keys=True, indent=2)
         stream.write('\n')
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(temporary, path)
-    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    portable.replace(temporary, path)
+    portable.fsync_directory(path.parent)
 
 
 @contextlib.contextmanager
 def lock(home: Path):
     mkdir(home)
-    fd = os.open(home / '.registry.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    fd = os.open(home / '.registry.lock', os.O_RDWR | os.O_CREAT | portable.O_NOFOLLOW, 0o600)
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        if not stat.S_ISREG(info.st_mode) or not portable.private_to_user(info):
             raise ValueError('registry lock must be a private regular file')
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        portable.lock_descriptor(fd)
         yield
     finally:
         os.close(fd)

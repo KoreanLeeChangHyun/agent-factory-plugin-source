@@ -32,7 +32,7 @@ MAX_EVENTS_BYTES = None
 MAX_STDERR_BYTES = None
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 EXEC_SCRIPT = PLUGIN_ROOT / "scripts" / "exec.py"
-if sys.platform in {"linux", "darwin"}:
+if sys.platform in {"linux", "darwin", "win32"}:
     import paths as runtime_paths
 
 class AttemptFailure(Exception):
