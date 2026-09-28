@@ -11,7 +11,9 @@ metadata:
   `runtime/` and `scripts/`; it is two levels above this `SKILL.md`.
 - This is a catalog only. Before running a tool, follow the owning Skill's rules; they
   remain the single source for arguments, authority and failure handling.
-- Run every tool as `python3 <plugin-root>/scripts/<script> ...`; `--help` lists its options.
+- Run every tool as `python3 <plugin-root>/scripts/<script> ...`.
+- `references/usage.md`: every script's and subcommand's arguments, generated from its
+  `--help`. Read only the section for the tool you are about to run.
 
 <a id="catalog"></a>
 

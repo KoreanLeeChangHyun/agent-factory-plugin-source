@@ -29,3 +29,4 @@
 - Follow Convention's [development contract](skills/convention/references/development.md) for shared change and Git authority boundaries.
 </agent-factory>
 </INSTRUCTIONS>
+- After adding or changing a script or its arguments, run `python3 distribution/tool_usage.py` to regenerate `skills/tool/references/usage.md`.

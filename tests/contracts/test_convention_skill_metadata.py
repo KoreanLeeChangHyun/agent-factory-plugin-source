@@ -301,3 +301,10 @@ class ToolCatalogTests(unittest.TestCase):
             with self.subTest(link=target):
                 self.assertTrue((SKILLS / "tool" / target).resolve().is_file())
 
+    def test_tool_usage_reference_matches_every_script_help(self) -> None:
+        import subprocess
+        import sys
+        result = subprocess.run([sys.executable, str(ROOT / "distribution" / "tool_usage.py"), "--check"],
+                                capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
