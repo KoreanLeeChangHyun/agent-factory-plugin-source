@@ -26,7 +26,7 @@
 
 <a id="systemd-backend"></a>
 
-### 4.1. Managed cancellation
+### 2.1. Managed cancellation
 
 - Cancel through `exec.py cancel` with the exact Agent and run identity.
 - Check the resulting status; request acceptance alone does not prove process termination.
@@ -34,7 +34,7 @@
 
 <a id="fallback"></a>
 
-### 4.2. Containment limitations
+### 2.2. Containment limitations
 
 - `weakerDescendantContainment: true` means detached descendants may escape
   process-group cancellation. Report this limitation when termination is uncertain.
@@ -47,7 +47,7 @@
 
 <a id="authority-and-configuration"></a>
 
-### 5.1. Authority and configuration
+### 3.1. Authority and configuration
 
 - Bind allowed capabilities and effects to the request and receipt. Capability availability
   grants no additional execution authority; keep credentials outside binding files.
@@ -59,7 +59,7 @@
 
 <a id="validation"></a>
 
-### 5.2. Validation
+### 3.2. Validation
 
 - Supply regular, bounded JSON files without symlinks or credentials.
 - Use the canonical binding path and hash returned by the runtime.

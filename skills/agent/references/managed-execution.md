@@ -8,7 +8,7 @@
 
 <a id="prompts-and-sessions"></a>
 
-### 3.1. Prompts and sessions
+### 1.1. Prompts and sessions
 
 - Managed roles are `main`, `work` and `verification`; follow the role prompt supplied
   for the current run.
@@ -35,7 +35,7 @@
 
 <a id="run-files-and-retries"></a>
 
-### 3.2. Run files and retries
+### 1.2. Run files and retries
 
 - New runs return `status`, the exact `resultPath`, and a nonempty `resultText` in the
   final structured response.
@@ -85,7 +85,7 @@
 
 <a id="cli-and-receipts"></a>
 
-### 3.3. CLI and receipts
+### 1.3. CLI and receipts
 
 - Public exec/loop JSON responses include additive `operation` metadata:
   `{ "schemaVersion": 1, "provider": "agent-factory", "script": "exec.py", "action": "submit" }`.
