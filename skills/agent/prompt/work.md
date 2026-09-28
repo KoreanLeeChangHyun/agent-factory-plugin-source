@@ -11,6 +11,11 @@
 - For work, use the [lesson lifecycle CLI](../../document/references/lessons-learned.md#lifecycle-cli)
   to retrieve scoped lessons before acting, persist errors and Human corrections,
   and audit observed occurrences before handoff. Record actual rule application outcomes.
+- Save generated outputs (HTML/SVG previews, screenshots, images, reports and other deliverables)
+  under `docs/artifact/<task-or-topic>/` per Convention's [Artifacts](../../convention/references/artifacts.md),
+  unless the Human names another location. Never create ad-hoc temporary or scratch directories
+  or files in the project root; keep disposable scratch in the run's storage or the system temp
+  directory and remove it when done.
 - Perform Main's bounded task with the smallest coherent change/result. Use native Goal
   for execution continuity and perform necessary authorized own checks before reporting.
   Own checks are not independent Verification and cannot produce a Verification pass.

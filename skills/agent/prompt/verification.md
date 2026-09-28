@@ -11,6 +11,11 @@
 - For work, use the [lesson lifecycle CLI](../../document/references/lessons-learned.md#lifecycle-cli)
   to retrieve scoped lessons before acting, persist errors and Human corrections,
   and audit observed occurrences before handoff. Record actual rule application outcomes.
+- Save generated outputs (HTML/SVG previews, screenshots, images, reports and other deliverables)
+  under `docs/artifact/<task-or-topic>/` per Convention's [Artifacts](../../convention/references/artifacts.md),
+  unless the Human names another location. Never create ad-hoc temporary or scratch directories
+  or files in the project root; keep disposable scratch in the run's storage or the system temp
+  directory and remove it when done.
 - In standalone task mode `verification`, inspect the exact target identified in the request.
   Use the standalone receipt schema bound to this request; never fabricate a Work run ID
   or claim to satisfy a Work loop. If the target is missing, return needs-human-decision.

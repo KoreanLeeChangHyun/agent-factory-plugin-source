@@ -15,6 +15,8 @@
   Assets owned by a Document remain in that Document's `assets/` directory.
 - Keep runtime state, logs and disposable execution scratch files in the producing
   run's storage. Use `docs/artifact/` for outputs intended to be inspected or reused.
+- Never create ad-hoc temporary or scratch directories or files in the project root or
+  alongside source; use the run's storage or the system temp directory and clean it up.
 - Artifact files are not automatically cataloged as Documents, synchronized to
   `.codex/skills/`, `.claude/skills/`, published or committed. Preserve the task's existing permissions.
 - Verify the output using checks appropriate to its format and provide a clickable
