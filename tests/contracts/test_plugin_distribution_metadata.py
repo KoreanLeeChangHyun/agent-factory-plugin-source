@@ -30,7 +30,8 @@ SEMVER = re.compile(
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
-CACHEBUSTER_VERSION = re.compile(r"^1\.0\.16\+codex\.\d{14}$")
+RELEASE_VERSION = json.loads((ROOT / "distribution" / "package.json").read_text(encoding="utf-8"))["version"]
+CACHEBUSTER_VERSION = re.compile(rf"^{re.escape(RELEASE_VERSION)}\+codex\.\d{{14}}$")
 README_PATHS = (
     CODEX / "README.md",
     CODEX / "README.ko.md",
@@ -67,8 +68,8 @@ class PluginDistributionMetadataTests(unittest.TestCase):
                     ), "Former translations must link to the maintained README")
                     continue
                 normalized = " ".join(readme.split())
-                self.assertIn("extension `1.0.16`", normalized)
-                self.assertIn("1.0.16+codex.<token>", readme)
+                self.assertIn(f"extension `{RELEASE_VERSION}`", normalized)
+                self.assertIn(f"{RELEASE_VERSION}+codex.<token>", readme)
                 self.assertIn("agent-factory", readme)
                 for marker in README_CONTRACT_MARKERS:
                     self.assertIn(marker, normalized)
