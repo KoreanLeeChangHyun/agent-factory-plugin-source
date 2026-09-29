@@ -9,6 +9,8 @@ _temporary = tempfile.TemporaryDirectory(prefix='af-test-home-')
 os.environ['AGENT_FACTORY_HOME'] = str(Path(_temporary.name).resolve() / 'runtime')
 os.environ.pop('AGENT_FACTORY_PARENT_STATE', None)
 os.environ.pop('CODEX_THREAD_ID', None)
+# A managed session's shared Codex pool would reroute native entrypoints under test.
+os.environ.pop('AGENT_FACTORY_CODEX_POOL', None)
 os.environ['AGENT_FACTORY_EXECUTION_POLICY'] = json.dumps({
     'schemaVersion': 1, 'sandboxPolicy': {'type': 'danger-full-access', 'network_access': True}, 'approvalPolicy': 'never'
 })

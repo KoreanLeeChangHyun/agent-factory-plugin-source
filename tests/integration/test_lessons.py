@@ -127,3 +127,11 @@ def test_json_only_storage_and_legacy_update_guard(tmp_path):
     with pytest.raises(ValueError, match='migrated'):
         lessons.operate(tmp_path, 'resolve', dict(id='demo', cause='known', solution='fix', verification='pass', evidence='test'))
     assert not path.exists()
+
+
+def test_input_errors_name_the_expected_action(tmp_path):
+    with pytest.raises(ValueError, match='scope must be a nonempty string, not dict'):
+        lessons.operate(tmp_path, 'retrieve', dict(query='failure', scope={'name': 'project-a'}))
+    seed(tmp_path)
+    with pytest.raises(ValueError, match='Only active rules may be applied; record a recurrence'):
+        lessons.operate(tmp_path, 'apply', dict(id='demo', runId='r1', outcome='recurrence', evidence='test'))
