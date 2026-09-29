@@ -528,20 +528,33 @@ def test_linked_references_and_assets_sync_without_changing_links(tmp_path):
     assert json.loads(run(tmp_path).stdout)['changes'] == []
 
 
-def test_claude_receives_the_same_owned_output_and_hosts_fail_independently(tmp_path):
+def test_every_host_receives_the_same_output_and_a_conflict_blocks_all_hosts(tmp_path):
     source = package(tmp_path, "skills")
     assert run(tmp_path).returncode == 0
-    for host in (".codex", ".claude"):
+    for host in (".codex", ".claude", ".agents"):
         assert (tmp_path / host / "skills/info-example/SKILL.md").read_bytes() == (source / "SKILL.md").read_bytes()
         assert (tmp_path / host / ".document-sync/manifest.json").is_file()
-    # An independent edit under .claude blocks only Claude; Codex still updates.
+    clean = run(tmp_path, "--check")
+    assert clean.returncode == 0 and json.loads(clean.stdout) == {
+        "hosts": ["codex", "claude", "antigravity"], "outdated": [], "errors": []}
+    # An independent edit under .claude blocks every host, so the three copies never diverge.
     (tmp_path / ".claude/skills/info-example/SKILL.md").write_text("edited")
     (source / "SKILL.md").write_text("# 변경\n", encoding="utf-8")
+    checked = run(tmp_path, "--check")
+    assert checked.returncode == 1
+    report = json.loads(checked.stdout)
+    assert report["outdated"] == ["codex", "antigravity"] and report["errors"][0].startswith("claude:")
     result = run(tmp_path)
-    assert result.returncode == 1 and "claude:" in result.stderr and "codex:" not in result.stderr
-    assert (tmp_path / ".codex/skills/info-example/SKILL.md").read_text(encoding="utf-8") == "# 변경\n"
+    assert result.returncode == 1 and "claude:" in result.stderr and "No host changed" in result.stderr
+    for host in (".codex", ".agents"):
+        assert (tmp_path / host / "skills/info-example/SKILL.md").read_bytes() != (source / "SKILL.md").read_bytes()
     assert (tmp_path / ".claude/skills/info-example/SKILL.md").read_text() == "edited"
-    only_codex = subprocess.run([sys.executable, str(SCRIPT), "--project-root", str(tmp_path), "--host", "codex"],
-                                text=True, capture_output=True)
-    assert only_codex.returncode == 0, only_codex.stderr
+    # Reconcile uses docs/skills as authoritative and brings all three back together.
+    assert run(tmp_path, "--reconcile").returncode == 0
+    for host in (".codex", ".claude", ".agents"):
+        assert (tmp_path / host / "skills/info-example/SKILL.md").read_text(encoding="utf-8") == "# 변경\n"
+    assert json.loads(run(tmp_path, "--check").stdout)["outdated"] == []
+    removed = subprocess.run([sys.executable, str(SCRIPT), "--project-root", str(tmp_path), "--host", "codex"],
+                             text=True, capture_output=True)
+    assert removed.returncode == 2  # Single-host runs are gone.
 
