@@ -27,6 +27,10 @@
     "claude": {
       "repository": "https://github.com/KoreanLeeChangHyun/agent-factory-claude-plugin",
       "version": "{version}"
+    },
+    "antigravity": {
+      "repository": "https://github.com/KoreanLeeChangHyun/agent-factory-antigravity-plugin",
+      "version": "{version}"
     }
   },
   "payload": [

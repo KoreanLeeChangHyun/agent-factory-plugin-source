@@ -1,0 +1,5 @@
+{
+  "name": "agent-factory",
+  "version": "{{hostVersion}}",
+  "description": "{{description}}"
+}
