@@ -31,6 +31,7 @@ Generated hosts:
 
 - Codex: <https://github.com/KoreanLeeChangHyun/agent-factory-codex-plugin>
 - Claude Code: <https://github.com/KoreanLeeChangHyun/agent-factory-claude-plugin>
+- Antigravity: <https://github.com/KoreanLeeChangHyun/agent-factory-antigravity-plugin>
 
 Adding a host means adding `distribution/hosts/<host>/` templates and a
 `hosts.<host>` entry in `distribution/package.json`; the payload stays shared.
