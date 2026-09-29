@@ -1,6 +1,9 @@
 """Retained connections keep exact sessions and clean up on owner/client loss."""
 import runtime_test_home
 import json
+import io
+from unittest import mock
+from contextlib import redirect_stdout, redirect_stderr
 import os
 import socket
 import subprocess
@@ -63,16 +66,31 @@ class ConnectionPoolTests(unittest.TestCase):
                                 if 'poolDone' in event: break
                             self.assertEqual(events[-1].get('reusable'), reusable, events)
                             if reusable: self.assertTrue(any(e.get('type')=='item.completed' for e in events),events)
-                send(); send()
+                send()
+                # Startup has moved to idle time, without starting another turn.
+                deadline=time.monotonic()+5
+                while True:
+                    calls=[json.loads(line) for line in fake.with_suffix('.log').read_text().splitlines()]
+                    initialized=[row for row in calls if row[1]=='initialize']
+                    if len(initialized)==2: break
+                    if time.monotonic()>deadline: self.fail('next connection was not prepared')
+                    time.sleep(.01)
+                prepared_pid=initialized[-1][0]
+                self.assertEqual(sum(row[1]=='turn/start' for row in calls),1)
+                self.assertEqual(sum(row[1]=='thread/resume' for row in calls),1)
+                send()
                 calls=[json.loads(line) for line in fake.with_suffix('.log').read_text().splitlines()]
-                self.assertEqual(len({row[0] for row in calls}),2)
-                self.assertEqual(sum(row[1]=='initialize' for row in calls),2)
                 self.assertEqual([row[2]['threadId'] for row in calls if row[1]=='thread/resume'],['thread-exact']*2)
+                # Repeated sends must not retain the previous run's loaded config.
+                resumes=[row for row in calls if row[1]=='thread/resume']
+                self.assertNotEqual(resumes[0][0],resumes[1][0])
+                self.assertEqual(resumes[1][0],prepared_pid)
+                with self.assertRaises(ProcessLookupError): os.kill(resumes[0][0],0)
                 session['model']='different-model'
                 runtime.atomic_write_json(Path(state['nativeSessionPath']),session)
                 send()
                 calls=[json.loads(line) for line in fake.with_suffix('.log').read_text().splitlines()]
-                self.assertEqual(len({row[0] for row in calls}),3)
+                self.assertEqual(len({row[0] for row in calls if row[1]=='thread/resume'}),3)
                 state['cancelRequested']=True
                 runtime.atomic_write_json(Path(state['statePath']),state)
                 send(reusable=False)
@@ -146,6 +164,27 @@ class ConnectionPoolTests(unittest.TestCase):
                 diagnostics=host.stderr.read()
                 host.stdout.close();host.stderr.close()
             self.assertEqual(host.returncode,0,diagnostics)
+
+    def test_failed_idle_preparation_does_not_replace_result_or_replay_next_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge, _, state = native_fixture(Path(directory), goal=False)
+            state['nativeSessionPath'] = str(Path(state['statePath']).parent / 'native-session.json')
+            runtime.atomic_write_json(Path(state['nativeSessionPath']), bridge.session)
+            runtime.atomic_write_json(Path(state['statePath']), state)
+            request = json.dumps({'statePath': state['statePath'], 'prompt': 'hello', 'parts': False}) + '\n'
+            rpc = mock.Mock()
+            rpc.restart_owned.side_effect = native.NativeError('preparation failed')
+            output, errors = io.StringIO(), io.StringIO()
+            with mock.patch.object(native.sys, 'stdin', io.StringIO(request * 2)), \
+                    mock.patch.object(native.subprocess, 'Popen'), \
+                    mock.patch.object(native, 'Rpc', return_value=rpc), \
+                    mock.patch.object(native, 'Bridge') as factory, \
+                    redirect_stdout(output), redirect_stderr(errors):
+                self.assertEqual(native.connection_worker(), 1)
+            self.assertEqual(factory.return_value.run.call_count, 1)
+            self.assertEqual([json.loads(line) for line in output.getvalue().splitlines()],
+                             [{'poolDone': True, 'reusable': True}])
+            self.assertIn('preparation failed', errors.getvalue())
 
     def test_pool_identity_ignores_run_bookkeeping_but_not_authority(self):
         state={'runtimeBinding':{'root':'one'},'agentId':'main'}

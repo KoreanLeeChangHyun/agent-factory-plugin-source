@@ -147,6 +147,16 @@ class AntigravityProviderTests(unittest.TestCase):
                   "structured_output": {"content": "hello", "status": "ok"}}
         translator, _ = translate([INIT, {"event": "result", "result": result}], nullable=nullable)
         self.assertEqual(translator.structured, {"decisionKind": None, "content": "hello", "status": "ok"})
+        # Recorded from gemini-3.8-flash-low: decisionKind filled on a completed result is dropped.
+        filled = {"decisionKind": "clarification", "resultText": "Done.", "status": "completed"}
+        raw = json.dumps(filled)
+        translator, _ = translate([INIT, {"event": "result", "result": {"conversation_id": CONVERSATION,
+                                  "status": "SUCCESS", "response": raw, "structured_output": filled}}], nullable=nullable)
+        self.assertIsNone(translator.structured["decisionKind"])
+        asked = {**filled, "status": "needs-human-decision"}
+        translator, _ = translate([INIT, {"event": "result", "result": {"conversation_id": CONVERSATION,
+                                  "status": "SUCCESS", "response": json.dumps(asked), "structured_output": asked}}], nullable=nullable)
+        self.assertEqual(translator.structured["decisionKind"], "clarification")
 
     def test_goal_turns_follow_or_precede_the_request(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -177,6 +187,9 @@ class AntigravityProviderTests(unittest.TestCase):
         # agy carries --json-schema results through `finish`; a custom agent must list it.
         self.assertIn("finish", command.AGENT_TOOLS)
         self.assertIn("generate_image", command.AGENT_TOOLS)
+        # Agent Factory Skills are offered like plugin Skills on Codex and Claude.
+        self.assertIn(f"skills: [{json.dumps(str(command.SKILLS_ROOT))}]\n", header)
+        self.assertTrue((command.SKILLS_ROOT / "convention" / "SKILL.md").is_file())
         self.assertTrue(body.startswith("# System Prompt\n"))
         with tempfile.TemporaryDirectory() as home:
             path = command.install_agent(home)
@@ -189,6 +202,17 @@ class AntigravityProviderTests(unittest.TestCase):
             command.install_agent(home)
             self.assertEqual(path.read_text(encoding="utf-8"), definition)
             self.assertEqual([item.name for item in path.parent.iterdir()], ["agent.md"])
+            # Other plugin copies own their own agent; only agents for removed copies are pruned.
+            agents = path.parent.parent
+            gone = command.agent_definition(Path(home) / "removed" / "skills").replace(command.AGENT_NAME, "agent-factory-gone")
+            live = command.agent_definition(Path(home)).replace(command.AGENT_NAME, "agent-factory-live")
+            for name, text in (("agent-factory-gone", gone), ("agent-factory-live", live), ("agent-factory-user", "custom")):
+                (agents / name).mkdir()
+                (agents / name / "agent.md").write_text(text, encoding="utf-8")
+            command.install_agent(home)
+            self.assertEqual(sorted(item.name for item in agents.iterdir()),
+                             sorted([command.AGENT_NAME, "agent-factory-live", "agent-factory-user"]))
+        self.assertRegex(command.AGENT_NAME, r"^agent-factory-[0-9a-f]{12}$")
 
     def test_plan_work_routes_plan_then_execute(self):
         self.assertEqual(command.planning_phases({"role": "work", "executionOptions": {"taskMode": "plan-work"}}), ["plan", "execute"])
