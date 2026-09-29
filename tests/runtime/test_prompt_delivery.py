@@ -109,10 +109,12 @@ class PromptDeliveryTests(unittest.TestCase):
             for kind in ("approval", "clarification", None):
                 terminal = {**legacy, "decisionKind": kind}
                 self.assertEqual(process_transport.validate_terminal_result(terminal, state), b"Which target?")
-            for invalid in ({**legacy, "decisionKind": "guess"},
-                            {**legacy, "status": "completed", "decisionKind": "approval"}):
-                with self.assertRaises(runtime.ContractError):
-                    process_transport.validate_terminal_result(invalid, state)
+            with self.assertRaises(runtime.ContractError):
+                process_transport.validate_terminal_result({**legacy, "decisionKind": "guess"}, state)
+            for status in ("completed", "failed"):
+                filled = {**legacy, "status": status, "decisionKind": "approval"}
+                self.assertEqual(process_transport.validate_terminal_result(filled, state), b"Which target?")
+                self.assertIsNone(filled["decisionKind"])
 
     def test_development_sources_follow_local_runtime_for_every_role(self):
         root = Path(process_transport.__file__).resolve().parents[2]
