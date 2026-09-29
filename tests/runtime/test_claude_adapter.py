@@ -146,9 +146,16 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(started[1]["item"]["command"], "echo hello")
         self.assertEqual(events.translate({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
             "five_hour": {"utilization": 0.25}, "seven_day": {"utilization": 0.19}}}}),
-            [{"type": "provider.rate_limits", "weeklyUsedPercent": 19.0}])
+            [{"type": "provider.rate_limits", "fiveHourUsedPercent": 25.0, "weeklyUsedPercent": 19.0}])
         self.assertEqual(events.translate({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
-            "five_hour": {"utilization": 0.25}}}}), [])
+            "five_hour": {"utilization": 0.25}}}}), [{"type": "provider.rate_limits", "fiveHourUsedPercent": 25.0}])
+        self.assertEqual(events.translate({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
+            "five_hour": {"utilization": 2}}}}), [])
+        self.assertEqual(events.translate({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
+            "five_hour": {"utilization": 0.01, "resetsAt": 1790506200},
+            "seven_day": {"utilization": 0, "resetsAt": 1790953200}}}}),
+            [{"type": "provider.rate_limits", "fiveHourUsedPercent": 1.0, "fiveHourResetsAt": 1790506200,
+              "weeklyUsedPercent": 0, "weeklyResetsAt": 1790953200}])
         done = events.translate({"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": "failure", "is_error": True}]}})
         self.assertEqual(done[0]["item"]["status"], "failed")

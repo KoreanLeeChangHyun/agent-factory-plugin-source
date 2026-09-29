@@ -5,7 +5,7 @@ distributions are generated from it and must not be edited directly.
 
 | Path | Contents |
 |---|---|
-| `skills/` | Host-neutral Skill documents (`agent`, `convention`, `document`) |
+| `skills/` | Host-neutral Skill documents (`agent`, `convention`, `document`, `tool`) |
 | `runtime/storage/` | Runtime home, paths, persistence, public state, errors and migration |
 | `runtime/system/` | OS seams and process lifecycle: transport, containment, sandbox, Windows/macOS |
 | `runtime/execution/` | One agent turn: CLI, requested options, policy, prompts, images, usage, streaming, worktrees, lessons |

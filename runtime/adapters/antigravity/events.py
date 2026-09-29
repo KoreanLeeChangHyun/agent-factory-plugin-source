@@ -189,9 +189,11 @@ class Events:
         kind = self.turns.pop(0) if len(self.turns) > 1 else None
         if kind is not None:
             return self.intermediate(kind, result)
-        if "goal" in self.turns:
-            self.goal_complete = COMPLETE in str(result.get("response"))
         answer = result.get("structured_output")
+        if "goal" in self.turns:
+            # The marker may follow the result JSON or sit inside it, where the raw response escapes `<`.
+            self.goal_complete = (COMPLETE in str(result.get("response"))
+                                  or COMPLETE in json.dumps(answer, ensure_ascii=False))
         if split_answer(result.get("response"), answer) is None:
             if self.request_answer is None:
                 denied = [str(action.get("action")) for action in result.get("denied_actions") or [] if isinstance(action, dict)]

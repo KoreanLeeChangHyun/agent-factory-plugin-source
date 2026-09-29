@@ -88,6 +88,14 @@ class AntigravityProviderTests(unittest.TestCase):
                                 ("claude-sonnet-4-6", []), ("gpt-oss-120b-medium", []), (None, ["--effort", "high"])):
             with self.subTest(model=model):
                 self.assertEqual(policy.effort_arguments({"model": model, "reasoningEffort": "high"}), expected)
+        # Observed: gemini-3.1-pro offers only low and high, so medium resolves to the nearest (higher) level.
+        offered = {"gemini-3.1-pro": ["high", "low"]}
+        for requested, expected in (("medium", "high"), ("minimal", "low"), ("xhigh", "high"), ("high", "high")):
+            with self.subTest(requested=requested):
+                self.assertEqual(policy.effort_arguments({"model": "gemini-3.1-pro", "reasoningEffort": requested,
+                                                          "effortLevels": offered}), ["--effort", expected])
+        self.assertEqual(policy.effort_arguments({"model": "gemini-3.8-flash", "reasoningEffort": "medium",
+                                                  "effortLevels": offered}), ["--effort", "medium"])
 
     def test_launch_sends_instructions_and_schema_on_stdin_message(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -106,6 +114,7 @@ class AntigravityProviderTests(unittest.TestCase):
                 self.assertIn(pair, [argv[i:i + 2] for i in range(len(argv))])
             self.assertIn("--dangerously-skip-permissions", argv)
             self.assertIn("--disable-slash-commands", argv)
+            self.assertIn(["--agent", command.AGENT_NAME], [argv[i:i + 2] for i in range(len(argv))])
             self.assertEqual(argv[-1], "--print=")
             text = message["message"]["content"][0]["text"]
             self.assertEqual(message["event"], "user")
@@ -117,6 +126,7 @@ class AntigravityProviderTests(unittest.TestCase):
             self.assertNotIn("--dangerously-skip-permissions", plan)
             # Without skipped permissions the run's own files stay readable.
             self.assertIn(["--add-dir", f"{directory}/run"], [plan[i:i + 2] for i in range(len(plan))])
+            self.assertIn(["--add-dir", str(Path(command.__file__).resolve().parents[3] / "skills")], [plan[i:i + 2] for i in range(len(plan))])
             self.assertNotIn(f"{directory}/run", argv)
             self.assertIn(command.PLAN_REQUEST, message["message"]["content"][0]["text"])
             with self.assertRaisesRegex(runtime.ContractError, "text only"):
@@ -156,6 +166,29 @@ class AntigravityProviderTests(unittest.TestCase):
             self.assertEqual([kind for kind, _ in turns], ["setup", "request"])
             _, turns = command.cli_command(session, state, PromptParts("F", "D"), "plan")
             self.assertEqual([kind for kind, _ in turns], ["request"])
+
+    def test_lean_agent_replaces_the_default_prompt_and_keeps_result_transport(self):
+        definition = command.agent_definition()
+        header, body = definition.split("---\n")[1:3]
+        self.assertIn(f"name: {command.AGENT_NAME}\n", header)
+        self.assertIn("mainAgent: true\n", header)
+        self.assertIn("inheritCustomizations: true\n", header)  # Project rules still apply, as for Codex and Claude.
+        self.assertIn("inheritMcp: false\n", header)
+        # agy carries --json-schema results through `finish`; a custom agent must list it.
+        self.assertIn("finish", command.AGENT_TOOLS)
+        self.assertIn("generate_image", command.AGENT_TOOLS)
+        self.assertTrue(body.startswith("# System Prompt\n"))
+        with tempfile.TemporaryDirectory() as home:
+            path = command.install_agent(home)
+            self.assertEqual(path, Path(home) / ".gemini" / "config" / "agents" / command.AGENT_NAME / "agent.md")
+            self.assertEqual(path.read_text(encoding="utf-8"), definition)
+            before = path.stat().st_mtime_ns
+            command.install_agent(home)  # Unchanged content is not rewritten.
+            self.assertEqual(path.stat().st_mtime_ns, before)
+            path.write_text("stale", encoding="utf-8")
+            command.install_agent(home)
+            self.assertEqual(path.read_text(encoding="utf-8"), definition)
+            self.assertEqual([item.name for item in path.parent.iterdir()], ["agent.md"])
 
     def test_plan_work_routes_plan_then_execute(self):
         self.assertEqual(command.planning_phases({"role": "work", "executionOptions": {"taskMode": "plan-work"}}), ["plan", "execute"])
@@ -272,6 +305,17 @@ class AntigravityEventTests(unittest.TestCase):
         self.assertEqual(json.loads(events[-1]["item"]["text"])["resultText"], "Created goal2.txt containing pending.")
         self.assertIn({"type": "native.commentary", "text": "Verified goal2.txt says done."}, events)
         self.assertTrue(translator.goal_complete)
+        # With the lean agent the marker sits inside the result JSON, escaped in the raw response.
+        inside = {"resultText": "Verified done.\n\n<!-- GOAL_COMPLETE -->", "status": "success"}
+        # agy (Go) escapes `<` and `>` in JSON text, as recorded from gemini-3.8-flash.
+        raw = json.dumps({**inside, "toolAction": "Finishing goal"}).replace("<", "\\u003c").replace(">", "\\u003e")
+        self.assertNotIn("<!-- GOAL_COMPLETE -->", raw)
+        translator, events = translate([INIT, step(1, "DONE", "agent_response", text_delta=first),
+                                        result(first, {"resultText": "Created goal2.txt containing pending.", "status": "success"}),
+                                        step(9, "DONE", "agent_response", text_delta=raw), result(raw, inside)],
+                                       turns=["request", "goal"])
+        self.assertTrue(translator.goal_complete)
+        self.assertEqual(json.loads(events[-1]["item"]["text"])["resultText"], "Verified done.")
         # A /goal clear setup turn stays invisible and does not finish the run.
         translator, events = translate([
             INIT, step(1, "DONE", "agent_response", text_delta="Cleared. <!-- GOAL_CANCELLED -->"),
@@ -287,6 +331,20 @@ class AntigravityEventTests(unittest.TestCase):
 
 
 class AntigravityCapabilityTests(unittest.TestCase):
+    def test_effort_levels_come_from_the_model_listing(self):
+        from adapters.antigravity import capabilities
+        listing = ("Fetching available models...\ngemini-3.8-flash-high\tGemini\ngemini-3.8-flash-low\tGemini\n"
+                   "gemini-3.1-pro-high\tGemini\ngemini-3.1-pro-low\tGemini\nclaude-sonnet-4-6\tClaude\n")
+        with tempfile.TemporaryDirectory() as home, \
+                mock.patch.object(capabilities, "_identity", return_value={"path": "agy"}), \
+                mock.patch.object(capabilities.subprocess, "run", return_value=mock.Mock(stdout=listing)) as run:
+            levels = capabilities.effort_levels("agy", runtime_home=home)
+            self.assertEqual(levels, {"gemini-3.8-flash": ["high", "low"], "gemini-3.1-pro": ["high", "low"]})
+            self.assertEqual(capabilities.effort_levels("agy", runtime_home=home), levels)
+            self.assertEqual(run.call_count, 1)  # The listing is cached briefly.
+        with mock.patch.object(capabilities.subprocess, "run", side_effect=OSError("missing")):
+            self.assertEqual(capabilities.effort_levels("agy", runtime_home=None), {})
+
     def test_help_on_stderr_satisfies_the_probe(self):
         from adapters.antigravity import capabilities
         help_text = "Usage of agy:\n" + "\n".join(f"  {flag}  x" for flag in capabilities.REQUIRED_OPTIONS)

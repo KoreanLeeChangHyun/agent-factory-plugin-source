@@ -20,7 +20,23 @@ Update with `claude plugin marketplace update agent-factory` followed by
 `claude plugin update agent-factory@agent-factory`.
 
 The runtime uses the Claude Code CLI and its existing login, including subscription
-login. No API key, MCP server or account connection is required.
+login. No API key, MCP server or account connection is required. Python 3.10+ is required.
+
+## VS Code extension
+
+The Agent Factory VS Code extension is optional. When the `claude` CLI is available, it
+installs or updates this plugin at the extension's semantic base version.
+
+## Document synchronization
+
+Project specification documents in `docs/skills/` are synchronized to `.claude/skills/` and
+`.codex/skills/` by the Document Skill's `sync_documents.py`, making them available as
+project Skills. Synchronized output must not be edited directly; independent edits are
+reported as conflicts.
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
 
 ## Source
 

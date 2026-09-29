@@ -17,11 +17,12 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from adapters.antigravity.command import (  # noqa: F401 - re-exported for callers and tests
-    EXECUTE_REQUEST, PLAN_MODES, PLAN_REQUEST, build_command, cli_command, planning_phases, result_schema,
+    EXECUTE_REQUEST, PLAN_MODES, PLAN_REQUEST, build_command, cli_command, install_agent, planning_phases, result_schema,
 )
 from adapters.antigravity.control import goal_record, publish_goal
 from adapters.antigravity.events import Events  # noqa: F401
-from adapters.antigravity.policy import validate
+from adapters.antigravity.capabilities import effort_levels
+from adapters.antigravity.policy import effort, native_model, validate
 from execution.prompts import PromptParts
 from storage import paths as runtime_paths
 from storage.errors import ContractError
@@ -110,10 +111,15 @@ def main():
         validate({**session, **state.get("executionOptions", {})})
         parts = PromptParts.decode(sys.stdin.read())
         environment = {key: value for key, value in os.environ.items() if key not in HOST_MARKERS}
+        install_agent()
+        # Base Gemini ids take --effort only at levels the model offers (gemini-3.1-pro: low and high).
+        levels = {}
+        if effort(session.get("reasoningEffort")) and str(native_model(session.get("model")) or "").startswith("gemini-"):
+            levels = effort_levels(session["agy"], runtime_home=state["runtimeBinding"].get("home"))
         phases = planning_phases(state)
         session_id = session.get("sessionId")
         for index, phase in enumerate(phases):
-            command, turns = cli_command({**session, "sessionId": session_id}, state, parts, phase)
+            command, turns = cli_command({**session, "sessionId": session_id, "effortLevels": levels}, state, parts, phase)
             if len(turns) > 1:
                 goal = GoalTracker(session, state, turns)
             # No new session/group: parent runtime containment must include all descendants.

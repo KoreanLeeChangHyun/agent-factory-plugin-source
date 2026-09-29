@@ -147,6 +147,10 @@
   models select it. Name its other models `antigravity/<id>` (for example
   `antigravity/claude-sonnet-4-6`) or pass `--provider antigravity` with the plain `<id>`;
   a plain `claude-*` model always selects Claude Code.
+- Runs use the `agent-factory` custom agent, which the runtime writes to
+  `~/.gemini/config/agents/agent-factory/agent.md`. It replaces agy's default system prompt and
+  keeps only file, shell, web, image generation and `finish` tools; project rules (`AGENTS.md`, `GEMINI.md`) still
+  apply, and the user's agy tool servers are not loaded.
 - Every task mode and Goal are supported; Fast is a no-op and images are rejected (text only).
   Plan runs by instruction without skipped permissions, because agy's `plan` mode waits for review.
 - Policies map to agy permissions, which are not an OS sandbox:
@@ -157,9 +161,11 @@
   | `workspace-write` | default; extra writable roots as `--add-dir` |
   | `read-only` | default, with a read-only instruction |
 
-  The default denies commands and reads outside the workspace and run directory, and allows
+  The default denies commands and reads outside the workspace, run directory and Agent Factory
+  Skills, and allows
   workspace edits even under `read-only`. A denied call ends the turn without a result, so
   the run fails. The CLI default policy is `workspace-write`.
 - `--effort` applies to agy's default model and base IDs such as `gemini-3.8-flash`; IDs
   ending in a level (`-low`, `-medium`, `-high`) fix their effort, and other families ignore it.
+  A level the model does not offer (`gemini-3.1-pro` has `low` and `high`) uses the nearest one.
   `minimal` maps to `low`, `xhigh` and `ultra` to `max`, and `none` leaves the default.

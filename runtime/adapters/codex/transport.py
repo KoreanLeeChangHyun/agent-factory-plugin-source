@@ -81,6 +81,7 @@ class Rpc:
         self.pending_bytes = 0
         self.last_frame = b""
         self.serial = 0
+        self.initialized = False
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
 
@@ -107,6 +108,7 @@ class Rpc:
         self.__init__(factory(), observer=observer, process_factory=factory)
         self.call("initialize", {"clientInfo": {"name": "agent_factory", "version": "0.1.0"}, "capabilities": {"experimentalApi": True}})
         self.write({"method": "initialized"})
+        self.initialized = True
 
     def _read(self):
         try:
@@ -320,8 +322,10 @@ class Bridge(NotificationHandlers):
         else:
             # Historical direct adapter callers retain full-prompt semantics.
             developer_instructions = full_prompt = prompt
-        self.rpc.call("initialize", {"clientInfo": {"name": "agent_factory", "version": "0.1.0"}, "capabilities": {"experimentalApi": True}})
-        self.rpc.write({"method": "initialized"})
+        if not getattr(self.rpc, "initialized", False):
+            self.rpc.call("initialize", {"clientInfo": {"name": "agent_factory", "version": "0.1.0"}, "capabilities": {"experimentalApi": True}})
+            self.rpc.write({"method": "initialized"})
+            self.rpc.initialized = True
         if self.session.get("nativeCapabilities", {}).get("instructionDelivery") is True:
             # Compose effective user/project configuration before creating a thread.
             # A failed/ambiguous read must not silently discard user instructions.
@@ -361,6 +365,12 @@ class Bridge(NotificationHandlers):
         prior = self.session.get("sessionId")
         if prior:
             params["threadId"] = prior
+        if getattr(self.rpc, "retained_thread", None):
+            # Run-scoped environment (parent state and permission snapshot) changes
+            # on every send. Unload before resume so a loaded thread cannot retain
+            # the previous run's configuration. The app-server process stays alive.
+            self.rpc.call("thread/unload", {"threadId": self.rpc.retained_thread})
+            self.rpc.retained_thread = None
         response = self.rpc.call("thread/resume" if prior else "thread/start", params, timeout=None)
         self.thread_id = response["thread"]["id"]
         if prior and prior != self.thread_id:
@@ -606,11 +616,223 @@ def bridge_services():
     return SimpleNamespace(**{name: value for name, value in locals().items() if name != "SimpleNamespace"})
 
 
+# A pool is owned by the extension's stdin pipe, never by an individual run.
+# Workers retain their own containment and are exclusively leased per agent.
+def connection_worker():
+    runtime = bridge_services()
+    rpc = None
+    try:
+        for line in sys.stdin:
+            request = json.loads(line)
+            state = runtime.safe_read_json(Path(request["statePath"]))
+            runtime.runtime_paths.bind(state["runtimeBinding"])
+            session = runtime.safe_read_json(Path(state["nativeSessionPath"]))
+            if rpc is None:
+                def factory():
+                    return subprocess.Popen([session["codex"], "app-server", "--listen", "stdio://"],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr,
+                        text=True, encoding="utf-8", bufsize=1)
+                rpc = Rpc(factory(), process_factory=factory)
+            prompt = PromptParts.decode(request["prompt"]) if request["parts"] else request["prompt"]
+            bridge = Bridge(runtime, session, state, rpc)
+            bridge.run(prompt)
+            rpc.retained_thread = bridge.thread_id
+            # A cancelled turn must not continue in a retained server.
+            if runtime.safe_read_json(Path(request["statePath"])).get("cancelRequested"):
+                emit({"poolDone": True, "reusable": False})
+                return 0
+            emit({"poolDone": True, "reusable": True})
+    except Exception as error:
+        emit({"type": "error", "message": str(error)[:4000]})
+        emit({"poolDone": True, "reusable": False, "failed": True})
+        return 1
+    finally:
+        if rpc is not None:
+            with contextlib.suppress(Exception):
+                rpc.process.stdin.close()
+                rpc.process.terminate()
+                rpc.process.wait(timeout=2)
+    return 0
+
+
+def pool_identity(state, session):
+    # Include effective policy/configuration and runtime binding; never reuse a
+    # loaded thread after privilege, provider, model, working directory or role changes.
+    fields = ("codex", "projectRoot", "workingDirectory", "executionPolicy", "model",
+              "reasoningEffort", "fast", "role", "taskMode", "nativeCapabilities", "goalMode")
+    values = {key: session.get(key) for key in fields}
+    return json.dumps([state["runtimeBinding"], state["agentId"], values], sort_keys=True)
+
+
+def connection_host():
+    import secrets
+    import socket
+    from system.containment import spawn_contained_process, release_contained_process, terminate_attempt_group
+    token = secrets.token_hex(32)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    workers, lock = {}, threading.RLock()
+    closing = threading.Event()
+
+    def stop(worker):
+        terminate_attempt_group(worker["process"], worker["identity"])
+        for stream in (worker["process"].stdin, worker["process"].stdout):
+            with contextlib.suppress(Exception):
+                stream.close()
+
+    def shutdown():
+        # EOF is the extension lifetime signal, including crashes and reloads.
+        sys.stdin.buffer.read()
+        closing.set()
+        # Closing a UI host must not cancel accepted background work. Drain
+        # active leases; their run proxies still own cancellation and completion.
+        while True:
+            with lock:
+                idle = [(key, worker) for key, worker in workers.items() if not worker["busy"]]
+                for key, worker in idle:
+                    del workers[key]
+                active = bool(workers)
+            for _, worker in idle:
+                with contextlib.suppress(Exception):
+                    stop(worker)
+            if not active:
+                break
+            time.sleep(0.1)
+        os._exit(0)
+
+    def serve(connection):
+        worker = None
+        leased = False
+        finished = threading.Event()
+        disconnected = threading.Event()
+        wire = connection.makefile("rwb")
+        try:
+            request = json.loads(wire.readline())
+            if not secrets.compare_digest(str(request.pop("token", "")), token):
+                raise NativeError("Invalid connection pool credential")
+            runtime = bridge_services()
+            state = runtime.safe_read_json(Path(request["statePath"]))
+            session = runtime.safe_read_json(Path(state["nativeSessionPath"]))
+            key = json.dumps([state["runtimeBinding"], state["agentId"]], sort_keys=True)
+            fingerprint = pool_identity(state, session)
+            with lock:
+                if closing.is_set():
+                    raise NativeError("Connection host is closing")
+                worker = workers.get(key)
+                if worker and worker["busy"]:
+                    worker = None
+                    raise NativeError("Agent connection already has an active request")
+                if worker and (worker["fingerprint"] != fingerprint or worker["process"].poll() is not None):
+                    stop(worker)
+                    del workers[key]
+                    worker = None
+                if worker is None:
+                    environment = {**os.environ, "AGENT_FACTORY_EXECUTION_POLICY": json.dumps(runtime.execution_policy.session_policy(session))}
+                    environment.pop("AGENT_FACTORY_CODEX_POOL", None)
+                    process, identity, barrier = spawn_contained_process(
+                        [sys.executable, str(Path(__file__).resolve()), "--connection-worker"],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr,
+                        text=True, encoding="utf-8", env=environment,
+                        cwd=session.get("workingDirectory", session["projectRoot"]))
+                    worker = {"process": process, "identity": identity, "fingerprint": fingerprint, "busy": True}
+                    workers[key] = worker
+                    release_contained_process(process, identity, barrier)
+                worker["busy"] = True
+                leased = True
+
+            def watch_disconnect():
+                # The client sends nothing after its request. EOF during a turn
+                # kills the worker's entire containment, not just the proxy.
+                try:
+                    connection.recv(1)
+                except OSError:
+                    pass
+                disconnected.set()
+                if not finished.is_set():
+                    with contextlib.suppress(Exception):
+                        stop(worker)
+            threading.Thread(target=watch_disconnect, daemon=True).start()
+            worker["process"].stdin.write(json.dumps(request) + "\n")
+            worker["process"].stdin.flush()
+            reusable = False
+            for output in worker["process"].stdout:
+                event = json.loads(output)
+                if event.get("poolDone"):
+                    reusable = event.get("reusable") is True and not disconnected.is_set() and not closing.is_set()
+                    # Cleanup must complete before acknowledging a cancelled turn.
+                    if not reusable:
+                        stop(worker)
+                    finished.set()
+                    with lock:
+                        wire.write(output.encode("utf-8"))
+                        wire.flush()
+                        if reusable:
+                            worker["busy"] = False
+                        elif workers.get(key) is worker:
+                            del workers[key]
+                    break
+                wire.write(output.encode("utf-8"))
+                wire.flush()
+            else:
+                raise NativeError("Retained Codex worker closed before completion; request was not replayed")
+        except Exception as error:
+            if leased:
+                with contextlib.suppress(Exception):
+                    stop(worker)
+                with lock:
+                    if workers.get(key) is worker:
+                        del workers[key]
+            finished.set()
+            with contextlib.suppress(Exception):
+                wire.write((json.dumps({"type": "error", "message": str(error)}) + "\n").encode())
+                wire.flush()
+        finally:
+            finished.set()
+            with contextlib.suppress(OSError):
+                connection.shutdown(socket.SHUT_RDWR)
+            wire.close()
+            connection.close()
+
+    threading.Thread(target=shutdown, daemon=True).start()
+    emit({"port": listener.getsockname()[1], "token": token})
+    while not closing.is_set():
+        connection, _ = listener.accept()
+        threading.Thread(target=serve, args=(connection,), daemon=True).start()
+    return 0
+
+
+def pooled_request():
+    import socket
+    endpoint = json.loads(os.environ["AGENT_FACTORY_CODEX_POOL"])
+    request = {"statePath": str(Path(sys.argv[1]).resolve()), "prompt": sys.stdin.read(),
+               "parts": sys.argv[2:] == ["--prompt-parts"], "token": endpoint["token"]}
+    # No automatic replay: a disconnected request may already have started work.
+    with socket.create_connection(("127.0.0.1", endpoint["port"])) as connection:
+        with connection.makefile("rwb") as wire:
+            wire.write((json.dumps(request) + "\n").encode())
+            wire.flush()
+            for line in wire:
+                event = json.loads(line)
+                if event.get("poolDone"):
+                    return 1 if event.get("failed") else 0
+                sys.stdout.write(line.decode("utf-8"))
+                sys.stdout.flush()
+    raise NativeError("Connection host closed before completion; request was not replayed")
+
+
 def main():
+    if sys.argv[1:] == ["--connection-host"]:
+        return connection_host()
+    if sys.argv[1:] == ["--connection-worker"]:
+        return connection_worker()
     runtime = bridge_services()
     state = runtime.safe_read_json(Path(sys.argv[1]))
     runtime.runtime_paths.bind(state["runtimeBinding"])
     session = runtime.safe_read_json(Path(state["nativeSessionPath"]))
+    if (os.environ.get("AGENT_FACTORY_CODEX_POOL") and session.get("role") == "main"
+            and not session.get("goalMode") and not session.get("goal") and not state.get("goalAction")):
+        return pooled_request()
     prompt = sys.stdin.read()
     if sys.argv[2:] == ["--prompt-parts"]:
         prompt = PromptParts.decode(prompt)

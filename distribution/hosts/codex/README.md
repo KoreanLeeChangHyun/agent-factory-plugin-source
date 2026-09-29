@@ -118,9 +118,12 @@ The plugin exposes four public Skills:
   `claude-opus`, `claude-sonnet` and `claude-haiku`.
 - Every route works with Claude. Plan runs in Claude's plan mode, then the same session executes.
   Execution permissions map to the nearest Claude permission mode; they are not an OS sandbox.
-  See the [execution guide](skills/agent/references/execution-modes.md#execution-providers).
-- This package is installed through Codex. Claude runs are launched by the runtime; it is not a
-  Claude Code plugin.
+  See the [execution guide](skills/agent/references/execution-modes.md#7-execution-providers).
+- The Antigravity CLI (`agy`) can also run agents with Google AI subscription models: `gemini-*`
+  models select it, and its other models are named `antigravity/<id>`. Antigravity runs are
+  text-only. See [Antigravity](skills/agent/references/execution-modes.md#71-antigravity).
+- This package is installed through Codex, and the runtime launches Claude and Antigravity runs.
+  For Claude Code, install the separate [Claude Code distribution](https://github.com/KoreanLeeChangHyun/agent-factory-claude-plugin).
 
 ## Manual installation
 
@@ -146,7 +149,8 @@ The plugin exposes four public Skills:
 ## Document synchronization
 
 - Project specification documents written according to Agent Factory rules in `docs/skills/`
-  are synchronized to `.codex/skills/`, making them available to Codex as project Skills.
+  are synchronized to `.codex/skills/` and `.claude/skills/`, making them available to Codex
+  and Claude Code as project Skills.
 - After writing project specification documents in `docs/skills/`, agents run the
   [Document Skill synchronization script](skills/document/references/host-sync.md#continuous-codex-synchronization)
   and check the result. They also run it after modifying or deleting these documents.

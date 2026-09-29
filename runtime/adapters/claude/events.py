@@ -43,11 +43,20 @@ class Events:
             return []
         if kind == "rate_limit_event":
             # Account-wide limits apply whichever turn reported them; utilization is a 0-1 ratio.
-            window = ((event.get("rate_limit_info") or {}).get("unifiedWindows") or {}).get("seven_day")
-            used = window.get("utilization") if isinstance(window, dict) else None
-            if type(used) in (int, float) and 0 <= used <= 1:
-                return [{"type": "provider.rate_limits", "weeklyUsedPercent": round(used * 100, 2)}]
-            return []
+            windows = (event.get("rate_limit_info") or {}).get("unifiedWindows") or {}
+            limits = {}
+            for name, field in (("five_hour", "fiveHour"), ("seven_day", "weekly")):
+                window = windows.get(name)
+                if not isinstance(window, dict):
+                    continue
+                used = window.get("utilization")
+                if type(used) in (int, float) and 0 <= used <= 1:
+                    limits[field + "UsedPercent"] = round(used * 100, 2)
+                # resetsAt is Unix seconds when the window next refills.
+                resets = window.get("resetsAt")
+                if type(resets) in (int, float) and resets > 0:
+                    limits[field + "ResetsAt"] = resets
+            return [{"type": "provider.rate_limits", **limits}] if limits else []
         if kind == "system" and event.get("subtype") == "init":
             observed = event.get("session_id")
             if not isinstance(observed, str) or str(uuid.UUID(observed)) != observed:

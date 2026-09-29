@@ -51,7 +51,16 @@ def effort_arguments(session):
         return []
     if model and (not model.startswith("gemini-") or model.rsplit("-", 1)[-1] in EFFORTS):
         return []
-    return ["--effort", level]
+    return ["--effort", nearest_level(level, (session.get("effortLevels") or {}).get(model))]
+
+
+def nearest_level(level, offered):
+    """The offered level closest to the requested one, preferring the higher on a tie."""
+    if not offered or level in offered:
+        return level
+    rank = {name: index for index, name in enumerate(EFFORTS)}
+    return min((item for item in offered if item in rank),
+               key=lambda item: (abs(rank[item] - rank[level]), -rank[item]), default=level)
 
 
 def sandbox(session):

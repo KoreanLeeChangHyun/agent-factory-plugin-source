@@ -86,8 +86,12 @@ Agent Factory는 사용자가 주도하는 소프트웨어 개발·전달을 위
   `claude-sonnet`, `claude-haiku` 별칭을 선택하십시오.
 - 모든 실행 방식을 Claude로 사용할 수 있습니다. Plan은 Claude의 plan 모드로 계획한 뒤 같은 세션에서 실행합니다.
   실행 권한은 가장 가까운 Claude 권한 모드로 연결되며 OS 샌드박스가 아닙니다.
-  자세한 내용은 [실행 방식 안내](skills/agent/references/execution-modes.md#execution-providers)를 참고하십시오.
-- 이 패키지는 Codex로 설치합니다. Claude 실행은 런타임이 시작하며, Claude Code 플러그인은 아닙니다.
+  자세한 내용은 [실행 방식 안내](skills/agent/references/execution-modes.md#7-execution-providers)를 참고하십시오.
+- Antigravity CLI(`agy`)로 Google AI 구독 모델을 사용해 에이전트를 실행할 수도 있습니다. `gemini-*` 모델은
+  Antigravity를 선택하며, 그 밖의 모델은 `antigravity/<id>` 형식으로 지정합니다. Antigravity 실행은 텍스트만 지원합니다.
+  자세한 내용은 [Antigravity](skills/agent/references/execution-modes.md#71-antigravity)를 참고하십시오.
+- 이 패키지는 Codex로 설치하며, Claude와 Antigravity 실행은 런타임이 시작합니다.
+  Claude Code에서는 별도의 [Claude Code 배포판](https://github.com/KoreanLeeChangHyun/agent-factory-claude-plugin)을 설치하십시오.
 
 ## 수동 설치
 
@@ -113,7 +117,7 @@ Agent Factory는 사용자가 주도하는 소프트웨어 개발·전달을 위
 ## 문서 동기화
 
 - Agent Factory 규칙에 따라 `docs/skills/`에 작성한 프로젝트 명세 문서는
-  `.codex/skills/`로 동기화되어 Codex에서 프로젝트 스킬로 활용됩니다.
+  `.codex/skills/`와 `.claude/skills/`로 동기화되어 Codex와 Claude Code에서 프로젝트 스킬로 활용됩니다.
 - 에이전트는 `docs/skills/`에 프로젝트 명세 문서를 작성한 후
   [Document 스킬의 동기화 스크립트](skills/document/references/host-sync.md#continuous-codex-synchronization)를
   실행하고 결과를 확인합니다. 문서를 수정하거나 삭제한 후에도 실행합니다.

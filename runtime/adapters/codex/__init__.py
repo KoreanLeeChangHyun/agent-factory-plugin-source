@@ -65,6 +65,9 @@ def prepare(session, state, request):
             or session.get("backend") == "app-server" or session.get("fast") is True
             or session.get("goalMode") is True or state.get("goalAction")):
         session["backend"] = "app-server"
+    elif "backend" not in session and inspect_capabilities(str(session["codex"]))["send"].get("instructionDelivery") is True:
+        # Legacy exec sessions move to app-server once it can deliver instructions, so replies stream.
+        session["backend"] = "app-server"
     if session.get("backend") != "app-server":
         return
     path = Path(state["statePath"])
