@@ -20,6 +20,9 @@ for line in sys.stdin:
  v=json.loads(line); m=v.get('method'); p=v.get('params',{})
  with log.open('a') as f: f.write(json.dumps([os.getpid(),m,p])+'\\n')
  if 'id' not in v: continue
+ if m not in ('initialize','thread/start','thread/resume','turn/start'):
+  out({'id':v['id'],'error':{'code':-32600,'message':'unsupported method: '+m}})
+  continue
  r={}
  if m=='turn/start': r={'turn':{'id':'turn-one'}}
  if m in ('thread/start','thread/resume'): r={'thread':{'id':p.get('threadId','thread-exact')}}
@@ -62,14 +65,14 @@ class ConnectionPoolTests(unittest.TestCase):
                             if reusable: self.assertTrue(any(e.get('type')=='item.completed' for e in events),events)
                 send(); send()
                 calls=[json.loads(line) for line in fake.with_suffix('.log').read_text().splitlines()]
-                self.assertEqual(len({row[0] for row in calls}),1)
-                self.assertEqual(sum(row[1]=='initialize' for row in calls),1)
+                self.assertEqual(len({row[0] for row in calls}),2)
+                self.assertEqual(sum(row[1]=='initialize' for row in calls),2)
                 self.assertEqual([row[2]['threadId'] for row in calls if row[1]=='thread/resume'],['thread-exact']*2)
                 session['model']='different-model'
                 runtime.atomic_write_json(Path(state['nativeSessionPath']),session)
                 send()
                 calls=[json.loads(line) for line in fake.with_suffix('.log').read_text().splitlines()]
-                self.assertEqual(len({row[0] for row in calls}),2)
+                self.assertEqual(len({row[0] for row in calls}),3)
                 state['cancelRequested']=True
                 runtime.atomic_write_json(Path(state['statePath']),state)
                 send(reusable=False)
