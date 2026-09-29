@@ -36,7 +36,9 @@ def test_windows_is_a_supported_managed_platform():
 def test_windows_diagnostics_report_job_containment_without_probe():
     with mock.patch.object(sys, 'platform', 'win32'), \
             mock.patch.object(windows_process, 'process_identity', return_value=IDENTITY), \
+            mock.patch.object(sandbox_diagnostics.shutil, 'which', return_value=None), \
             mock.patch.object(sandbox_diagnostics.subprocess, 'run') as run:
+        # Newer Python resolves executables through Windows-only _winapi when sys.platform is win32.
         result = sandbox_diagnostics.diagnose(probe=True)
     assert result['issue'] is None
     assert result['containmentBackend'] == 'windows-job'
