@@ -20,6 +20,16 @@ class ContractPreflightTests(unittest.TestCase):
     def test_main_owned_progress_allows_each_worker_to_complete(self):
         validate_contract(self.document())
 
+    def test_main_owned_contract_execution_record_is_allowed(self):
+        value = self.document()
+        path = "docs/progress/C1/contract-v2.md"
+        value["contract"]["progress"]["path"] = path
+        value["contract"]["fileOperations"][0]["path"] = path
+        validate_contract(value)
+        value["tasks"][1]["requiredFileOperations"].append({"operation": "modify", "path": path})
+        with self.assertRaisesRegex(ContractError, "Main owns"):
+            validate_contract(value)
+
     def test_progress_write_required_from_worker_is_rejected(self):
         value = self.document()
         value["tasks"][1]["requiredFileOperations"].append({"operation": "modify", "path": "docs/progress/C1/progress.md"})

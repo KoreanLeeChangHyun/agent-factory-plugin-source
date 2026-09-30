@@ -314,6 +314,30 @@ def test_root_progress_catalogs_contract_versions_tasks_and_attachments(tmp_path
         assert json.loads(result.stdout)["count"] == 1, query
 
 
+def test_contract_execution_record_in_bound_version_is_searchable(tmp_path):
+    folder = contract(tmp_path, versions=(1,))
+    path = folder / "contract-v1.md"
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + "\n<!-- contract-execution-record -->\n\n## 5. 실행 기록\n\n"
+        + "- T1: Work run `run-saved-1`, 검증 완료.\n",
+        encoding="utf-8",
+    )
+    (folder / "progress.md").write_text(
+        "---\nname: sample-progress\nmetadata:\n  document-type: progress\n"
+        "  category: status\n  domain: null\n  name: sample-progress\n"
+        "  language: ko\n---\n\n# 계약 색인\n\n- [계약 v1](contract-v1.md).\n",
+        encoding="utf-8",
+    )
+    result = run(CATALOG, tmp_path)
+    assert result.returncode == 0, result.stderr
+    entry = json.loads(result.stdout)["documents"][0]
+    assert entry["contract"]["taskIds"] == ["T1", "T2"]
+    result = run(SEARCH, tmp_path, "--query", "run-saved-1", "--type", "progress")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["count"] == 1
+
+
 def test_legacy_root_contract_remains_searchable_and_duplicate_is_rejected(tmp_path):
     import shutil
     canonical = contract(tmp_path)
