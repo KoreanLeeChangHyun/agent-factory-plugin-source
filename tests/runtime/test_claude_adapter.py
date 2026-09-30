@@ -94,6 +94,30 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(claude.transport.planning_phases({**work, "executionOptions": {"taskMode": "work"}}), [None])
         self.assertEqual(claude.transport.planning_phases({"role": "main", "executionOptions": {"taskMode": "plan"}}), [None])
 
+    def test_orchestrate_main_is_limited_to_reads_run_files_and_plugin_scripts(self):
+        with tempfile.TemporaryDirectory() as root:
+            prepared = runtime.create_run(project_root=Path(root), agent_id="claude-orchestrate", actor="main", request=b"test",
+                                          session={"role": "main", "maxAttempts": 1})
+            directory = Path(prepared["statePath"]).parent
+            schema = directory / "schema.json"
+            schema.write_text(json.dumps(runtime.response_schema_document(str(directory / "result.md"))))
+            session = {"claude": "/local/claude", "executionPolicy": POLICY, "projectRoot": root}
+            state = {"statePath": str(directory / "state.json"), "responseSchemaPath": str(schema), "role": "main",
+                     "executionOptions": {"taskMode": "orchestrate"}}
+            command, _ = claude.cli_command(session, state, PromptParts("fixed", "request"))
+            self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
+            allowed = command[command.index("--allowedTools") + 1].split(",")
+            self.assertIn(f"Write(/{directory}/**)", allowed)
+            self.assertTrue(any(tool.startswith("Bash(python3 ") and tool.endswith("/scripts/*)") for tool in allowed))
+            self.assertNotIn("Edit", allowed)
+            self.assertNotIn("Bash", allowed)
+            self.assertNotIn("WebSearch", allowed)
+            for mode, role in (("direct", "main"), ("work", "work")):
+                other, _ = claude.cli_command(session, {**state, "role": role, "executionOptions": {"taskMode": mode}},
+                                              PromptParts("fixed", "request"))
+                self.assertEqual(other[other.index("--permission-mode") + 1], "bypassPermissions")
+                self.assertNotIn("--allowedTools", other)
+
     def test_command_preserves_current_instructions_resume_schema_and_images(self):
         with tempfile.TemporaryDirectory() as root:
             prepared = runtime.create_run(project_root=Path(root), agent_id="claude-command", actor="main", request=b"test",

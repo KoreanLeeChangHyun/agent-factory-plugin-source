@@ -179,6 +179,29 @@ class TaskAnnouncementTests(unittest.TestCase):
             cases.append((document, 'task_announcement_' + code))
         return cases
 
+    def test_orchestrator_brief_submits_without_an_announcement(self):
+        from tasks import binding as task_binding
+        self.prepare()
+        request = self.root / 'brief.md'
+        request.write_text('# Brief\n\n## Goal\nCreate hello.txt with one line.\n\n## Scope\nno commits\n', encoding='utf-8')
+        document = task_binding.brief_document(request.read_text())
+        self.assertEqual(document['title'], 'Create hello.txt with one line.')
+        self.source.write_text(json.dumps(document))
+        policy = {'schemaVersion': 1, 'sandboxPolicy': {'type': 'danger-full-access', 'network_access': True}, 'approvalPolicy': 'never'}
+        args = self.runtime.parse_args(['submit', '--project-root', str(self.root),
+            '--agent', 'brief-worker', '--role', 'work', '--task-mode', 'work',
+            '--request-file', str(request), '--task-list-file', str(self.source), '--task-id', document['tasks'][0]['id']])
+        # The announcement check is skipped; submission proceeds to session creation.
+        with mock.patch.object(self.runtime, 'resolve_execution_policy', return_value=policy), \
+                mock.patch.object(self.runtime, 'resolve_human_approval_policy', return_value='bypass'), \
+                mock.patch.object(self.announcement, 'check_submission') as check, \
+                mock.patch.object(self.runtime, 'create_session', side_effect=self.runtime.ContractError('test_stop', 'stop')) as create:
+            with self.assertRaises(self.runtime.ContractError) as error:
+                self.runtime.submit(args, True)
+        self.assertEqual(error.exception.code, 'test_stop')
+        check.assert_not_called()
+        create.assert_called_once()
+
     def test_mismatches_are_rejected_before_exec_child_creation(self):
         self.prepare()
         policy = {'schemaVersion': 1, 'sandboxPolicy': {'type': 'danger-full-access', 'network_access': True}, 'approvalPolicy': 'never'}

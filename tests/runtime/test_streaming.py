@@ -122,14 +122,16 @@ class CodexStreamingTests(unittest.TestCase):
             bridge, rpc, _ = native_fixture(Path(directory), goal=False)
             bridge.deltas.interval = 0
             final = json.dumps({"status": "completed", "resultPath": rpc.result_path, "resultText": "Native answer"})
+            commentary = json.dumps({"status": "completed", "resultPath": rpc.result_path,
+                                     "resultText": "Checking files", "decisionKind": None})
             completed = rpc.events[1]
             completed["params"]["item"]["id"] = "final-1"
             thread = {"threadId": "thread-exact"}
             rpc.events[1:1] = [
                 {"method": "item/started", "params": {**thread, "item": {"id": "c-1", "type": "agentMessage", "phase": "commentary", "text": ""}}},
-                {"method": "item/agentMessage/delta", "params": {**thread, "itemId": "c-1", "delta": "Checking "}},
-                {"method": "item/agentMessage/delta", "params": {**thread, "itemId": "c-1", "delta": "files"}},
-                {"method": "item/completed", "params": {**thread, "item": {"id": "c-1", "type": "agentMessage", "phase": "commentary", "text": "Checking files"}}},
+                *({"method": "item/agentMessage/delta", "params": {**thread, "itemId": "c-1", "delta": commentary[i:i + 3]}}
+                  for i in range(0, len(commentary), 3)),
+                {"method": "item/completed", "params": {**thread, "item": {"id": "c-1", "type": "agentMessage", "phase": "commentary", "text": commentary}}},
                 {"method": "item/started", "params": {**thread, "item": {"id": "final-1", "type": "agentMessage", "text": ""}}},
                 *({"method": "item/agentMessage/delta", "params": {**thread, "itemId": "final-1", "delta": final[i:i + 4]}}
                   for i in range(0, len(final), 4)),
@@ -143,7 +145,17 @@ class CodexStreamingTests(unittest.TestCase):
         kinds = [event["type"] for event in events]
         self.assertLess(max(i for i, event in enumerate(events) if event.get("stream") == "commentary"),
                         max(i for i, event in enumerate(events) if event["type"] == "native.commentary"))
+        self.assertIn({"type": "native.commentary", "text": "Checking files"}, events)
         self.assertIn("item.completed", kinds)
+
+    def test_plain_commentary_stream_remains_compatible(self):
+        from adapters.codex.events import agent_message_stream, commentary_text
+
+        _, stream = agent_message_stream({"phase": "commentary"})
+        self.assertEqual(stream.feed("  Plain "), "  Plain ")
+        self.assertEqual(stream.feed("update"), "update")
+        self.assertEqual(commentary_text({"text": "  Plain update"}), "  Plain update")
+        self.assertEqual(commentary_text({"text": '{"other":"value"}'}), '{"other":"value"}')
 
 
 if __name__ == "__main__":

@@ -199,6 +199,24 @@ class AgentLoopContractTests(unittest.TestCase):
         ])
         return self.agent_loop.close_loop(args)
 
+    def test_orchestrator_brief_starts_without_a_task_list(self):
+        self.request.write_text("Create hello.txt with one line\n\nScope: no commits\nDone: file exists\n", encoding="utf-8")
+        args = self.agent_loop.build_parser().parse_args([
+            "start", "--project-root", str(self.root), "--request-file", str(self.request),
+            "--task-mode", "work", "--work-agent", "work-agent", "--codex", "/bin/true"])
+        started = self.agent_loop.start_loop(args)
+        state = json.loads(Path(started["statePath"]).read_text())
+        self.assertEqual(state["workflow"]["title"], "Create hello.txt with one line")
+        self.assertEqual(len(state["workflow"]["tasks"]), 1)
+        self.assertEqual(state["execution"]["taskBinding"]["taskId"], state["workflow"]["tasks"][0]["id"])
+        self.assertEqual(state["execution"]["taskBinding"]["requestHash"], hashlib.sha256(self.request.read_bytes()).hexdigest())
+        self.assertEqual(len(self.runtime.dispatches), 1)
+        with self.assertRaises(self.agent_exec.ContractError) as error:
+            self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args([
+                "start", "--project-root", str(self.root), "--request-file", str(self.request), "--task-id", "task-one",
+                "--task-mode", "work", "--work-agent", "work-agent", "--codex", "/bin/true"]))
+        self.assertEqual(error.exception.code, "task_binding_required")
+
     def test_contract_detail_public_identity_is_copied_without_dispatch(self):
         started = self.start()
         state = json.loads(Path(started["statePath"]).read_text())

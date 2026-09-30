@@ -17,6 +17,9 @@ distributions are generated from it and must not be edited directly.
 | `distribution/package.json` | Shared name, version, description and host repositories |
 | `distribution/hosts/<host>/` | Host-only manifests and README templates |
 | `distribution/port.py` | Generator for every host distribution |
+| `distribution/release.py` | Release coordinator across the plugin source and every host checkout (`plan`, `commit`, `push`) |
+| `distribution/tool_usage.py` | Generates `skills/tool/references/usage/` from each script's argparse definition (`--check`) |
+| `distribution/skill_budget.py` | Reports and enforces Skill document token budgets (`--check`) |
 | `tests/` | Test suite for the source tree and generated layouts |
 
 ## Generate host distributions

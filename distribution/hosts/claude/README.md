@@ -30,7 +30,7 @@ installs or updates this plugin at the extension's semantic base version.
 ## Document synchronization
 
 Project specification documents in `docs/skills/` are synchronized to `.claude/skills/` and
-`.codex/skills/` by the Document Skill's `sync_documents.py`, making them available as
+`.codex/skills/` (and `.agents/skills/` for Antigravity) by the Document Skill's `sync_documents.py`, making them available as
 project Skills. Synchronized output must not be edited directly; independent edits are
 reported as conflicts.
 

@@ -20,7 +20,7 @@ class TaskModeTests(unittest.TestCase):
             session = {"role": "main", "maxAttempts": 1}
             default = runtime.create_run(project_root=root, agent_id="main-default", actor="human", request=b"task", session=session)
             self.assertEqual(default["taskMode"], "direct")
-            for mode in ("direct", "work", "plan", "verification", "plan-work", "work-verification", "plan-work-verification"):
+            for mode in ("orchestrate", "direct", "work", "plan", "verification", "plan-work", "work-verification", "plan-work-verification"):
                 state = runtime.create_run(project_root=root, agent_id="main-selected", actor="human", request=b"task", session=session,
                                            execution_options={"taskMode": mode}, dispatch_id="dispatch-" + mode, dispatch_operation="send")
                 self.assertEqual(state["taskMode"], mode)

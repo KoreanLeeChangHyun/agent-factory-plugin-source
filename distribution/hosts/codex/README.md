@@ -26,11 +26,13 @@ a bounded agent workflow, evidence exploration, and shared project conventions.
 
 ### 2. Contracts → Work–Verification loop
 
-- Turn a conversation into a work contract with an intended outcome, individual
-  tasks, and observable completion criteria. For file changes, identify the exact
-  paths and operations so the execution boundary is clear before work begins.
-- Keep each task linked to its scope and results. Contract revisions preserve
-  earlier versions and record confirmed scope changes.
+- Turn a conversation into a work contract with four sections: the **goal** with its
+  boundary and observable completion criteria, the **structure** of exact file changes
+  shown as a tree with add/modify/delete markers, the **workers** assigned to each task,
+  and the execution **order** with dependencies.
+- Each contract version at `docs/progress/<contract-id>/contract-v<N>.md` also holds
+  its execution record: runs, agents, Work and Verification status, and evidence per
+  task. Revisions create a new version and preserve earlier ones.
 - In a Work–Verification loop, the agents have distinct responsibilities:
 
   | Agent | Responsibility |
@@ -149,8 +151,8 @@ The plugin exposes four public Skills:
 ## Document synchronization
 
 - Project specification documents written according to Agent Factory rules in `docs/skills/`
-  are synchronized to `.codex/skills/` and `.claude/skills/`, making them available to Codex
-  and Claude Code as project Skills.
+  are synchronized to `.codex/skills/`, `.claude/skills/` and `.agents/skills/`, making them
+  available to Codex, Claude Code and Antigravity as project Skills.
 - After writing project specification documents in `docs/skills/`, agents run the
   [Document Skill synchronization script](skills/document/references/host-sync.md#continuous-codex-synchronization)
   and check the result. They also run it after modifying or deleting these documents.
