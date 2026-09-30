@@ -140,6 +140,10 @@ def commit_all(cwd: Path, message: str) -> str | None:
     return git(cwd, "rev-parse", "HEAD")
 
 
+def pending_push_count(*, refresh: bool, host_count: int) -> int:
+    return host_count + (0 if refresh else 1)
+
+
 def cmd_plan(args: argparse.Namespace) -> None:
     meta = package()
     version = args.version or (meta["version"] if args.refresh else next_version(meta["version"]))
@@ -206,7 +210,8 @@ def cmd_commit(args: argparse.Namespace) -> None:
 
     STATE_FILE.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(state, indent=2))
-    print(f"\nCommitted locally only. Run `release.py push` after review to push {1 + len(checkouts)} repositories.")
+    count = pending_push_count(refresh=args.refresh, host_count=len(checkouts))
+    print(f"\nCommitted locally only. Run `release.py push` after review to push {count} repositories.")
 
 
 def cmd_push(args: argparse.Namespace) -> None:
