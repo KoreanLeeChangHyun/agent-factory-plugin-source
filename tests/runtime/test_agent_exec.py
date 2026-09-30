@@ -608,7 +608,10 @@ class AgentExecTests(unittest.TestCase):
 
     def test_systemd_environment_transfer_keeps_values_out_of_argv(self) -> None:
         environment = {"PATH": "/runtime/bin:/usr/bin", "AGENT_RUNTIME_TOKEN": "secret-value"}
-        descriptor, environment_path = self.module.create_systemd_environment_file(environment)
+        descriptor, temporary_path = tempfile.mkstemp()
+        os.unlink(temporary_path)
+        with mock.patch.object(self.module.os, "memfd_create", create=True, return_value=descriptor):
+            descriptor, environment_path = self.module.create_systemd_environment_file(environment)
         try:
             content = os.read(descriptor, 4096).decode("utf-8")
         finally:
@@ -624,7 +627,7 @@ class AgentExecTests(unittest.TestCase):
             root = Path(directory)
             state = self._new_containment_state(root)
             with mock.patch.object(self.module, "systemd_manager_usable", return_value=True), mock.patch.object(
-                self.module.os, "memfd_create", side_effect=OSError("memfd blocked")
+                self.module.os, "memfd_create", create=True, side_effect=OSError("memfd blocked")
             ), mock.patch.object(self.module, "_launch_systemd_worker") as systemd_launch, mock.patch.object(
                 self.module, "_launch_fallback_worker", return_value=44
             ) as fallback:
@@ -642,7 +645,7 @@ class AgentExecTests(unittest.TestCase):
             state = self._new_containment_state(root)
             descriptor = os.open("/dev/null", os.O_RDONLY)
             with mock.patch.object(self.module, "systemd_manager_usable", return_value=True), mock.patch.object(
-                self.module.os, "memfd_create", return_value=descriptor
+                self.module.os, "memfd_create", create=True, return_value=descriptor
             ), mock.patch.object(self.module.os, "write", side_effect=OSError("write blocked")), mock.patch.object(
                 self.module, "_launch_systemd_worker"
             ) as systemd_launch, mock.patch.object(

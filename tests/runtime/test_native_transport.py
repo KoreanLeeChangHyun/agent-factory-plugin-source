@@ -187,8 +187,15 @@ for line in sys.stdin:
     def test_large_utf8_frame_preserves_following_message(self):
         # Exercise a real UTF-8 frame above the former 16 MiB transport limit.
         _, rpc = self.start_child("import json;print(json.dumps({'method':'large','params':{'text':'한'*6000000}},ensure_ascii=False),flush=True);print(json.dumps({'method':'next'}),flush=True)")
-        self.assertEqual(rpc.event()['params']['text'], '한' * 6000000)
-        self.assertEqual(rpc.event()['method'], 'next')
+        events = []
+        deadline = time.monotonic() + 5
+        while len(events) < 2 and time.monotonic() < deadline:
+            try:
+                events.append(rpc.event())
+            except queue.Empty:
+                continue
+        self.assertEqual(events[0]['params']['text'], '한' * 6000000)
+        self.assertEqual(events[1]['method'], 'next')
 
     def test_oversized_frame_reports_bound_without_payload(self):
         with mock.patch.object(native, 'MAX_RPC_FRAME_BYTES', 128):
