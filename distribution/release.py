@@ -11,7 +11,8 @@ individual `port.py` invocation does not enforce on its own:
   1. `plan`   - print the version, build token and preflight status only.
   2. `commit` - bump `distribution/package.json`, commit it in this repository,
                 regenerate every host into its sibling checkout, and commit each
-                checkout. Nothing is pushed.
+                checkout. With `--refresh`, keep the current source version and
+                regenerate hosts from the existing source commit. Nothing is pushed.
   3. `push`   - push the exact commits `commit` produced, one host at a time,
                 fast-forward only (never `--force`).
 
@@ -80,12 +81,15 @@ def next_version(current: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
-def validate_version(value: str, current: str) -> None:
+def validate_version(value: str, current: str, *, refresh: bool = False) -> None:
     import re
 
     if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", value):
         raise fail(f"Invalid version: {value}")
-    if [int(p) for p in value.split(".")] <= [int(p) for p in current.split(".")]:
+    if refresh:
+        if value != current:
+            raise fail(f"Refresh version must equal the current source version {current}.")
+    elif [int(p) for p in value.split(".")] <= [int(p) for p in current.split(".")]:
         raise fail(f"Release version must increase past {current}.")
 
 
@@ -138,15 +142,16 @@ def commit_all(cwd: Path, message: str) -> str | None:
 
 def cmd_plan(args: argparse.Namespace) -> None:
     meta = package()
-    version = args.version or next_version(meta["version"])
-    validate_version(version, meta["version"])
+    version = args.version or (meta["version"] if args.refresh else next_version(meta["version"]))
+    validate_version(version, meta["version"], refresh=args.refresh)
     checkouts = parse_checkouts(args.checkout)
     declared = set(meta["hosts"])
     missing = declared - checkouts.keys()
     if missing:
         raise fail(f"Missing --checkout for declared host(s): {', '.join(sorted(missing))}")
     require_clean_tracking_repo(ROOT, None)
-    report = {"version": version, "sourceVersion": meta["version"], "hosts": {}}
+    report = {"mode": "refresh" if args.refresh else "release", "version": version,
+              "sourceVersion": meta["version"], "hosts": {}}
     for host, path in checkouts.items():
         head = require_clean_tracking_repo(path, meta["hosts"][host]["repository"])
         report["hosts"][host] = {"path": str(path), "head": head,
@@ -158,8 +163,8 @@ def cmd_commit(args: argparse.Namespace) -> None:
     if STATE_FILE.exists():
         raise fail(f"{STATE_FILE} exists from an unfinished release; run `push` or remove it after manual recovery.")
     meta = package()
-    version = args.version or next_version(meta["version"])
-    validate_version(version, meta["version"])
+    version = args.version or (meta["version"] if args.refresh else next_version(meta["version"]))
+    validate_version(version, meta["version"], refresh=args.refresh)
     checkouts = parse_checkouts(args.checkout)
     declared = set(meta["hosts"])
     missing = declared - checkouts.keys()
@@ -167,26 +172,32 @@ def cmd_commit(args: argparse.Namespace) -> None:
         raise fail(f"Missing --checkout for declared host(s): {', '.join(sorted(missing))}")
 
     # Preflight every repository before mutating any of them.
-    require_clean_tracking_repo(ROOT, None)
+    source_head = require_clean_tracking_repo(ROOT, None)
     for host, path in checkouts.items():
         require_clean_tracking_repo(path, meta["hosts"][host]["repository"])
 
     build = args.build or time.strftime("%Y%m%d%H%M%S", time.gmtime())
-    source_message = args.message or (
-        f"chore: release plugin source {version} / 플러그인 원본 {version} 릴리스"
-    )
-    meta["version"] = version
-    write_package(meta)
-    source_commit = commit_all(ROOT, source_message)
-    if source_commit is None:
-        raise fail("Version bump produced no change; is the target version already current?")
+    if args.refresh:
+        source_commit = source_head
+    else:
+        source_message = args.message or (
+            f"chore: release plugin source {version} / 플러그인 원본 {version} 릴리스"
+        )
+        meta["version"] = version
+        write_package(meta)
+        source_commit = commit_all(ROOT, source_message)
+        if source_commit is None:
+            raise fail("Version bump produced no change; is the target version already current?")
 
-    state = {"version": version, "build": build, "source": {"path": str(ROOT), "commit": source_commit}, "hosts": {}}
+    state = {"mode": "refresh" if args.refresh else "release", "version": version, "build": build,
+             "source": {"path": str(ROOT), "commit": source_commit, "changed": not args.refresh}, "hosts": {}}
     for host, path in checkouts.items():
         port.generate(host, path, build)
+        action = "refresh" if args.refresh else "generate"
+        action_ko = "갱신" if args.refresh else "생성"
         host_message = args.message or (
-            f"release: generate {host} plugin {version} from plugin source {source_commit[:7]} "
-            f"/ 플러그인 원본 {source_commit[:7]}에서 {host} 플러그인 {version} 생성"
+            f"release: {action} {host} plugin {version} from plugin source {source_commit[:7]} "
+            f"/ 플러그인 원본 {source_commit[:7]}에서 {host} 플러그인 {version} {action_ko}"
         )
         host_commit = commit_all(path, host_message)
         if host_commit is None:
@@ -206,7 +217,17 @@ def cmd_push(args: argparse.Namespace) -> None:
         print(json.dumps(state, indent=2))
         raise fail("Pass --yes to push the commits above to their origin/main (fast-forward only).")
 
-    targets = [("source", Path(state["source"]["path"]), state["source"]["commit"])]
+    source_path = Path(state["source"]["path"])
+    source_commit = state["source"]["commit"]
+    if git(source_path, "rev-parse", "HEAD") != source_commit:
+        raise fail(f"source at {source_path} no longer matches the saved source commit {source_commit}.")
+    if git(source_path, "rev-parse", "origin/main") != source_commit:
+        raise fail(f"source origin/main no longer matches the saved source commit {source_commit}.")
+    targets = []
+    if state["source"].get("changed", True):
+        targets.append(("source", source_path, source_commit))
+    else:
+        print(f"source: already on origin/main at {source_commit}")
     targets += [(host, Path(info["path"]), info["commit"]) for host, info in state["hosts"].items()]
     for name, path, commit in targets:
         if git(path, "rev-parse", "HEAD") != commit:
@@ -231,7 +252,9 @@ def main(argv: list[str] | None = None) -> int:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--checkout", action="append", default=[], metavar="HOST=PATH",
                          help="Sibling checkout for a declared host; repeat per host.")
-    common.add_argument("--version", help="Target version; defaults to the next patch version.")
+    common.add_argument("--version", help="Target version; defaults to the next patch version, or the current version with --refresh.")
+    common.add_argument("--refresh", action="store_true",
+                        help="Regenerate every host from the current source version without moving existing tags.")
 
     plan = sub.add_parser("plan", parents=[common], help="Report version and preflight status only.")
     plan.set_defaults(func=cmd_plan)
