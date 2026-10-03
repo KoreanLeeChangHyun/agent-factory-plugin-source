@@ -104,6 +104,25 @@ def safe(root, relative):
     return path
 
 
+def superproject(root):
+    """Return the workspace whose .gitmodules registers root as a submodule path."""
+    for parent in root.parents:
+        modules = parent / '.gitmodules'
+        if modules.is_file():
+            relative = re.escape(root.relative_to(parent).as_posix())
+            if re.search(rf'^\s*path\s*=\s*{relative}\s*$', modules.read_text(encoding='utf-8'), re.M):
+                return parent
+    return None
+
+
+def check_root(root):
+    # A submodule root would split lessons away from the workspace record.
+    parent = superproject(root)
+    if parent and (parent / 'docs/lessons-learned').is_dir():
+        raise ValueError(f'Project root {root} is a submodule of {parent}; '
+                         f'use --project-root {parent} so lessons stay in {parent / "docs/lessons-learned"}')
+
+
 def records(root):
     directory = safe(root, 'docs/lessons-learned')
     if not directory.exists():
@@ -149,6 +168,7 @@ def candidate_hash(candidate):
 
 def operate(root, action, data):
     root = Path(root).resolve(strict=True)
+    check_root(root)
     with locked(root):
         if action == 'record':
             required(data, ['category', 'title', 'language', 'occurrenceId', 'source', 'scope'])
