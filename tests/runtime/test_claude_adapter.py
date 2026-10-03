@@ -94,6 +94,26 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(claude.transport.planning_phases({**work, "executionOptions": {"taskMode": "work"}}), [None])
         self.assertEqual(claude.transport.planning_phases({"role": "main", "executionOptions": {"taskMode": "plan"}}), [None])
 
+    def test_structured_receipt_schema_reaches_execution_turns_but_not_the_plan_phase(self):
+        self.assertIs(claude.final_output_schema({"goalMode": True}), True)
+        with tempfile.TemporaryDirectory() as root:
+            goal = {"taskMode": "plan-work", "goalMode": True}
+            prepared = runtime.create_run(project_root=Path(root), agent_id="claude-structured", actor="main", request=b"test",
+                                          session={"role": "work", "maxAttempts": 1, "provider": "claude"}, execution_options=goal)
+            self.assertEqual(prepared["responseContract"], 2)
+            session = {"claude": "/local/claude", "executionPolicy": POLICY, "projectRoot": root}
+            receipt_fields = {"outcome", "changedPaths", "tests", "addressedFindingIds"}
+            for phase, expected in ((None, True), ("execute", True), ("plan", False)):
+                with self.subTest(phase=phase):
+                    command, _ = claude.cli_command(session, prepared, PromptParts("fixed", "request"), phase)
+                    schema = json.loads(command[command.index("--json-schema") + 1])
+                    self.assertEqual(receipt_fields <= set(schema["properties"]), expected)
+                    self.assertEqual(receipt_fields <= set(schema["required"]), expected)
+                    self.assertTrue({"status", "resultPath", "resultText", "decisionKind"} <= set(schema["required"]))
+                    self.assertNotIn("$schema", schema)
+            # The persisted contract is untouched by the plan-phase trim.
+            self.assertTrue(receipt_fields <= set(runtime.safe_read_json(Path(prepared["responseSchemaPath"]))["properties"]))
+
     def test_orchestrate_main_is_limited_to_reads_run_files_and_plugin_scripts(self):
         with tempfile.TemporaryDirectory() as root:
             prepared = runtime.create_run(project_root=Path(root), agent_id="claude-orchestrate", actor="main", request=b"test",
@@ -117,6 +137,53 @@ class ClaudeAdapterTests(unittest.TestCase):
                                               PromptParts("fixed", "request"))
                 self.assertEqual(other[other.index("--permission-mode") + 1], "bypassPermissions")
                 self.assertNotIn("--allowedTools", other)
+
+    def test_work_may_spawn_only_the_read_only_explore_subagent(self):
+        # Human decision 2026-10-03: launch configuration, not prompt wording, blocks every other sub-agent type.
+        import shlex
+        import subprocess
+        from tasks import subagent_guard
+        with tempfile.TemporaryDirectory() as root:
+            prepared = runtime.create_run(project_root=Path(root), agent_id="claude-work-subagents", actor="main", request=b"test",
+                                          session={"role": "main", "maxAttempts": 1})
+            directory = Path(prepared["statePath"]).parent
+            schema = directory / "schema.json"
+            schema.write_text(json.dumps(runtime.response_schema_document(str(directory / "result.md"))))
+            state = {"statePath": str(directory / "state.json"), "responseSchemaPath": str(schema)}
+            modes = {}
+            for sandbox in ({"type": "danger-full-access"}, {"type": "workspace-write", "writable_roots": [root]}, {"type": "read-only"}):
+                policy = runtime.execution_policy.normalize({"schemaVersion": 1, "sandboxPolicy": sandbox, "approvalPolicy": "never"})
+                session = {"claude": "/local/claude", "executionPolicy": policy, "projectRoot": root}
+                for phase in (None, "plan", "execute"):
+                    command, _ = claude.cli_command(session, {**state, "role": "work", "executionOptions": {"taskMode": "plan-work"}},
+                                                    PromptParts("fixed", "request"), phase)
+                    modes[command[command.index("--permission-mode") + 1]] = True
+                    hooks = json.loads(command[command.index("--settings") + 1])["hooks"]["PreToolUse"]
+                    self.assertEqual([(hook["matcher"], hook["hooks"][0]["command"]) for hook in hooks],
+                                     [(subagent_guard.MATCHER, subagent_guard.HOOK_COMMAND)])
+                    self.assertEqual(command[command.index("--disallowedTools") + 1], "Workflow")
+                for role, mode in (("main", "direct"), ("main", "orchestrate"), ("verification", "verification")):
+                    other, _ = claude.cli_command(session, {**state, "role": role, "executionOptions": {"taskMode": mode}},
+                                                  PromptParts("fixed", "request"))
+                    self.assertNotIn("--settings", other)
+                    self.assertNotIn("--disallowedTools", other)
+            self.assertEqual(set(modes), {"bypassPermissions", "acceptEdits", "dontAsk", "plan"})
+
+        def decide(payload):
+            result = subprocess.run(shlex.split(subagent_guard.HOOK_COMMAND), input=payload, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"] if result.stdout.strip() else "allow"
+
+        def call(**tool_input):
+            return json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": tool_input})
+        self.assertEqual(decide(call(subagent_type="Explore", prompt="find the parser")), "allow")
+        for denied in (call(subagent_type="general-purpose"), call(subagent_type="Plan"), call(subagent_type="explore"),
+                       call(prompt="no type defaults to general-purpose"), call(subagent_type=["Explore"]),
+                       json.dumps({"tool_name": "Agent"}), "not json"):
+            self.assertEqual(decide(denied), "deny", denied)
+        import re
+        for tool, matched in (("Agent", True), ("Task", True), ("Bash", False), ("AgentOutput", False), ("TaskCreate", False)):
+            self.assertEqual(bool(re.search(subagent_guard.MATCHER, tool)), matched, tool)
 
     def test_command_preserves_current_instructions_resume_schema_and_images(self):
         with tempfile.TemporaryDirectory() as root:
@@ -217,6 +284,21 @@ class ClaudeAdapterTests(unittest.TestCase):
                         "session_id": session_id, "structured_output": {}, **changes})
         with self.assertRaises(ValueError):
             claude.Events(session_id).translate({"type": "system", "subtype": "init", "session_id": str(uuid.uuid4())})
+
+    def test_structured_marker_becomes_interview_question(self):
+        session_id = str(uuid.uuid4())
+        events = claude.Events(session_id)
+        events.translate({"type": "system", "subtype": "init", "session_id": session_id})
+        marker = ('<agent-factory-interview-question>{"id":"interview-1-of-1","current":1,"total":1,'
+                  '"text":"Proceed?","options":[{"value":"yes","label":"Yes","pros":"Continue",'
+                  '"cons":"Uses time"},{"value":"no","label":"No","pros":"Stop now","cons":"No result"}],'
+                  '"recommendedValue":"yes","yesNo":true}</agent-factory-interview-question>')
+        translated = events.translate({"type": "result", "subtype": "success", "is_error": False,
+            "session_id": session_id, "structured_output": {
+                "status": "needs-human-decision", "resultText": marker + "\nChoose one."}, "usage": {}})
+        question = next(event for event in translated if event["type"] == "interview.question")["question"]
+        self.assertEqual((question["options"][0]["value"], question["yesNo"]), ("yes", True))
+        self.assertEqual(json.loads(translated[-1]["item"]["text"])["resultText"], "Choose one.")
 
     def test_resume_drains_old_results_and_finishes_only_acknowledged_request(self):
         session_id, request_id = str(uuid.uuid4()), str(uuid.uuid4())
@@ -386,4 +468,3 @@ class ClaudeAdapterCompletenessTests(unittest.TestCase):
         claude.policy.validate({"reasoningEffort": "minimal"})
         with self.assertRaises(runtime.ContractError):
             claude.policy.validate({"reasoningEffort": "extreme"})
-

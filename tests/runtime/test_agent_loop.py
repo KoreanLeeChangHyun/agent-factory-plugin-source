@@ -42,6 +42,8 @@ class FakeRuntime:
         self.next_run = 1
         self.fail_before_call = False
         self.lose_ack = False
+        self.stale_checks: list[str] = []
+        self.stale_check_error: Exception | None = None
 
     def dispatch(self, **values):
         if self.fail_before_call:
@@ -85,6 +87,9 @@ class FakeRuntime:
                 dispatch_tuple.get("executionOptions", {}), request.decode("utf-8"))
         if binding_hash is not None:
             dispatch_tuple["capabilityBindingHash"] = binding_hash
+        work_profile = values["execution"].get("workProfile") if values["role"] == "work" else None
+        if work_profile:
+            dispatch_tuple["workProfile"] = work_profile
         directory = self.agent_exec.agent_root(self.root) / values["agent_id"] / "runs" / run_id
         directory.mkdir(parents=True, exist_ok=True)
         session_id = f"session-{values['agent_id']}"
@@ -104,6 +109,8 @@ class FakeRuntime:
             "receiptSchemaPath": str(directory / "receipt.schema.json"),
             "sessionId": session_id,
         }
+        if work_profile:
+            run["workProfile"] = work_profile
         self.agent_exec.atomic_write_json(directory / "state.json", run)
         self.agent_exec.atomic_write_json(directory / "receipt.schema.json", {})
         session = self.agent_exec.session_file(self.root, values["agent_id"])
@@ -121,6 +128,12 @@ class FakeRuntime:
 
     def status(self, agent_id, run_id):
         return self.runs[(agent_id, run_id)]
+
+    def reconcile_stale(self, agent_id):
+        self.stale_checks.append(agent_id)
+        if self.stale_check_error is not None:
+            raise self.stale_check_error
+        return []
 
     def status_dispatch(self, agent_id, dispatch_id):
         matches = [
@@ -186,10 +199,35 @@ class AgentLoopContractTests(unittest.TestCase):
             "--task-list-file", str(self.tasks), "--task-id", "task-one",
             "--work-agent", "work-agent", "--verification-agent", "verification-agent",
             "--codex", "/bin/true",
+            # Most tests exercise the explicit recovery contract; automatic recovery is opted into.
+            "--receipt-recovery", "manual",
         ]
         arguments.extend(extra or [])
         args = self.agent_loop.build_parser().parse_args(arguments)
         return self.agent_loop.start_loop(args)
+
+    def drive(self, started, on_sleep):
+        args = self.agent_loop.build_parser().parse_args(["drive", "--project-root", str(self.root),
+            "--work-agent", "work-agent", "--loop-id", started["loopId"]])
+        with mock.patch.object(self.agent_loop.time, "sleep", side_effect=on_sleep):
+            return self.agent_loop.drive_loop(args)
+
+    def extend_revisions(self, started, actor="human", evidence="Human asked for one more round", additional="1"):
+        args = self.agent_loop.build_parser().parse_args([
+            "extend-revisions", "--project-root", str(self.root), "--work-agent", "work-agent",
+            "--loop-id", started["loopId"], "--actor", actor,
+            "--authorization-reference", "test-request", "--decision-evidence", evidence,
+            "--additional", additional,
+        ])
+        return self.agent_loop.extend_revisions(args)
+
+    def fail_verification_round(self, state):
+        """Complete the current Work, then fail its Verification; returns the reconciled state."""
+        addressed = self.agent_exec.safe_read_json(Path(state["statePath"]))["pendingFindingIds"]
+        self.runtime.complete_work("work-agent", state["latestWorkRunId"], addressed)
+        state = self.reconcile(state)
+        self.runtime.complete_verification("verification-agent", state["latestVerificationRunId"], "fail")
+        return self.reconcile(state)
 
     def close(self, started):
         args = self.agent_loop.build_parser().parse_args([
@@ -853,6 +891,89 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertNotIn("taskMode", verification["dispatchTuple"].get("executionOptions", {}))
         self.assertEqual(verification["verifiedWorkRunId"], work["runId"])
 
+    def test_work_profile_label_survives_revision_and_stays_off_verification(self):
+        state = self.start(["--work-profile", "workLight"])
+        self.assertEqual(state["workProfile"], "workLight")
+        stored = self.agent_exec.safe_read_json(Path(state["statePath"]))
+        self.assertEqual(stored["execution"]["workProfile"], "workLight")
+        # A label only: it adds no model, effort or permission to the dispatch.
+        self.assertEqual(stored["execution"]["agentModels"], {"work": {}, "verification": {}})
+        self.assertEqual(stored["execution"]["agentPermissions"], {})
+        self.assertIsNone(stored["execution"]["model"])
+        first = self.runtime.runs[("work-agent", state["latestWorkRunId"])]
+        self.assertEqual(first["workProfile"], "workLight")
+        self.assertEqual(first["dispatchTuple"]["workProfile"], "workLight")
+        state = self.fail_verification_round(state)
+        verification = self.runtime.runs[("verification-agent", state["latestVerificationRunId"])]
+        self.assertNotIn("workProfile", verification)
+        self.assertNotIn("workProfile", verification["dispatchTuple"])
+        revision = self.runtime.runs[("work-agent", state["latestWorkRunId"])]
+        self.assertNotEqual(revision["runId"], first["runId"])
+        self.assertEqual(self.runtime.dispatches[-1]["operation"], "send")
+        self.assertEqual(revision["workProfile"], "workLight")
+        self.assertEqual(revision["dispatchTuple"]["workProfile"], "workLight")
+        status = self.agent_loop.status_loop(self.agent_loop.build_parser().parse_args([
+            "status", "--project-root", str(self.root), "--work-agent", "work-agent", "--loop-id", state["loopId"]]))
+        self.assertEqual(status["workProfile"], "workLight")
+
+    def test_work_profile_label_survives_receipt_recovery(self):
+        state = self.start(["--work-profile", "work"])
+        self.assertEqual(state["workProfile"], "work")
+        state = self.recover_receipt(self.fail_work_receipt(state))
+        recovery = self.runtime.runs[("work-agent", state["latestWorkRunId"])]
+        self.assertEqual(state["receiptRecovery"]["recoveryWorkRunId"], recovery["runId"])
+        self.assertEqual(self.runtime.dispatches[-1]["operation"], "send")
+        self.assertEqual(recovery["workProfile"], "work")
+        self.assertEqual(recovery["dispatchTuple"]["workProfile"], "work")
+        self.assertEqual(state["workProfile"], "work")
+
+    def test_omitted_work_profile_keeps_loop_and_run_records_unlabelled(self):
+        state = self.start()
+        self.assertNotIn("workProfile", state)
+        self.assertNotIn("workProfile", self.agent_exec.safe_read_json(Path(state["statePath"]))["execution"])
+        run = self.runtime.runs[("work-agent", state["latestWorkRunId"])]
+        self.assertNotIn("workProfile", run)
+        self.assertNotIn("workProfile", run["dispatchTuple"])
+
+    def test_invalid_work_profile_is_rejected_before_any_dispatch(self):
+        for value in ("light", "heavy", "worklight", ""):
+            with self.subTest(value=value), self.assertRaises(self.agent_exec.ContractError) as raised:
+                self.start(["--work-profile", value])
+            self.assertEqual(raised.exception.code, "invalid_arguments")
+        # A caller that bypasses argparse meets the same rule.
+        args = self.agent_loop.build_parser().parse_args([
+            "start", "--project-root", str(self.root), "--request-file", str(self.request),
+            "--task-list-file", str(self.tasks), "--task-id", "task-one",
+            "--work-agent", "work-agent", "--verification-agent", "verification-agent", "--codex", "/bin/true"])
+        args.work_profile = "light"
+        with self.assertRaises(self.agent_exec.ContractError) as raised:
+            self.agent_loop.start_loop(args)
+        self.assertEqual(raised.exception.code, "work_profile_invalid")
+        self.assertEqual(self.runtime.dispatches, [])
+        self.assertEqual(self.runtime.runs, {})
+
+    def test_runtime_passes_work_profile_to_work_dispatch_only(self):
+        runtime = self.runtime_class(self.root)
+        execution = {"codex": "/bin/true", "workProfile": "workLight"}
+        with mock.patch.object(runtime, "call", return_value={"runId": "run-1"}) as call:
+            for role in ("work", "verification"):
+                runtime.dispatch(
+                    operation="send", agent_id=role + "-agent", role=role, request_file=self.request,
+                    request_hash="0" * 64, dispatch_id="dispatch-profile",
+                    verified_work_run_id=None if role == "work" else "run-1",
+                    execution=execution, capability_binding_file=None, human_approval_policy="required")
+            runtime.dispatch(
+                operation="send", agent_id="work-agent", role="work", request_file=self.request,
+                request_hash="0" * 64, dispatch_id="dispatch-plain", verified_work_run_id=None,
+                execution={"codex": "/bin/true"}, capability_binding_file=None, human_approval_policy="required")
+        labelled, verification, plain = (item.args[0] for item in call.call_args_list)
+        self.assertEqual(labelled[labelled.index("--work-profile") + 1], "workLight")
+        self.assertNotIn("--work-profile", verification)
+        self.assertNotIn("--work-profile", plain)
+        # The label never becomes a model or reasoning option.
+        self.assertNotIn("--model", labelled)
+        self.assertNotIn("--reasoning-effort", labelled)
+
     def test_plan_mode_failure_reuses_both_sessions(self):
         state = self.start(["--task-mode", "plan-work-verification"])
         self.runtime.complete_work("work-agent", state["latestWorkRunId"])
@@ -933,8 +1054,8 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
 
     def test_role_profiles_bind_through_work_verification_revision_loop(self):
-        state = self.start(["--work-model", "worker", "--work-reasoning-effort", "high",
-                            "--verification-model", "reviewer", "--verification-reasoning-effort", "low"])
+        state = self.start(["--work-model", "worker", "--work-reasoning-effort", "high", "--work-fast",
+                            "--verification-model", "reviewer", "--verification-reasoning-effort", "low", "--no-verification-fast"])
         self.runtime.complete_work("work-agent", state["latestWorkRunId"])
         state = self.reconcile(state)
         self.runtime.complete_verification("verification-agent", state["latestVerificationRunId"], "fail")
@@ -945,9 +1066,9 @@ class AgentLoopContractTests(unittest.TestCase):
         state = self.reconcile(state)
         self.assertEqual(state["status"], "completed")
         for run in self.runtime.runs.values():
-            expected = ("worker", "high") if run["role"] == "work" else ("reviewer", "low")
+            expected = ("worker", "high", True) if run["role"] == "work" else ("reviewer", "low", False)
             options = run["dispatchTuple"]["executionOptions"]
-            self.assertEqual((options["model"], options["reasoningEffort"]), expected)
+            self.assertEqual((options["model"], options["reasoningEffort"], options["fast"]), expected)
 
     def test_complete_graph_reuses_work_and_verification_sessions(self) -> None:
         state = self.start()
@@ -1498,9 +1619,378 @@ class AgentLoopContractTests(unittest.TestCase):
             item.relative_to(directory) for item in directory.rglob("*") if item.is_dir()
         })
 
+    # --- stabilization: automatic receipt recovery, bounded revisions, stale children ---
+
+    def test_missing_receipt_gets_one_automatic_repair_turn_and_completes(self) -> None:
+        # Incident: a light Work model finished the task but published no receipt.
+        started = self.start(["--task-mode", "work", "--receipt-recovery", "auto"])
+        failed_run_id = started["latestWorkRunId"]
+        state = self.fail_work_receipt(started, "receipt_missing", "Agent did not publish its receipt")
+        self.assertEqual(state["status"], "active")
+        self.assertNotEqual(state["latestWorkRunId"], failed_run_id)
+        self.assertEqual(state["receiptRecovery"]["failedWorkRunId"], failed_run_id)
+        self.assertIs(state["receiptRecovery"]["automatic"], True)
+        self.assertIsNone(state["controlPlaneError"])
+        self.assertEqual(self.runtime.dispatches[-1]["operation"], "send")
+        request = Path(state["receiptRecovery"]["requestPath"]).read_text(encoding="utf-8")
+        self.assertIn("Failure: receipt_missing", request)
+        self.assertIn("Do not repeat any already performed tool effect", request)
+        self.assertEqual(self.runtime.runs[("work-agent", failed_run_id)]["status"], "failed")
+
+        self.runtime.complete_work("work-agent", state["latestWorkRunId"])
+        ended = self.reconcile(state)
+        self.assertEqual(ended["status"], "completed")
+        self.assertEqual(ended["terminalReason"]["code"], "work-completed")
+        self.assertEqual(len(self.runtime.dispatches), 2)
+
+    def test_automatic_receipt_recovery_is_bounded_to_one_per_task(self) -> None:
+        started = self.start(["--task-mode", "work", "--receipt-recovery", "auto"])
+        recovering = self.fail_work_receipt(started, "receipt_missing", "Agent did not publish its receipt")
+        stopped = self.fail_work_receipt(recovering, "receipt_missing", "Agent did not publish its receipt")
+        self.assertEqual(stopped["status"], "runtime-error")
+        self.assertEqual(stopped["controlPlaneError"]["code"], "receipt_missing")
+        self.assertEqual(stopped["failureClass"], "contract")
+        self.assertEqual(len(self.runtime.dispatches), 2)
+        self.assertEqual(self.reconcile(stopped)["status"], "runtime-error")
+        self.assertEqual(len(self.runtime.dispatches), 2)
+
+    def test_automatic_receipt_recovery_keeps_unsafe_failures_stopped(self) -> None:
+        for code, message in (
+            ("sandbox_unavailable", "Codex filesystem sandbox is unavailable"),
+            ("receipt_tests_invalid", "Work receipt must record own checks or a reason they were not run"),
+            ("receipt_binding_invalid", "work receipt binding is invalid"),
+            ("lesson_recording_incomplete", "Runtime error captures remain unsaved"),
+        ):
+            with self.subTest(code=code):
+                self.runtime.dispatches.clear()
+                self.request.write_text(f"bounded work for {code}\n", encoding="utf-8")
+                document = json.loads(self.tasks.read_text())
+                document["tasks"][0]["requestHash"] = hashlib.sha256(self.request.read_bytes()).hexdigest()
+                self.tasks.write_text(json.dumps(document))
+                started = self.start(["--task-mode", "work", "--receipt-recovery", "auto"])
+                stopped = self.fail_work_receipt(started, code, message)
+                self.assertEqual(stopped["status"], "runtime-error")
+                self.assertEqual(stopped["controlPlaneError"]["code"], code)
+                self.assertIsNone(stopped["receiptRecovery"])
+                self.assertEqual(len(self.runtime.dispatches), 1)
+                self.close(stopped)
+                session = self.agent_exec.session_file(self.root, "work-agent")
+                session.unlink()
+
+    def test_loop_without_recovery_setting_keeps_explicit_recovery(self) -> None:
+        started = self.start(["--task-mode", "work", "--receipt-recovery", "auto"])
+        path = Path(started["statePath"])
+        stored = self.agent_exec.safe_read_json(path)
+        del stored["execution"]["receiptRecovery"]  # A loop persisted before the setting existed.
+        self.agent_exec.atomic_write_json(path, stored)
+        stopped = self.fail_work_receipt(started, "receipt_missing", "Agent did not publish its receipt")
+        self.assertEqual(stopped["status"], "runtime-error")
+        self.assertEqual(len(self.runtime.dispatches), 1)
+        recovered = self.recover_receipt(stopped)
+        self.assertEqual(recovered["status"], "active")
+        self.assertNotIn("automatic", recovered["receiptRecovery"])
+
+    def test_driver_repairs_missing_receipt_without_main(self) -> None:
+        started = self.start(["--task-mode", "work", "--receipt-recovery", "auto"])
+        first_run = started["latestWorkRunId"]
+
+        def advance(_seconds):
+            state = json.loads(Path(started["statePath"]).read_text())
+            run_id = state["latestWorkRunId"]
+            if run_id == first_run:
+                self.runtime.runs[("work-agent", run_id)].update(status="failed", error={
+                    "code": "receipt_missing", "message": "Agent did not publish its receipt"})
+            else:
+                self.runtime.complete_work("work-agent", run_id)
+
+        ended = self.drive(started, advance)
+        self.assertEqual(ended["status"], "completed")
+        self.assertEqual(ended["terminalReason"]["code"], "work-completed")
+        self.assertEqual(len(self.runtime.dispatches), 2)
+
+    def test_revision_limit_stops_for_a_human_and_extension_resumes(self) -> None:
+        # Incident: a rejected Work result looped through revisions for 23 minutes.
+        state = self.start(["--max-revisions", "1"])
+        self.assertEqual(state["maxRevisions"], 1)
+        state = self.fail_verification_round(state)
+        self.assertEqual(state["status"], "active")
+        self.assertEqual(state["revisionCount"], 1)
+        dispatched = len(self.runtime.dispatches)
+
+        stopped = self.fail_verification_round(state)
+        self.assertEqual(stopped["status"], "needs-human-decision")
+        self.assertEqual(stopped["phase"], "waiting-human")
+        self.assertEqual(stopped["controlPlaneError"]["code"], "revision_limit_reached")
+        self.assertIn("finding-1", stopped["controlPlaneError"]["message"])
+        self.assertEqual(stopped["failureClass"], "human")
+        self.assertEqual(stopped["workflow"]["tasks"][0]["verificationStatus"], "blocked")
+        self.assertEqual(len(self.runtime.dispatches), dispatched + 1)  # only the Verification
+        self.assertEqual(self.reconcile(stopped)["status"], "needs-human-decision")
+        self.assertEqual(len(self.runtime.dispatches), dispatched + 1)
+
+        with self.assertRaises(self.agent_exec.ContractError) as unauthorized:
+            self.extend_revisions(stopped, actor="main")
+        self.assertEqual(unauthorized.exception.code, "revision_extension_unauthorized")
+        with self.assertRaises(self.agent_exec.ContractError) as empty:
+            self.extend_revisions(stopped, evidence=" ")
+        self.assertEqual(empty.exception.code, "revision_extension_unauthorized")
+
+        resumed = self.extend_revisions(stopped)
+        self.assertEqual(resumed["status"], "active")
+        self.assertEqual(resumed["currentChild"]["role"], "work")
+        self.assertEqual(resumed["maxRevisions"], 2)
+        self.assertEqual(resumed["revisionCount"], 2)
+        self.assertIsNone(resumed["controlPlaneError"])
+        stored = self.agent_exec.safe_read_json(Path(resumed["statePath"]))
+        self.assertEqual(stored["revisionExtensions"][0]["actor"], "human")
+        self.assertEqual(stored["revisionExtensions"][0]["decisionEvidence"], "Human asked for one more round")
+        with self.assertRaises(self.agent_exec.ContractError) as active:
+            self.extend_revisions(resumed)
+        self.assertEqual(active.exception.code, "revision_extension_unavailable")
+
+        self.runtime.complete_work("work-agent", resumed["latestWorkRunId"], ["finding-1"])
+        verifying = self.reconcile(resumed)
+        self.runtime.complete_verification("verification-agent", verifying["latestVerificationRunId"], "pass")
+        self.assertEqual(self.reconcile(verifying)["status"], "completed")
+
+    def test_revision_limit_stop_is_exposed_as_a_structured_pause(self) -> None:
+        state = self.start(["--max-revisions", "1"])
+        self.assertIsNone(state["pause"])
+        self.assertTrue(state["createdAt"])
+        state = self.fail_verification_round(state)
+        self.assertIsNone(state["pause"])  # A revision is running: nothing for a Human to decide.
+        stopped = self.fail_verification_round(state)
+        self.assertEqual(stopped["pause"], {
+            "code": "revision_limit_reached", "revisionCount": 1, "maxRevisions": 1,
+            "pendingFindingIds": ["finding-1"],
+            "findings": [{"id": "finding-1", "path": "changed.txt", "problem": "incorrect"}]})
+        # A read-only status reports the same pause; the text message is unchanged beside it.
+        status_args = self.agent_loop.build_parser().parse_args([
+            "status", "--project-root", str(self.root), "--work-agent", "work-agent", "--loop-id", stopped["loopId"]])
+        status = self.agent_loop.status_loop(status_args)
+        self.assertEqual(status["pause"], stopped["pause"])
+        self.assertIn("loop.py extend-revisions", status["controlPlaneError"]["message"])
+        self.assertEqual(status["createdAt"], state["createdAt"])
+
+        # A loop stopped by a runtime that recorded no summaries still reports the identifiers.
+        path = Path(stopped["statePath"])
+        stored = self.agent_exec.safe_read_json(path)
+        del stored["revisionLimitFindings"]
+        self.agent_exec.atomic_write_json(path, stored)
+        legacy = self.agent_loop.status_loop(status_args)["pause"]
+        self.assertEqual((legacy["pendingFindingIds"], legacy["findings"]), (["finding-1"], []))
+
+        # Continue: the Human's three further revisions resume the loop and clear the pause.
+        resumed = self.extend_revisions(stopped, additional="3")
+        self.assertEqual((resumed["status"], resumed["maxRevisions"], resumed["pause"]), ("active", 4, None))
+        self.assertEqual(self.runtime.dispatches[-1]["role"], "work")
+
+    def test_revision_limit_pause_ends_when_the_human_stops_the_loop(self) -> None:
+        state = self.fail_verification_round(self.start(["--max-revisions", "1"]))
+        stopped = self.fail_verification_round(state)
+        dispatched = len(self.runtime.dispatches)
+        closed = self.close(stopped)
+        self.assertEqual((closed["status"], closed["pause"]), ("cancelled", None))
+        self.assertEqual(closed["terminalReason"]["code"], "human-closed")
+        self.assertEqual(len(self.runtime.dispatches), dispatched)
+        with self.assertRaises(self.agent_exec.ContractError) as raised:
+            self.extend_revisions(closed)
+        self.assertEqual(raised.exception.code, "revision_extension_unavailable")
+
+    def test_other_stops_report_no_pause(self) -> None:
+        stopped = self.fail_work_receipt(self.start(), "receipt_missing", "Agent did not publish its receipt")
+        self.assertEqual((stopped["status"], stopped["pause"]), ("runtime-error", None))
+
+    def test_loop_captures_its_response_contract_and_old_loops_keep_the_file_contract(self) -> None:
+        started = self.start()
+        stored = self.agent_exec.safe_read_json(Path(started["statePath"]))
+        self.assertEqual(stored["execution"]["responseContract"], 2)
+        self.assertEqual(self.runtime.dispatches[0]["execution"]["responseContract"], 2)
+        runtime = self.runtime_class(self.root)
+        with mock.patch.object(runtime, "call", return_value={"runId": "run-1"}) as call:
+            for execution in ({"codex": "/bin/true", "responseContract": 2}, {"codex": "/bin/true"}):
+                for role in ("work", "verification"):
+                    runtime.dispatch(
+                        operation="send", agent_id=role + "-agent", role=role, request_file=self.request,
+                        request_hash="0" * 64, dispatch_id="dispatch-contract",
+                        verified_work_run_id=None if role == "work" else "run-1",
+                        execution=execution, capability_binding_file=None, human_approval_policy="required")
+        current, current_verification, legacy, legacy_verification = (item.args[0] for item in call.call_args_list)
+        self.assertEqual(current[current.index("--response-contract") + 1], "2")
+        # A loop persisted before the field finishes every later Work run under the file contract.
+        self.assertEqual(legacy[legacy.index("--response-contract") + 1], "1")
+        for arguments in (current_verification, legacy_verification):
+            self.assertNotIn("--response-contract", arguments)
+
+    def test_structured_run_without_receipt_fields_gets_the_automatic_repair_turn(self) -> None:
+        # What a contract-2 run records when its final output lacks the fields (see test_runtime_response).
+        started = self.start(["--task-mode", "work", "--receipt-recovery", "auto"])
+        failed_run_id = started["latestWorkRunId"]
+        recovered = self.fail_work_receipt(started, "receipt_missing", "Final output omitted the receipt fields: tests")
+        request = Path(self.runtime.dispatches[-1]["request_file"]).read_text(encoding="utf-8")
+        self.assertEqual(recovered["status"], "active")
+        self.assertIs(recovered["receiptRecovery"]["automatic"], True)
+        self.assertEqual(recovered["receiptRecovery"]["failedWorkRunId"], failed_run_id)
+        # The recovery run stays on the loop's captured contract; one repair turn per task as before.
+        self.assertEqual(self.runtime.dispatches[-1]["execution"]["responseContract"], 2)
+        self.assertEqual(len(self.runtime.dispatches), 2)
+        self.assertIn("Final output omitted the receipt fields: tests", request)
+        self.assertIn("delivered the way this\nrun's instructions require", request)
+        self.assertIn("Preserved receipt (absent when none was published)", request)
+
+    def test_revision_limit_defaults_to_three_and_zero_is_unlimited(self) -> None:
+        state = self.start()
+        self.assertEqual(state["maxRevisions"], self.agent_loop.DEFAULT_MAX_REVISIONS)
+        self.assertEqual(self.agent_loop.DEFAULT_MAX_REVISIONS, 3)
+        for expected in (1, 2, 3):
+            state = self.fail_verification_round(state)
+            self.assertEqual((state["status"], state["revisionCount"]), ("active", expected))
+        self.assertEqual(self.fail_verification_round(state)["status"], "needs-human-decision")
+
+        self.close(self.agent_exec.safe_read_json(Path(state["statePath"])))
+        self.request.write_text("unbounded work\n", encoding="utf-8")
+        document = json.loads(self.tasks.read_text())
+        document["tasks"][0]["requestHash"] = hashlib.sha256(self.request.read_bytes()).hexdigest()
+        self.tasks.write_text(json.dumps(document))
+        unlimited = self.start(["--max-revisions", "0"])
+        for _ in range(5):
+            unlimited = self.fail_verification_round(unlimited)
+            self.assertEqual(unlimited["status"], "active")
+        with self.assertRaises(self.agent_exec.ContractError) as negative:
+            self.start(["--max-revisions", "-1"])
+        self.assertEqual(negative.exception.code, "revision_limit_invalid")
+
+    def test_loop_persisted_without_revision_limit_stays_unbounded(self) -> None:
+        state = self.start()
+        path = Path(state["statePath"])
+        stored = self.agent_exec.safe_read_json(path)
+        del stored["execution"]["maxRevisions"]
+        del stored["revisionCount"]
+        self.agent_exec.atomic_write_json(path, stored)
+        for _ in range(5):
+            state = self.fail_verification_round(state)
+            self.assertEqual(state["status"], "active")
+        self.assertIsNone(state["maxRevisions"])
+
+    def test_next_task_starts_with_a_fresh_revision_budget(self) -> None:
+        self.add_second_task()
+        state = self.start(["--max-revisions", "1"])
+        state = self.fail_verification_round(state)
+        self.runtime.complete_work("work-agent", state["latestWorkRunId"], ["finding-1"])
+        state = self.reconcile(state)
+        self.runtime.complete_verification("verification-agent", state["latestVerificationRunId"], "pass")
+        second = self.reconcile(state)
+        self.assertEqual(second["workflow"]["index"], 1)
+        self.assertEqual(second["revisionCount"], 0)
+        self.assertEqual(self.fail_verification_round(second)["status"], "active")
+
+    def test_revision_verification_request_names_addressed_findings(self) -> None:
+        state = self.start()
+        self.runtime.complete_work("work-agent", state["latestWorkRunId"])
+        first = self.reconcile(state)
+        first_request = Path(self.runtime.dispatches[-1]["request_file"]).read_text(encoding="utf-8")
+        self.assertNotIn("Revision context", first_request)
+        self.runtime.complete_verification("verification-agent", first["latestVerificationRunId"], "fail")
+        revision = self.reconcile(first)
+        self.runtime.complete_work("work-agent", revision["latestWorkRunId"], ["finding-1"])
+        self.reconcile(revision)
+        request = Path(self.runtime.dispatches[-1]["request_file"]).read_text(encoding="utf-8")
+        self.assertIn("Revision context", request)
+        self.assertIn('addressed: ["finding-1"]', request)
+        self.assertIn(first["latestVerificationRunId"], request)
+        self.assertIn("keeps its original id", request)
+        self.assertIn("the rest of the request", request)  # context, never a licence to skip
+
+    def test_driver_asks_exec_to_settle_a_stale_child(self) -> None:
+        started = self.start(["--task-mode", "work"])
+        ticks = []
+
+        def advance(_seconds):
+            ticks.append(1)
+            if len(ticks) == 2:
+                self.runtime.complete_work("work-agent", started["latestWorkRunId"])
+
+        with mock.patch.object(self.agent_loop, "STALE_CHECK_SECONDS", 0.0):
+            self.runtime.stale_check_error = self.agent_exec.ContractError("child_runtime_failure", "busy")
+            ended = self.drive(started, advance)
+        self.assertEqual(ended["status"], "completed")  # a failed check never stops the driver
+        self.assertEqual(self.runtime.stale_checks, ["work-agent", "work-agent"])
+
+    def test_public_state_classifies_the_recorded_stop(self) -> None:
+        classify = self.agent_loop.failure_class
+        self.assertIsNone(classify(None))
+        self.assertEqual(classify({"code": "receipt_missing"}), "contract")
+        # Retired 2026-10-03: unsaved lesson captures no longer stop a run. Stored stops stay readable.
+        self.assertEqual(classify({"code": "lesson_recording_incomplete"}), "contract")
+        self.assertNotIn("lesson_recording_incomplete", self.agent_loop.FAILURE_CLASSES["contract"])
+        self.assertEqual(classify({"code": "child_runtime_failure"}), "transient")
+        self.assertEqual(classify({"code": "native_backend_error"}), "provider")
+        self.assertEqual(classify({"code": "sandbox_unavailable"}), "environment")
+        self.assertEqual(classify({"code": "revision_limit_reached"}), "human")
+        self.assertEqual(classify({"code": "something_new"}), "unknown")
+        codes = [code for values in self.agent_loop.FAILURE_CLASSES.values() for code in values]
+        self.assertEqual(len(codes), len(set(codes)))
+        self.assertIsNone(self.start()["failureClass"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuntimeCallRetryTests(unittest.TestCase):
+    """Status reads are idempotent and retried; a dispatch is never replayed."""
+
+    def setUp(self):
+        self.agent_exec, self.loop = load_modules()
+        self.runtime = object.__new__(self.loop.AgentRuntime)
+        self.runtime.project_root = Path("/tmp/project")
+        self.runtime.script = Path("/tmp/exec.py")
+        self.runtime.parent_state_path = None
+        sleep = mock.patch.object(self.loop.time, "sleep")
+        self.sleep = sleep.start()
+        self.addCleanup(sleep.stop)
+        paths = mock.patch.object(self.agent_exec.runtime_paths, "arguments", return_value=[])
+        paths.start()
+        self.addCleanup(paths.stop)
+
+    def response(self, document, code=0):
+        return mock.Mock(returncode=code, stdout=json.dumps(document) + "\n")
+
+    def test_status_read_survives_a_transient_timeout(self):
+        timeout = self.loop.subprocess.TimeoutExpired("exec.py", 30)
+        with mock.patch.object(self.loop.subprocess, "run", side_effect=[
+                timeout, self.response({"kind": "status", "run": {"status": "running"}})]) as command:
+            self.assertEqual(self.runtime.status("work-agent", "run-1"), {"status": "running"})
+        self.assertEqual(command.call_count, 2)
+        self.sleep.assert_called_once_with(self.loop.STATUS_READ_BACKOFF_SECONDS)
+
+    def test_status_read_gives_up_after_bounded_attempts(self):
+        with mock.patch.object(self.loop.subprocess, "run", return_value=mock.Mock(returncode=1, stdout="")) as command:
+            with self.assertRaises(self.agent_exec.ContractError) as failure:
+                self.runtime.status("work-agent", "run-1")
+        self.assertEqual(failure.exception.code, "child_runtime_failure")
+        self.assertEqual(command.call_count, self.loop.STATUS_READ_ATTEMPTS)
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [0.5, 1.0])
+
+    def test_contract_answers_are_not_retried(self):
+        missing = self.response({"kind": "error", "error": {"code": "dispatch_not_found", "message": "none"}}, 2)
+        with mock.patch.object(self.loop.subprocess, "run", return_value=missing) as command:
+            with self.assertRaises(self.agent_exec.ContractError) as failure:
+                self.runtime.status_dispatch("work-agent", "dispatch-1")
+        self.assertEqual(failure.exception.code, "dispatch_not_found")
+        self.assertEqual(command.call_count, 1)
+        self.sleep.assert_not_called()
+
+    def test_dispatch_is_never_replayed(self):
+        timeout = self.loop.subprocess.TimeoutExpired("exec.py", 30)
+        with mock.patch.object(self.loop.subprocess, "run", side_effect=timeout) as command:
+            with self.assertRaises(self.loop.subprocess.TimeoutExpired):
+                self.runtime.call(["send", "--agent", "work-agent"])
+            with self.assertRaises(self.loop.subprocess.TimeoutExpired):
+                self.runtime.reconcile_stale("work-agent")
+        self.assertEqual(command.call_count, 2)
+        self.sleep.assert_not_called()
+
 
 class RoleModelDispatchTests(unittest.TestCase):
     def test_role_flags_are_sent_on_initial_and_revision_turns(self):
@@ -1508,10 +1998,10 @@ class RoleModelDispatchTests(unittest.TestCase):
         runtime = object.__new__(loop.AgentRuntime)
         runtime.call = mock.Mock(return_value={"status": "accepted"})
         execution = {"codex": "/bin/true", "taskMode": "plan-work-verification", "agentModels": {
-            "work": {"model": "work-model", "reasoningEffort": "high"},
-            "verification": {"model": "verify-model", "reasoningEffort": "low"}}}
+            "work": {"model": "work-model", "reasoningEffort": "high", "fast": True},
+            "verification": {"model": "verify-model", "reasoningEffort": "low", "fast": False}}}
         for operation in ("submit", "send"):
-            for role, model, effort in (("work", "work-model", "high"), ("verification", "verify-model", "low")):
+            for role, model, effort, fast_flag in (("work", "work-model", "high", "--fast"), ("verification", "verify-model", "low", "--no-fast")):
                 runtime.dispatch(operation=operation, agent_id=role, role=role,
                     request_file=Path("/tmp/role-request.md"), request_hash="0" * 64,
                     dispatch_id="dispatch-role", verified_work_run_id=None,
@@ -1519,15 +2009,18 @@ class RoleModelDispatchTests(unittest.TestCase):
                 args = runtime.call.call_args.args[0]
                 self.assertEqual(args[args.index("--model") + 1], model)
                 self.assertEqual(args[args.index("--reasoning-effort") + 1], effort)
+                self.assertIn(fast_flag, args)
                 self.assertEqual(loop.role_model_options(execution, role, operation), execution["agentModels"][role])
                 self.assertEqual("--task-mode" in args, role == "work")
 
     def test_role_flags_parse_and_legacy_shared_model_stays_submit_only(self):
         _, loop = load_modules()
         args = loop.build_parser().parse_args(["start", "--task-list-file", "/tmp/tasks.json", "--task-id", "task-one", "--request-file", "/tmp/request.md", "--work-agent", "work-one",
-            "--work-model", "worker", "--work-reasoning-effort", "high", "--verification-model", "reviewer", "--verification-reasoning-effort", "low"])
+            "--work-model", "worker", "--work-reasoning-effort", "high", "--work-fast", "--verification-model", "reviewer", "--verification-reasoning-effort", "low", "--no-verification-fast"])
         self.assertEqual(args.work_model, "worker")
         self.assertEqual(args.verification_reasoning_effort, "low")
+        self.assertIs(args.work_fast, True)
+        self.assertIs(args.verification_fast, False)
         self.assertEqual(loop.role_model_options({"model": "legacy"}, "work", "submit"), {"model": "legacy"})
         self.assertEqual(loop.role_model_options({"model": "legacy"}, "work", "send"), {})
 

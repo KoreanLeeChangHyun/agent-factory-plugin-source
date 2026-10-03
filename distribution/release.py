@@ -226,12 +226,12 @@ def cmd_push(args: argparse.Namespace) -> None:
     source_commit = state["source"]["commit"]
     if git(source_path, "rev-parse", "HEAD") != source_commit:
         raise fail(f"source at {source_path} no longer matches the saved source commit {source_commit}.")
-    if git(source_path, "rev-parse", "origin/main") != source_commit:
-        raise fail(f"source origin/main no longer matches the saved source commit {source_commit}.")
     targets = []
     if state["source"].get("changed", True):
         targets.append(("source", source_path, source_commit))
     else:
+        if git(source_path, "rev-parse", "origin/main") != source_commit:
+            raise fail(f"source origin/main no longer matches the saved source commit {source_commit}.")
         print(f"source: already on origin/main at {source_commit}")
     targets += [(host, Path(info["path"]), info["commit"]) for host, info in state["hosts"].items()]
     for name, path, commit in targets:

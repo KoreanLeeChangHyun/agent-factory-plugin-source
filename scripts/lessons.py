@@ -274,7 +274,7 @@ def operate(root, action, data):
             if hashlib.sha256(path.read_bytes()).hexdigest() != publication['fileHash']:
                 raise ValueError('Rule changed concurrently')
             record.setdefault('retirements', []).append({**data, 'recordedAt': stamp()})
-            original = path.read_text()
+            original = path.read_text(encoding='utf-8')
             record['retirements'][-1]['previousRule'] = original
             meta = yaml.safe_load(original.split('---', 2)[1])
             meta['description'] = 'Inactive rule; do not apply.'
@@ -301,7 +301,7 @@ def main():
     parser.add_argument('--input', required=True, type=Path)
     args = parser.parse_args()
     try:
-        print(json.dumps(operate(args.project_root, args.action, json.loads(args.input.read_text())), ensure_ascii=False))
+        print(json.dumps(operate(args.project_root, args.action, json.loads(args.input.read_text(encoding='utf-8'))), ensure_ascii=False))
         return 0
     except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
         print(json.dumps({'error': str(error)}, ensure_ascii=False))

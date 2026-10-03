@@ -187,6 +187,12 @@ class AntigravityProviderTests(unittest.TestCase):
         # agy carries --json-schema results through `finish`; a custom agent must list it.
         self.assertIn("finish", command.AGENT_TOOLS)
         self.assertIn("generate_image", command.AGENT_TOOLS)
+        # The tool list is the allowlist: managed runs get no sub-agent tool, so Work cannot delegate.
+        self.assertEqual(set(command.AGENT_TOOLS), {
+            "view_file", "list_dir", "find_by_name", "grep_search", "write_to_file", "replace_file_content",
+            "multi_replace_file_content", "notebook_edit", "run_command", "search_web", "read_url_content",
+            "generate_image", "finish"})
+        self.assertIn(f"tools: [{', '.join(command.AGENT_TOOLS)}]\n", header)
         # Agent Factory Skills are offered like plugin Skills on Codex and Claude.
         self.assertIn(f"skills: [{json.dumps(str(command.SKILLS_ROOT))}]\n", header)
         self.assertTrue((command.SKILLS_ROOT / "convention" / "SKILL.md").is_file())
@@ -214,6 +220,28 @@ class AntigravityProviderTests(unittest.TestCase):
                              sorted([command.AGENT_NAME, "agent-factory-live", "agent-factory-user"]))
         self.assertRegex(command.AGENT_NAME, r"^agent-factory-[0-9a-f]{12}$")
 
+    def test_structured_receipt_schema_reaches_execution_turns_but_not_the_plan_phase(self):
+        self.assertIs(antigravity.final_output_schema({"goalMode": True}), True)
+        with tempfile.TemporaryDirectory() as directory:
+            prepared = runtime.create_run(project_root=Path(directory), agent_id="agy-structured", actor="main", request=b"test",
+                                          session={"role": "work", "maxAttempts": 1, "provider": "antigravity"},
+                                          execution_options={"taskMode": "plan-work", "goalMode": True})
+            self.assertEqual(prepared["responseContract"], 2)
+            full = runtime.execution_policy.normalize({"schemaVersion": 1, "sandboxPolicy": {"type": "danger-full-access"},
+                                                        "approvalPolicy": "never"})
+            session = {"agy": "agy", "projectRoot": directory, "executionPolicy": full}
+            receipt_fields = {"outcome", "changedPaths", "tests", "addressedFindingIds"}
+            for phase, expected in ((None, True), ("execute", True), ("plan", False)):
+                with self.subTest(phase=phase):
+                    argv, _ = command.cli_command(session, prepared, PromptParts("F", "D"), phase)
+                    schema = json.loads(argv[argv.index("--json-schema") + 1])
+                    self.assertEqual(receipt_fields <= set(schema["properties"]), expected)
+                    self.assertEqual(receipt_fields <= set(schema["required"]), expected)
+                    # Gemini rejects null enum members; the receipt fields add none.
+                    self.assertNotIn("null", json.dumps({key: schema["properties"][key] for key in receipt_fields & set(schema["properties"])}))
+            # Only the nullable decision metadata is optional for Gemini; receipt fields stay required.
+            self.assertEqual(command.result_schema(prepared)[1], ("decisionKind",))
+
     def test_plan_work_routes_plan_then_execute(self):
         self.assertEqual(command.planning_phases({"role": "work", "executionOptions": {"taskMode": "plan-work"}}), ["plan", "execute"])
         self.assertEqual(command.planning_phases({"role": "work", "executionOptions": {"taskMode": "plan"}}), ["plan"])
@@ -221,6 +249,19 @@ class AntigravityProviderTests(unittest.TestCase):
 
 
 class AntigravityEventTests(unittest.TestCase):
+    def test_structured_marker_becomes_interview_question(self):
+        marker = ('<agent-factory-interview-question>{"id":"interview-1-of-2","current":1,"total":2,'
+                  '"text":"Pick a route","options":[{"value":"safe","label":"Safe","pros":"Lower risk",'
+                  '"cons":"Slower"},{"value":"fast","label":"Fast","pros":"Quicker","cons":"Higher risk"}],'
+                  '"recommendedValue":"safe","yesNo":false}</agent-factory-interview-question>')
+        answer = {"status": "needs-human-decision", "resultText": marker + "\nChoose one."}
+        raw = json.dumps(answer)
+        _, events = translate([INIT, {"event": "result", "result": {"conversation_id": CONVERSATION,
+            "status": "SUCCESS", "response": raw, "structured_output": answer}}])
+        question = next(event for event in events if event["type"] == "interview.question")["question"]
+        self.assertEqual((question["current"], question["recommendedValue"]), (1, "safe"))
+        self.assertEqual(json.loads(events[-1]["item"]["text"])["resultText"], "Choose one.")
+
     def test_recorded_stream_yields_tools_usage_and_terminal_result(self):
         translator, events = translate(RECORDED)
         kinds = [event["type"] for event in events]
