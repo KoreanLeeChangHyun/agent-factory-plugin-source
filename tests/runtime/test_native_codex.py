@@ -15,6 +15,22 @@ from native_fixtures import native, runtime, native_fixture
 
 
 class NativeCodexTests(unittest.TestCase):
+    def test_request_user_input_becomes_interview_question(self):
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
+            bridge, _, _ = native_fixture(Path(directory), goal=False)
+            response = bridge.handle_server_request("item/tool/requestUserInput", {"questions": [{
+                "id": "interview-2-of-4", "header": "Deploy", "question": "Which deployment?",
+                "options": [
+                    {"label": "Staged (Recommended)", "description": "Pros: safer rollout; Cons: slower completion"},
+                    {"label": "Immediate", "description": "Pros: fastest completion; Cons: larger blast radius"},
+                ]
+            }]})
+            event = json.loads(output.getvalue())
+            self.assertEqual(event["type"], "interview.question")
+            self.assertEqual((event["question"]["current"], event["question"]["total"]), (2, 4))
+            self.assertEqual(event["question"]["recommendedValue"], "1")
+            self.assertEqual(response, {"answers": {"interview-2-of-4": {"answers": []}}})
+
     def test_goal_plain_text_final_is_rejected_with_stage_diagnostic(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
             bridge, _, _ = native_fixture(Path(directory))
@@ -24,6 +40,207 @@ class NativeCodexTests(unittest.TestCase):
             with self.assertRaisesRegex(native.NativeError, "stage=finish_turn"):
                 bridge.finish_turn()
             self.assertNotIn('agent_message', output.getvalue())
+
+    @staticmethod
+    def invalid_final_then_repair(rpc, state, repaired_text, first_text="작업을 완료했습니다."):
+        """First turn ends in prose; the repair turn the bridge starts answers with repaired_text."""
+        def turn(identity, text, goal_status="complete"):
+            return [
+                {"method": "turn/started", "params": {"threadId": "thread-exact", "turn": {"id": identity}}},
+                {"method": "item/completed", "params": {"threadId": "thread-exact", "turnId": identity,
+                                                        "item": {"type": "agentMessage", "text": text}}},
+                {"method": "turn/completed", "params": {"threadId": "thread-exact", "turn": {"id": identity, "status": "completed"}},
+                 "testGoalStatus": goal_status},
+            ]
+        rpc.events = turn("turn-0", first_text) + turn("turn-repair", repaired_text)
+        original = rpc.call
+        starts = []
+
+        def call(method, params, timeout=15):
+            if method == "turn/start":
+                starts.append(params)
+                rpc.calls.append((method, params))
+                return {"turn": {"id": "turn-0" if len(starts) == 1 and not rpc.goal else "turn-repair"}}
+            return original(method, params, timeout)
+        rpc.call = call
+        return starts
+
+    def test_invalid_final_json_gets_one_schema_constrained_repair_turn(self):
+        # Incident: Work results surfaced as native_backend_error "Native final result is not valid JSON".
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
+            bridge, rpc, state = native_fixture(Path(directory), goal=False)
+            answer = json.dumps({"status": "completed", "resultPath": state["resultPath"], "resultText": "Repaired answer"})
+            starts = self.invalid_final_then_repair(rpc, state, answer)
+            bridge.run("Main role")
+            events = [json.loads(line) for line in output.getvalue().splitlines()]
+            self.assertEqual(len(starts), 2)
+            repair = starts[1]
+            self.assertEqual(repair["outputSchema"], runtime.safe_read_json(Path(state["responseSchemaPath"])))
+            self.assertEqual(repair["threadId"], "thread-exact")
+            self.assertIn("not valid JSON", repair["input"][0]["text"])
+            self.assertIn("Do not use tools", repair["input"][0]["text"])
+            finals = [e for e in events if e["type"] == "item.completed" and e["item"].get("type") == "agent_message"]
+            self.assertEqual(len(finals), 1)
+            self.assertEqual(json.loads(finals[0]["item"]["text"])["resultText"], "Repaired answer")
+
+    def test_result_repair_is_bounded_to_one_turn(self):
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
+            bridge, rpc, state = native_fixture(Path(directory), goal=False)
+            starts = self.invalid_final_then_repair(rpc, state, "여전히 JSON이 아닙니다.")
+            with self.assertRaisesRegex(native.NativeError, "not valid JSON"):
+                bridge.run("Main role")
+            self.assertEqual(len(starts), 2)
+            self.assertNotIn('agent_message', output.getvalue())
+
+    def test_goal_run_repairs_plain_text_final_without_reopening_goal(self):
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
+            bridge, rpc, state = native_fixture(Path(directory))
+            answer = json.dumps({"status": "completed", "resultPath": state["resultPath"], "resultText": "Goal answer"})
+            starts = self.invalid_final_then_repair(rpc, state, answer)
+            bridge.run("Main role")
+            events = [json.loads(line) for line in output.getvalue().splitlines()]
+            self.assertEqual(len(starts), 1)  # Goal activation starts no turn; only the repair does.
+            self.assertIn("outputSchema", starts[0])
+            final = json.loads(next(e for e in events if e["type"] == "item.completed"
+                                    and e["item"].get("type") == "agent_message")["item"]["text"])
+            self.assertEqual((final["status"], final["resultText"]), ("completed", "Goal answer"))
+            self.assertEqual(rpc.goal["status"], "complete")
+            self.assertEqual(sum(method == "thread/goal/set" and params.get("status") == "active"
+                                 for method, params in rpc.calls), 1)
+
+    def test_invalid_result_envelope_is_repaired_with_the_contract_reason(self):
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
+            bridge, rpc, state = native_fixture(Path(directory), goal=False)
+            answer = json.dumps({"status": "completed", "resultPath": state["resultPath"], "resultText": "Bound answer"})
+            wrong_path = json.dumps({"status": "completed", "resultPath": "/tmp/elsewhere.md", "resultText": "x"})
+            starts = self.invalid_final_then_repair(rpc, state, answer, first_text=wrong_path)
+            bridge.run("Main role")
+            self.assertIn("invalid terminal result", starts[1]["input"][0]["text"])
+            self.assertIn("Bound answer", output.getvalue())
+
+    RECEIPT_FIELDS = {"outcome": "completed", "changedPaths": ["src/a.py"],
+                      "tests": {"run": True, "reason": "unit tests passed"}, "addressedFindingIds": []}
+
+    def goal_work(self, directory, first, repaired=None, **run_options):
+        """A Codex Goal Work run whose Goal turn ends with `first`; a started extra turn answers `repaired`."""
+        bridge, rpc, state = native_fixture(Path(directory), role="work", **run_options)
+
+        def text(fields):
+            return json.dumps({"status": "completed", "resultPath": state["resultPath"], "resultText": "Work answer",
+                               "decisionKind": None, **fields})
+        starts = self.invalid_final_then_repair(rpc, state, text(repaired or {}), first_text=text(first))
+        return bridge, rpc, state, starts
+
+    @staticmethod
+    def final_result(output):
+        finals = [json.loads(line) for line in output.getvalue().splitlines()]
+        finals = [e for e in finals if e["type"] == "item.completed" and e["item"].get("type") == "agent_message"]
+        return [json.loads(e["item"]["text"]) for e in finals]
+
+    def test_goal_work_final_carrying_the_receipt_fields_needs_no_extra_turn(self):
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
+            bridge, rpc, state, starts = self.goal_work(directory, self.RECEIPT_FIELDS)
+            self.assertEqual(state["responseContract"], 2)
+            bridge.run("Work role")
+            self.assertEqual(starts, [])  # Goal activation starts no turn and the contract was met.
+            # The Goal turn got the receipt fields through its instructions, not a per-turn schema.
+            resume = [params for method, params in rpc.calls if method == "thread/resume"][-1]
+            self.assertIn('"addressedFindingIds"', resume["developerInstructions"])
+            (final,) = self.final_result(output)
+            self.assertEqual({key: final[key] for key in self.RECEIPT_FIELDS}, self.RECEIPT_FIELDS)
+            runtime.publish_terminal_result(final, state)
+            receipt = runtime.publish_structured_receipt(Path(directory), state, final,
+                                                         agent_id=state["agentId"], run_id=state["runId"])
+            self.assertEqual(receipt["changedPaths"], ["src/a.py"])
+
+    def test_goal_work_final_without_receipt_fields_gets_one_schema_constrained_turn(self):
+        malformed = {**self.RECEIPT_FIELDS, "tests": "unit tests passed"}
+        for first, reason in (({}, "omitted the receipt fields: outcome, changedPaths, tests, addressedFindingIds"),
+                              ({"outcome": "completed"}, "omitted the receipt fields: changedPaths, tests"),
+                              (malformed, "do not match the output schema: tests")):
+            with self.subTest(first=sorted(first)), tempfile.TemporaryDirectory() as directory, \
+                    redirect_stdout(io.StringIO()) as output:
+                bridge, rpc, state, starts = self.goal_work(directory, first, self.RECEIPT_FIELDS)
+                bridge.run("Work role")
+                self.assertEqual(len(starts), 1)
+                schema = runtime.safe_read_json(Path(state["responseSchemaPath"]))
+                self.assertEqual(starts[0]["outputSchema"], schema)
+                self.assertLessEqual(set(self.RECEIPT_FIELDS), set(schema["required"]))
+                request = starts[0]["input"][0]["text"]
+                self.assertIn(reason, request)
+                self.assertIn("Do not use tools", request)
+                self.assertIn("own checks you actually ran", request)
+                (final,) = self.final_result(output)
+                self.assertEqual({key: final[key] for key in self.RECEIPT_FIELDS}, self.RECEIPT_FIELDS)
+                self.assertEqual(rpc.goal["status"], "complete")
+
+    def test_goal_work_still_lacking_receipt_fields_is_returned_for_receipt_recovery(self):
+        # One extra turn only; the runtime never fills the values, so the run ends as receipt_missing.
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
+            bridge, rpc, state, starts = self.goal_work(directory, {}, {"outcome": "completed"})
+            bridge.run("Work role")
+            self.assertEqual(len(starts), 1)
+            (final,) = self.final_result(output)
+            self.assertNotIn("tests", final)
+            with self.assertRaises(runtime.ContractError) as raised:
+                runtime.publish_structured_receipt(Path(directory), state, final,
+                                                   agent_id=state["agentId"], run_id=state["runId"])
+            self.assertEqual(raised.exception.code, "receipt_missing")
+            self.assertFalse(Path(state["receiptPath"]).exists())
+
+    def test_goal_work_without_a_completed_result_or_under_the_file_contract_gets_no_receipt_turn(self):
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
+            bridge, rpc, state = native_fixture(Path(directory), role="work")
+            failed = json.dumps({"status": "failed", "resultPath": state["resultPath"], "resultText": "Blocked"})
+            starts = self.invalid_final_then_repair(rpc, state, failed, first_text=failed)
+            bridge.run("Work role")
+            self.assertEqual(starts, [])
+            self.assertEqual(self.final_result(output)[0]["status"], "failed")
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
+            # A run created under contract 1 finishes under contract 1: the Agent writes receipt.json.
+            bridge, rpc, state, starts = self.goal_work(directory, {}, response_contract=1)
+            self.assertNotIn("responseContract", state)
+            bridge.run("Work role")
+            self.assertEqual(starts, [])
+            self.assertEqual(self.final_result(output)[0]["status"], "completed")
+
+    def test_work_run_requires_the_trusted_guard_hook_before_any_thread(self):
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
+            bridge, rpc, _ = native_fixture(Path(directory), role="work")
+            original = rpc.call
+
+            def call(method, params, **kwargs):
+                if method == "hooks/list":
+                    rpc.calls.append((method, params))
+                    return {"data": [{"hooks": [{"source": "sessionFlags", "eventName": "preToolUse", "key": "k",
+                                                 "currentHash": "sha256:new", "trustStatus": "untrusted",
+                                                 "command": native.codex_policy.orchestrator_guard.HOOK_COMMAND}]}]}
+                if method == "config/value/write":
+                    rpc.calls.append((method, params))
+                    return {}
+                return original(method, params, **kwargs)
+            rpc.call = call
+            with self.assertRaisesRegex(RuntimeError, "did not trust the Agent Factory guard hook"):
+                bridge.run("Work role")
+            methods = [method for method, _ in rpc.calls]
+            self.assertIn("config/value/write", methods)
+            self.assertFalse({"thread/start", "thread/resume", "turn/start"} & set(methods))
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
+            bridge, rpc, _ = native_fixture(Path(directory), goal=False)  # Worker-mode Main carries no hook.
+            bridge.run("Main role")
+            self.assertNotIn("hooks/list", [method for method, _ in rpc.calls])
+
+    def test_codex_capabilities_report_that_work_starts_no_sub_agent(self):
+        probed = {"schemaVersion": "0.1.0", "kind": "execution-capabilities", "diagnostic": None}
+        for delivery, expected in ((True, "none"), (False, None)):
+            fields = {"model": True, "reasoning": True, "fast": True, "goal": True, "plan": True,
+                      "instructionDelivery": delivery}
+            with mock.patch.object(native, "inspect_capabilities",
+                                   return_value={**probed, "submit": dict(fields), "send": dict(fields)}):
+                capabilities = runtime.adapters.adapter("codex").inspect_capabilities("codex")
+            for operation in ("submit", "send"):
+                # The legacy exec backend carries no hook, so it advertises nothing.
+                self.assertEqual(capabilities[operation].get("workSubagents"), expected)
 
     def test_goal_contract_injection_failure_prevents_activation(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):

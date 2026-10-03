@@ -160,7 +160,7 @@ class AgentExecTests(unittest.TestCase):
                  "cloudReporting": {"endpoint": "https://unused.invalid"}}
         with mock.patch("socket.socket", side_effect=AssertionError("network attempted")):
             self.assertEqual(self.module.public_state(state),
-                             {"role": "main", "status": "running"})
+                             {"role": "main", "status": "running", "pendingLessons": 0})
 
     def test_reset_conversation_preserves_history_and_agent_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory, \
@@ -345,6 +345,10 @@ class AgentExecTests(unittest.TestCase):
         self.assertIn("authorized execution without a separate proposal", prompt)
         self.assertNotIn("proceed through Main -> Work -> Verification immediately", prompt)
         self.assertIn("Do not return\n`needs-human-decision` merely to approve a plan", prompt)
+        # Bypass authorizes requested work only; questions and unclear messages stay conversation.
+        self.assertIn("Bypass never turns them into work.", prompt)
+        self.assertIn("Conversation always remains direct Main: answer questions", prompt)
+        self.assertNotIn('"can you fix this?" can request work', prompt)
     def test_delegated_bypass_prompt_preserves_role_boundaries(self) -> None:
         for role in ("work", "verification"):
             with self.subTest(role=role):
@@ -956,6 +960,57 @@ class AgentExecTests(unittest.TestCase):
                 self.module.main(["capabilities", "--project-root", directory, "--agent", "work-agent"])
             self.assertEqual(emit.call_args.args[0]["executionMode"], "danger-full-access")
 
+    def test_send_uses_current_codex_cli_without_resetting_conversation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(self.module, "spawn_worker", return_value=123), mock.patch.object(self.module, "emit") as emit:
+            root = Path(directory)
+            initial = self.module.parse_args([
+                "submit", "--project-root", directory, "--agent", "main-agent",
+                "--role", "main", "--message", "first", "--codex", sys.executable,
+            ])
+            self.module.submit(initial, True)
+            first = emit.call_args.args[0]
+            first_path = Path(first["statePath"])
+            self.module.mark_terminal(first_path, "completed")
+            original_state = first_path.read_bytes()
+            session_path = self.module.session_file(root, "main-agent")
+            self.module.update_json(session_path, session_path.parent / ".session-state.lock",
+                lambda value: value.update({"sessionId": "existing-thread", "backend": "app-server"}))
+            follow_up = self.module.parse_args([
+                "send", "--project-root", directory, "--agent", "main-agent",
+                "--message", "continue", "--codex", "/bin/true", "--dispatch-id", "dispatch-current-codex",
+            ])
+            capabilities = {"submit": {"goal": True}, "send": {"goal": True, "instructionDelivery": True}, "diagnostic": None}
+            with mock.patch.object(self.module.native_codex, "inspect_capabilities", return_value=capabilities):
+                self.module.submit(follow_up, False)
+                second = emit.call_args.args[0]
+                session = self.module.load_session(root, "main-agent")
+                self.assertEqual(session["codex"], str(Path("/bin/true").resolve()))
+                self.assertEqual(session["sessionId"], "existing-thread")
+                self.assertEqual(session["backend"], "app-server")
+                self.assertEqual(first_path.read_bytes(), original_state)
+                self.assertEqual(self.module.safe_read_json(Path(second["statePath"]))["dispatchTuple"]["requestedCodex"], "/bin/true")
+                self.module.main(["capabilities", "--project-root", directory, "--agent", "main-agent", "--codex", "/bin/true"])
+                self.assertEqual(self.module.native_codex.inspect_capabilities.call_args.args[0], "/bin/true")
+                self.module.submit(follow_up, False)
+                self.assertTrue(emit.call_args.args[0]["deduplicated"])
+
+    def test_send_rejects_missing_codex_cli_without_changing_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(self.module, "spawn_worker", return_value=123), mock.patch.object(self.module, "emit") as emit:
+            root = Path(directory)
+            self.module.submit(self.module.parse_args([
+                "submit", "--project-root", directory, "--agent", "main-agent",
+                "--role", "main", "--message", "first", "--codex", sys.executable,
+            ]), True)
+            self.module.mark_terminal(Path(emit.call_args.args[0]["statePath"]), "completed")
+            session_before = self.module.session_file(root, "main-agent").read_bytes()
+            with self.assertRaises(self.module.ContractError) as failure:
+                self.module.submit(self.module.parse_args([
+                    "send", "--project-root", directory, "--agent", "main-agent",
+                    "--message", "continue", "--codex", str(root / "missing-codex"),
+                ]), False)
+            self.assertEqual(failure.exception.code, "codex_not_found")
+            self.assertEqual(self.module.session_file(root, "main-agent").read_bytes(), session_before)
+
     def test_main_human_approval_bypass_persists_and_is_reported_as_execution_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(self.module, "spawn_worker", return_value=123), mock.patch.object(self.module, "emit") as emit:
             root = Path(directory)
@@ -1068,6 +1123,31 @@ class AgentExecTests(unittest.TestCase):
         self.assertEqual(final["startDisposition"], "launching")
         self.assertEqual(final["error"]["code"], "start_ack_missing")
         self.assertEqual(updates.call_count, 2)
+
+    def test_worker_applies_pending_lessons_after_the_outcome_without_affecting_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self.dispatch_args(directory, "dispatch-pending-lessons")
+            with mock.patch.object(self.module, "spawn_worker", return_value=123), mock.patch.object(self.module, "emit"):
+                self.module.submit(args, True)
+            state = next(self.module.iter_run_states(root, "work-agent"))
+            worker_args = argparse.Namespace(project_root=root, agent="work-agent", run_id=state["runId"])
+            observed = []
+
+            def sweep(project_root, swept):
+                observed.append((swept["runId"], self.module.safe_read_json(Path(state["statePath"]))["status"]))
+                raise RuntimeError("lesson storage is unavailable")
+
+            with mock.patch.object(self.module, "Heartbeat", return_value=mock.Mock()), \
+                 mock.patch.object(self.module, "run_codex_attempt", return_value=("completed", "session")), \
+                 mock.patch.object(self.module.lesson_capture, "apply_pending", side_effect=sweep):
+                outcome = self.module.worker(worker_args)
+            final = self.module.safe_read_json(Path(state["statePath"]))
+
+        self.assertEqual(outcome, 0)
+        self.assertEqual(observed, [(state["runId"], "completed")])
+        self.assertEqual(final["status"], "completed")
+        self.assertIsNone(final["error"])
 
     def test_reconcile_never_replays_ambiguous_or_started_stale_run(self) -> None:
         cases = (
@@ -1489,6 +1569,30 @@ class AgentExecTests(unittest.TestCase):
                     self.module.command_cancel(args)
             self.assertEqual(raised.exception.code, "process_identity_mismatch")
             kill.assert_not_called()
+
+    def test_cancel_keeps_a_run_that_finished_before_the_state_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = self._new_containment_state(root)
+            path = Path(state["statePath"])
+            real_update = self.module.update_json
+            finished = []
+
+            def worker_finishes_first(target, lock, change):
+                if not finished:
+                    finished.append(True)
+                    self.module.mark_terminal(path, "completed")
+                return real_update(target, lock, change)
+
+            args = argparse.Namespace(project_root=root, agent="work-agent", run_id=state["runId"])
+            with mock.patch.object(self.module, "update_json", side_effect=worker_finishes_first), \
+                    mock.patch.object(self.module, "emit"):
+                with self.assertRaises(self.module.ContractError) as raised:
+                    self.module.command_cancel(args)
+            self.assertEqual(raised.exception.code, "run_terminal")
+            final = self.module.safe_read_json(path)
+            self.assertEqual(final["status"], "completed")
+            self.assertFalse(final.get("cancelRequested"))
 
     def test_new_command_keeps_configured_sandbox_without_bypass(self) -> None:
         command = self.module.build_codex_command(

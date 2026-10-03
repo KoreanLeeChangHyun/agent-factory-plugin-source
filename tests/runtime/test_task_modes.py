@@ -149,6 +149,21 @@ class PlanWorkTests(TaskModeTests):
                     for mode in ("plan", "plan-work", "plan-work-verification"):
                         self.assertEqual(mode in modes, supported)
 
+    def test_orchestrate_guidance_names_an_action_for_every_failure_class(self):
+        # Human decision 2026-10-03: guidance only; the runtime still never re-dispatches Work.
+        instruction = route_instruction("orchestrate", "main")
+        for expected in ("contract - the runtime's automatic receipt recovery already ran",
+                         "transient - run loop.py reconcile, read the status once more, then decide",
+                         "environment - stop and report the cause to the Human",
+                         "human - pass the decision to the Human",
+                         "provider - report the provider's message and do not dispatch again unless the Human asks",
+                         "retry a failed workLight attempt once with the work profile (--work-profile work) only when its "
+                         "failureClass is contract or absent"):
+            self.assertIn(expected, instruction)
+        for mode in ("direct", "work", "work-verification"):
+            self.assertNotIn("failureClass", route_instruction(mode, "main"))
+        self.assertEqual(route_instruction("orchestrate", "work"), "")
+
     def test_main_guidance_reports_work_checks_without_reverification(self):
         instruction = route_instruction("plan-work", "main")
         self.assertIn("loop.py start --task-mode plan-work", instruction)

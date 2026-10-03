@@ -58,6 +58,10 @@ class FakeRpc:
             return {"thread": {"id": "thread-exact", "turns": self.history or [{"id": "native-turn", "status": "inProgress"}]}}
         if method == "turn/interrupt":
             return {}
+        if method == "hooks/list":
+            # Work runs carry the guard hook; an already trusted one needs no config write.
+            return {"data": [{"hooks": [{"source": "sessionFlags", "eventName": "preToolUse", "trustStatus": "trusted",
+                                         "command": native.codex_policy.orchestrator_guard.HOOK_COMMAND}]}]}
         raise AssertionError(method)
 
     def event(self):
@@ -71,12 +75,15 @@ class FakeRpc:
         return event
 
 
-def native_fixture(root, *, fast=None, goal=True, existing=True, action=None, statuses=("complete",), mismatch=False):
-    session = {"role": "main", "maxAttempts": 1, "codex": "codex", "projectRoot": str(root),
+def native_fixture(root, *, fast=None, goal=True, existing=True, action=None, statuses=("complete",), mismatch=False,
+                   role="main", **run_options):
+    session = {"role": role, "maxAttempts": 1, "codex": "codex", "projectRoot": str(root),
                "sandbox": "read-only", "executionPolicy": runtime_test_home.policy("read-only"), "startTimeout": 20, "goalMode": goal, "fast": fast,
                "model": "model-one", "reasoningEffort": "high", "sessionId": "thread-exact" if existing else None}
-    state = runtime.create_run(project_root=root, agent_id="main-test", actor="human", request=b"finish", session=session)
-    runtime.atomic_write_json(runtime.session_file(root, "main-test"), session)
+    agent = f"{role}-test"
+    state = runtime.create_run(project_root=root, agent_id=agent, actor="human", request=b"finish", session=session,
+                               **run_options)
+    runtime.atomic_write_json(runtime.session_file(root, agent), session)
     state["goalObjective"] = "finish" if goal else None
     state["goalAction"] = action
     rpc = FakeRpc(state["resultPath"], statuses, mismatch)

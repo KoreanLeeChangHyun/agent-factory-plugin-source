@@ -22,8 +22,8 @@ class GuardDecisionTests(unittest.TestCase):
         self.run_directory = tempfile.mkdtemp()
         self.config = {"pluginRoot": PLUGIN, "writeRoot": self.run_directory}
 
-    def decide(self, event, armed=True):
-        environment = {guard.ENV: json.dumps(self.config)} if armed else {}
+    def decide(self, event, armed=True, config=None):
+        environment = {guard.ENV: json.dumps(config or self.config)} if armed else {}
         with mock.patch.dict(os.environ, environment, clear=False), mock.patch("sys.stdin", io.StringIO(json.dumps(event))):
             if not armed:
                 os.environ.pop(guard.ENV, None)
@@ -76,22 +76,91 @@ class GuardDecisionTests(unittest.TestCase):
     def test_unarmed_guard_allows_everything(self):
         self.assertTrue(self.decide({"tool_name": "Bash", "tool_input": {"command": "rm -rf x"}}, armed=False))
         self.assertTrue(self.decide({"toolCall": {"name": "write_to_file", "args": {"TargetFile": "/x"}}}, armed=False))
+        self.assertTrue(self.decide({"tool_name": "spawn_agent", "tool_input": {"message": "x"}}, armed=False))
+
+    def test_main_rules_ignore_the_sub_agent_tools_the_shared_matcher_adds(self):
+        # The matcher now also routes sub-agent tools here; Main's decision for them stays "allow".
+        for tool in ("spawn_agent", "multi_agent_v1resume_agent", "multi_agent_v1wait_agent"):
+            self.assertTrue(self.decide({"tool_name": tool, "tool_input": {"message": "x"}, "cwd": "/tmp"}), tool)
+
+
+class WorkDecisionTests(unittest.TestCase):
+    """Codex Work arming: no sub-agent can be started; everything else is the run's own business."""
+    config = json.loads(guard.WORK_ENVIRONMENT[guard.ENV])
+    decide = GuardDecisionTests.decide
+
+    def work(self, tool, **arguments):
+        return self.decide({"tool_name": tool, "tool_input": arguments, "cwd": "/tmp"})
+
+    def test_work_denies_every_sub_agent_start(self):
+        # Codex exposes no read-only exploration type, so naming one changes nothing.
+        for tool, arguments in (("spawn_agent", {"message": "review my work"}),
+                                ("spawn_agent", {"message": "search", "agent_type": "explorer"}),
+                                ("multi_agent_v1spawn_agent", {"message": "x"}),
+                                ("spawn_agents_on_csv", {"csv_path": "a.csv"}),
+                                ("multi_agent_v1resume_agent", {"id": "agent-1"})):
+            self.assertFalse(self.work(tool, **arguments), tool)
+
+    def test_work_keeps_its_own_tools(self):
+        for tool, arguments in (("Bash", {"command": "rm -rf build && git commit -m x"}),
+                                ("apply_patch", {"command": "*** Begin Patch\n*** Add File: /tmp/project/a.py\n+x\n*** End Patch"}),
+                                ("multi_agent_v1wait_agent", {"targets": []}), ("mcp__docs__search", {"query": "x"})):
+            self.assertTrue(self.work(tool, **arguments), tool)
+
+    def test_work_denial_names_the_work_rule_and_fails_closed(self):
+        environment = dict(guard.WORK_ENVIRONMENT)
+        with mock.patch.dict(os.environ, environment), mock.patch("sys.stdin", io.StringIO(
+                json.dumps({"tool_name": "spawn_agent", "tool_input": {}}))), redirect_stdout(io.StringIO()) as output:
+            guard.main()
+        decision = json.loads(output.getvalue())["hookSpecificOutput"]
+        self.assertEqual((decision["permissionDecision"], decision["permissionDecisionReason"]), ("deny", guard.WORK_REASON))
+        with mock.patch.dict(os.environ, environment), mock.patch("sys.stdin", io.StringIO('["not an event"]')), \
+                redirect_stdout(io.StringIO()) as output:
+            guard.main()
+        self.assertEqual(json.loads(output.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
 class ProviderWiringTests(unittest.TestCase):
     state = {"role": "main", "taskMode": "orchestrate", "statePath": "/tmp/agents/main/runs/run-1/state.json"}
 
-    def test_codex_hook_only_for_orchestrate_main(self):
+    work_state = {**state, "role": "work", "taskMode": "work"}
+
+    def test_codex_hook_only_for_orchestrate_main_and_work(self):
         command, environment = codex_policy.app_server({"codex": "codex"}, self.state)
         self.assertIn("-c", command)
         self.assertIn(guard.HOOK_COMMAND.replace('"', '\\"'), command[command.index("-c") + 1])
         self.assertEqual(json.loads(environment[guard.ENV])["writeRoot"], "/tmp/agents/main/runs/run-1")
-        for state in ({**self.state, "taskMode": "direct"}, {**self.state, "role": "work", "taskMode": "work"}):
+        for state in ({**self.state, "taskMode": "direct"}, {**self.state, "role": "verification", "taskMode": "verification"}):
             with mock.patch.dict(os.environ, {guard.ENV: "stale"}):
                 command, environment = codex_policy.app_server({"codex": "codex"}, state)
             self.assertNotIn("-c", command)
             self.assertNotIn(guard.ENV, environment)
         self.assertNotEqual(codex_policy.guard_signature(self.state, {}), codex_policy.guard_signature({**self.state, "taskMode": "direct"}, {}))
+
+    def test_codex_work_and_main_share_one_hook_definition(self):
+        # Codex keeps one trust hash per session-flag hook key: both roles must pass the identical definition.
+        main, main_environment = codex_policy.app_server({"codex": "codex"}, self.state)
+        with mock.patch.dict(os.environ, {guard.ENV: main_environment[guard.ENV]}):  # Inherited from a dispatching Main.
+            work, work_environment = codex_policy.app_server({"codex": "codex"}, self.work_state)
+        self.assertEqual(work, main)
+        self.assertEqual(work.count("-c"), 1)
+        self.assertEqual(work[-1], codex_policy.guard_hook_toml())
+        self.assertRegex("spawn_agent", codex_policy.GUARD_MATCHER)
+        for tool in ("Bash", "apply_patch", "multi_agent_v1spawn_agent", "multi_agent_v1resume_agent"):
+            self.assertRegex(tool, codex_policy.GUARD_MATCHER)
+        for tool in ("update_plan", "mcp__docs__search", "BashOutput"):
+            self.assertNotRegex(tool, codex_policy.GUARD_MATCHER)
+        # Only the arming variable differs, and it selects the Work rules.
+        self.assertEqual(json.loads(work_environment[guard.ENV]), {"role": "work"})
+        self.assertNotEqual(codex_policy.guard_signature(self.state, {}), codex_policy.guard_signature(self.work_state, {}))
+        # The role may come from the session, as for runs restored from a session file.
+        self.assertEqual(codex_policy.guard_environment({"taskMode": "work"}, {"role": "work"}), guard.WORK_ENVIRONMENT)
+        self.assertEqual(codex_policy.guard_environment({"role": "verification"}, {}), {})
+
+    def test_antigravity_arms_only_orchestrate_main(self):
+        # Antigravity's managed agent lists no sub-agent tool; its Work runs stay unarmed.
+        self.assertFalse(guard.orchestrating(self.work_state))
+        self.assertTrue(guard.working(self.work_state) and not guard.working(self.state))
 
     def test_codex_trust_is_written_once_and_confirmed(self):
         hook = {"source": "sessionFlags", "eventName": "preToolUse", "command": guard.HOOK_COMMAND,
