@@ -135,3 +135,23 @@ def test_input_errors_name_the_expected_action(tmp_path):
     seed(tmp_path)
     with pytest.raises(ValueError, match='Only active rules may be applied; record a recurrence'):
         lessons.operate(tmp_path, 'apply', dict(id='demo', runId='r1', outcome='recurrence', evidence='test'))
+
+
+def test_submodule_root_is_refused_when_workspace_keeps_lessons(tmp_path):
+    (tmp_path / '.gitmodules').write_text('[submodule "extension"]\n\tpath = extension\n\turl = git@example:ext.git\n')
+    (tmp_path / 'extension').mkdir()
+    (tmp_path / 'tools').mkdir()
+    seed(tmp_path)
+    with pytest.raises(ValueError, match='submodule'):
+        seed(tmp_path / 'extension')
+    assert not (tmp_path / 'extension/docs').exists()
+    seed(tmp_path / 'tools')
+    with pytest.raises(ValueError, match='--project-root'):
+        lessons.operate(tmp_path / 'extension', 'retrieve', {'query': '사례', 'scope': 'project-a'})
+
+
+def test_submodule_root_without_workspace_lessons_is_allowed(tmp_path):
+    (tmp_path / '.gitmodules').write_text('[submodule "extension"]\n\tpath = extension\n')
+    (tmp_path / 'extension').mkdir()
+    seed(tmp_path / 'extension')
+    assert (tmp_path / 'extension/docs/lessons-learned/demo.json').is_file()
