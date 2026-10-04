@@ -303,6 +303,7 @@ class NativeCodexTests(unittest.TestCase):
             self.assertEqual(turn["effort"], "high")
             self.assertEqual(resume["developerInstructions"], "role and request")
             self.assertIn("outputSchema", turn)
+            self.assertEqual(resume["config"]["model_reasoning_summary"], "auto")
 
     def test_wrong_resumed_thread_fails_before_starting_a_turn(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):

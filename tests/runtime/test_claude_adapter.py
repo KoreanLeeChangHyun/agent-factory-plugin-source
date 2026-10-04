@@ -198,9 +198,12 @@ class ClaudeAdapterTests(unittest.TestCase):
             state = {"statePath": str(directory / "state.json"), "responseSchemaPath": str(schema),
                      "imageInputs": [{"path": str(image), "mediaType": "image/png"}]}
             session = {"claude": "/local/claude", "sessionId": str(uuid.uuid4()), "model": "claude-sonnet", "reasoningEffort": "high",
-                       "executionPolicy": POLICY, "projectRoot": root}
+                       "executionPolicy": POLICY, "projectRoot": root, "thinkingDisplay": True}
             command, message = claude.cli_command(session, state, PromptParts("fixed instruction", "current request"))
             self.assertIn("--include-partial-messages", command)
+            self.assertEqual(command[command.index("--thinking-display") + 1], "summarized")
+            for unsupported in ({**session, "thinkingDisplay": False}, {k: v for k, v in session.items() if k != "thinkingDisplay"}):
+                self.assertNotIn("--thinking-display", claude.cli_command(unsupported, state, PromptParts("fixed", "request"))[0])
             self.assertEqual(command[command.index("--permission-mode") + 1], "bypassPermissions")
             planned, plan_message = claude.cli_command(session, state, PromptParts("fixed instruction", "current request"), "plan")
             self.assertEqual(planned[planned.index("--permission-mode") + 1], "plan")
@@ -412,6 +415,18 @@ class ClaudeAdapterCompletenessTests(unittest.TestCase):
         self.assertEqual([(e["item"]["type"], e["item"].get("changes", [{}])[0].get("path")) for e in started],
                          [("file_change", "a.py"), ("file_change", "b.py"), ("file_change", "c.ipynb"), ("mcp_tool_call", None)])
 
+    def test_todo_list_reports_step_progress_and_the_active_step(self):
+        events = self.events()
+        todos = [{"content": "Read code", "activeForm": "Reading code", "status": "completed"},
+                 {"content": "Edit panel", "activeForm": "Editing the panel", "status": "in_progress"},
+                 {"content": "Run checks", "activeForm": "Running checks", "status": "pending"}]
+        started = events.translate({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t", "name": "TodoWrite", "input": {"todos": todos}}]}})
+        self.assertEqual(started[-1], {"type": "plan.progress", "completed": 1, "total": 3, "current": "Editing the panel"})
+        nested = events.translate({"type": "assistant", "parent_tool_use_id": "task", "message": {"content": [
+            {"type": "tool_use", "id": "u", "name": "TodoWrite", "input": {"todos": todos}}]}})
+        self.assertFalse([event for event in nested if event["type"] == "plan.progress"])
+
     def test_tool_results_keep_their_text_and_real_error_message(self):
         events = self.events()
         events.translate({"type": "assistant", "message": {"content": [
@@ -423,6 +438,55 @@ class ClaudeAdapterCompletenessTests(unittest.TestCase):
         self.assertEqual(done[0]["item"]["result"], "3 matches")
         self.assertEqual(done[1]["item"]["error"], "old_string not found")
         self.assertEqual(done[1]["item"]["status"], "failed")
+
+    def test_tool_targets_web_tools_and_mcp_names_are_summarized(self):
+        events = self.events()
+        started = events.translate({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "r", "name": "Read", "input": {"file_path": "src/a.py", "offset": 120, "limit": 40}},
+            {"type": "tool_use", "id": "g", "name": "Grep", "input": {"pattern": "x" * 500, "path": "src", "glob": "*.py",
+                                                                      "output_mode": "content", "-n": True}},
+            {"type": "tool_use", "id": "s", "name": "WebSearch", "input": {"query": "agent timeline rows"}},
+            {"type": "tool_use", "id": "f", "name": "WebFetch", "input": {"url": "https://example.com/a/b", "prompt": "summarize"}},
+            {"type": "tool_use", "id": "m", "name": "mcp__playwright__browser_take_screenshot", "input": {"filename": "a.png"}},
+            {"type": "tool_use", "id": "t", "name": "TodoWrite", "input": {"todos": []}}]}})
+        items = [event["item"] for event in started]
+        self.assertEqual(items[0], {"id": "r", "type": "mcp_tool_call", "server": "claude", "tool": "Read",
+                                    "arguments": {"file_path": "src/a.py", "offset": 120, "limit": 40}})
+        self.assertEqual(items[1]["arguments"], {"pattern": "x" * 200, "path": "src", "glob": "*.py"})
+        self.assertEqual(items[2], {"id": "s", "type": "web_search", "action": {"type": "search", "query": "agent timeline rows"}})
+        self.assertEqual(items[3], {"id": "f", "type": "web_search", "action": {"type": "openPage", "url": "https://example.com/a/b"}})
+        self.assertEqual(items[4], {"id": "m", "type": "mcp_tool_call", "server": "playwright", "tool": "browser_take_screenshot"})
+        self.assertEqual(items[5], {"id": "t", "type": "mcp_tool_call", "server": "claude", "tool": "TodoWrite"})
+        done = events.translate({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "s", "content": "Search failed", "is_error": True}]}})
+        self.assertEqual((done[0]["item"]["type"], done[0]["item"]["status"]), ("web_search", "failed"))
+
+    def test_failed_bash_keeps_claude_exit_status(self):
+        events = self.events()
+        events.translate({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "b", "name": "Bash", "input": {"command": "npm test"}}]}})
+        done = events.translate({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "b", "content": "Exit code 2\nnpm ERR! test failed", "is_error": True}]}})
+        self.assertEqual((done[0]["item"]["status"], done[0]["item"]["exit_code"]), ("failed", 2))
+        self.assertEqual(done[0]["item"]["error"], "Exit code 2\nnpm ERR! test failed")
+
+    def test_thinking_becomes_a_reasoning_item_once(self):
+        events = self.events()
+        stream = lambda data: events.translate({"type": "stream_event", "event": data})
+        stream({"type": "message_start", "message": {"id": "msg_1"}})
+        self.assertEqual(stream({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}),
+                         [{"type": "item.started", "item": {"id": "msg_1:thinking:0", "type": "reasoning"}}])
+        stream({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Check the "}})
+        stream({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "renderer."}})
+        self.assertEqual(stream({"type": "content_block_stop", "index": 0}), [{"type": "item.completed", "item": {
+            "id": "msg_1:thinking:0", "type": "reasoning", "summary": ["Check the renderer."]}}])
+        # The complete message repeats the streamed thought; it is not shown twice.
+        self.assertEqual(events.translate({"type": "assistant", "message": {"id": "msg_1", "content": [
+            {"type": "thinking", "thinking": "Check the renderer."}]}}), [])
+        # Without partial messages the finished thought is still recorded.
+        self.assertEqual(events.translate({"type": "assistant", "message": {"id": "msg_2", "content": [
+            {"type": "thinking", "thinking": "Plan"}]}}), [{"type": "item.completed", "item": {
+                "id": "msg_2:thinking:0", "type": "reasoning", "summary": ["Plan"]}}])
 
     def test_subagent_tools_are_visible_but_subagent_prose_and_usage_are_not(self):
         events = self.events()
@@ -443,15 +507,32 @@ class ClaudeAdapterCompletenessTests(unittest.TestCase):
             with mock.patch.object(claude.capabilities.subprocess, "run", return_value=full) as run:
                 first = claude.inspect_capabilities("/bin/true", runtime_home=home)
                 second = claude.inspect_capabilities("/bin/true", runtime_home=home)
-                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_count, 2)  # --help and --version, once.
                 self.assertEqual(first, second)
                 claude.inspect_capabilities("/bin/true", runtime_home=home, refresh=True)
-                self.assertEqual(run.call_count, 2)
+                self.assertEqual(run.call_count, 4)
             old = mock.Mock(returncode=0, stdout=full.stdout.replace("--include-partial-messages", ""))
             with mock.patch.object(claude.capabilities.subprocess, "run", return_value=old):
                 result = claude.inspect_capabilities("/bin/true", runtime_home=home, refresh=True)
             self.assertIn("--include-partial-messages", result["diagnostic"])
             self.assertFalse(result["submit"]["model"])
+
+    def test_thinking_display_requires_claude_2_1_40_or_newer(self):
+        help_text = " ".join(claude.capabilities.REQUIRED_OPTIONS)
+        cases = (("2.1.285 (Claude Code)", 0, True), ("2.1.40 (Claude Code)", 0, True), ("3.0.0", 0, True),
+                 ("2.1.39 (Claude Code)", 0, False), ("1.0.128 (Claude Code)", 0, False),
+                 ("unknown", 0, False), ("", 1, False))
+        for version, code, expected in cases:
+            def run(argv, **_kwargs):
+                return mock.Mock(returncode=code, stdout=version) if argv[-1] == "--version" else mock.Mock(returncode=0, stdout=help_text)
+            with self.subTest(version=version), mock.patch.object(claude.capabilities.subprocess, "run", side_effect=run):
+                capabilities = claude.inspect_capabilities("claude", refresh=True)
+                self.assertTrue(capabilities["submit"]["model"])
+                self.assertIs(capabilities["submit"]["thinkingDisplay"], expected)
+                self.assertIs(claude.session_fields("claude", capabilities)["thinkingDisplay"], expected)
+        with mock.patch.object(claude.capabilities.subprocess, "run", side_effect=[mock.Mock(returncode=0, stdout=help_text), OSError("gone")]):
+            self.assertFalse(claude.inspect_capabilities("claude", refresh=True)["submit"]["thinkingDisplay"])
+        self.assertFalse(claude.session_fields("claude")["thinkingDisplay"])
 
     def test_default_mode_uses_claude_config_dir_and_unknown_modes_stay_read_only(self):
         with tempfile.TemporaryDirectory() as config, tempfile.TemporaryDirectory() as project:

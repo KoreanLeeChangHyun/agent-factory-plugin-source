@@ -390,7 +390,8 @@ class Bridge(NotificationHandlers):
                 "Goal APIs unavailable: off disables continuation locally but native clearing is unconfirmed; restore Goal support and refresh")
         # Loading a persisted active goal must not race schema installation.
         # Native lifecycle RPCs remain available with continuation disabled.
-        config = {"features.goals": False}
+        # Reasoning items carry an empty summary unless one is requested; the chat shows this summary.
+        config = {"features.goals": False, "model_reasoning_summary": "auto"}
         if self.session.get("fast") is False:
             config["service_tier"] = "default"
         if self.session.get("reasoningEffort"):

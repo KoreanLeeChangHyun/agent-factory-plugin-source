@@ -148,6 +148,20 @@ class CodexStreamingTests(unittest.TestCase):
         self.assertIn({"type": "native.commentary", "text": "Checking files"}, events)
         self.assertIn("item.completed", kinds)
 
+    def test_plan_updates_of_this_turn_report_step_progress(self):
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
+            bridge, rpc, _ = native_fixture(Path(directory), goal=False)
+            plan = [{"step": "Read code", "status": "completed"}, {"step": "Edit panel", "status": "inProgress"},
+                    {"step": "Run checks", "status": "pending"}]
+            rpc.events[1:1] = [
+                {"method": "turn/plan/updated", "params": {"threadId": "thread-exact", "turnId": "turn-0", "plan": plan}},
+                {"method": "turn/plan/updated", "params": {"threadId": "thread-exact", "turnId": "earlier", "plan": plan[:1]}},
+            ]
+            bridge.run("Main role")
+            events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([event for event in events if event["type"] == "plan.progress"],
+                         [{"type": "plan.progress", "completed": 1, "total": 3, "current": "Edit panel"}])
+
     def test_plain_commentary_stream_remains_compatible(self):
         from adapters.codex.events import agent_message_stream, commentary_text
 

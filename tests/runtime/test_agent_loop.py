@@ -74,6 +74,11 @@ class FakeRuntime:
         if permission:
             dispatch_tuple["executionPolicy"] = permission["policy"]
             dispatch_tuple["humanApprovalPolicy"] = permission["humanApprovalPolicy"]
+        workspace_file = values["execution"].get("taskWorkspacePath")
+        workspace = self.agent_exec.safe_read_json(Path(workspace_file)) if workspace_file else None
+        if workspace:
+            dispatch_tuple["executionPolicy"] = self.agent_exec.worktrees.relocate_policy(dispatch_tuple["executionPolicy"], self.root, Path(workspace["path"]))
+            dispatch_tuple["taskWorkspaceId"] = workspace["id"]
         if values["operation"] == "submit" and values["execution"].get("model"):
             dispatch_tuple.setdefault("executionOptions", {})["model"] = values["execution"]["model"]
         profile = values["execution"].get("agentModels", {}).get(values["role"], {})
@@ -111,6 +116,8 @@ class FakeRuntime:
         }
         if work_profile:
             run["workProfile"] = work_profile
+        if workspace:
+            run.update(workingDirectory=workspace["path"], taskWorkspace=workspace)
         self.agent_exec.atomic_write_json(directory / "state.json", run)
         self.agent_exec.atomic_write_json(directory / "receipt.schema.json", {})
         session = self.agent_exec.session_file(self.root, values["agent_id"])
@@ -119,6 +126,10 @@ class FakeRuntime:
             self.agent_exec.atomic_write_json(
                 session, {"role": values["role"], "sessionId": session_id}
             )
+        if workspace:
+            current = self.agent_exec.safe_read_json(session)
+            self.agent_exec.atomic_write_json(session, {**current, "projectRoot": str(self.root), "taskWorkspace": workspace,
+                "executionPolicy": dispatch_tuple["executionPolicy"]})
         self.runs[(values["agent_id"], run_id)] = run
         self.dispatches.append(values)
         if self.lose_ack:
@@ -236,6 +247,67 @@ class AgentLoopContractTests(unittest.TestCase):
             "--authorization-reference", "test-request", "--decision-evidence", "Close failed flow",
         ])
         return self.agent_loop.close_loop(args)
+
+    def stop_task(self, started, **values):
+        args = self.agent_loop.build_parser().parse_args([
+            "stop-task", "--project-root", str(self.root), "--work-agent", "work-agent",
+            "--loop-id", started["loopId"], "--actor", values.get("actor", "human"),
+            "--authorization-reference", "test-request", "--decision-evidence", "Stop one task",
+            "--workflow-id", values.get("workflow_id", "flow-one"), "--task-id", values.get("task_id", "task-one"),
+        ])
+        return self.agent_loop.stop_task(args)
+
+    def test_stop_task_cancels_exact_work_or_verification_and_never_dispatches_again(self):
+        for role in ("work", "verification"):
+            with self.subTest(role=role):
+                started = self.start()
+                if role == "verification":
+                    self.runtime.complete_work("work-agent", started["latestWorkRunId"])
+                    started = self.reconcile(started)
+                saved = self.agent_exec.safe_read_json(Path(started["statePath"]))
+                child = saved["currentChild"]
+                def cancel(arguments):
+                    stopped = self.agent_exec.safe_read_json(Path(started["statePath"]))
+                    self.assertEqual(stopped["status"], "cancelled")
+                    self.assertTrue(stopped["stopPending"])
+                    self.assertEqual(arguments, ["cancel", "--agent", child["agentId"], "--run-id", child["runId"]])
+                    self.runtime.runs[(child["agentId"], child["runId"])]["status"] = "cancelled"
+                    return {"kind": "ack"}
+                with mock.patch.object(self.runtime, "call", create=True, side_effect=cancel) as command:
+                    result = self.stop_task(started)
+                    self.assertEqual(result["status"], "cancelled")
+                    self.assertFalse(result["stopPending"])
+                    before = len(self.runtime.dispatches)
+                    self.assertEqual(self.reconcile(started)["status"], "cancelled")
+                    self.stop_task(started)
+                    self.assertEqual(len(self.runtime.dispatches), before)
+                    command.assert_called_once()
+
+    def test_stop_task_rejects_wrong_binding_multiple_tasks_and_uncertain_dispatch_without_mutation(self):
+        started = self.start()
+        path = Path(started["statePath"])
+        original = self.agent_exec.safe_read_json(path)
+        for values in ({"task_id": "other"}, {"workflow_id": "other"}, {"actor": "main"}):
+            with self.assertRaises(self.agent_exec.ContractError): self.stop_task(started, **values)
+            self.assertEqual(self.agent_exec.safe_read_json(path), original)
+        for key in ("multi", "pending"):
+            state = json.loads(json.dumps(original))
+            if key == "multi": state["workflow"]["tasks"].append({"id": "other", "workStatus": "pending"})
+            else: state["pendingDispatch"] = {"dispatchId": "uncertain"}
+            self.agent_exec.atomic_write_json(path, state)
+            with self.assertRaises(self.agent_exec.ContractError): self.stop_task(started)
+            self.assertEqual(self.agent_exec.safe_read_json(path), state)
+
+    def test_stop_task_failure_keeps_engine_stopped_and_retry_cancels_only_original_child(self):
+        started = self.start()
+        with mock.patch.object(self.runtime, "call", create=True, side_effect=self.agent_exec.ContractError("cancel_failed", "fixture failure")):
+            with self.assertRaises(self.agent_exec.ContractError): self.stop_task(started)
+        result = self.reconcile(started)
+        self.assertEqual(result["status"], "cancelled")
+        self.assertTrue(result["stopPending"])
+        with mock.patch.object(self.runtime, "call", create=True, return_value={"kind": "ack"}) as cancel:
+            self.assertFalse(self.stop_task(started)["stopPending"])
+            cancel.assert_called_once()
 
     def test_orchestrator_brief_starts_without_a_task_list(self):
         self.request.write_text("Create hello.txt with one line\n\nScope: no commits\nDone: file exists\n", encoding="utf-8")
@@ -1933,6 +2005,284 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertIsNone(self.start()["failureClass"])
 
 
+    def code_workspace_start(self, mode="work"):
+        self.init_fixture_repository()
+        workspace_file = self.root / "workspace.json"
+        workspace_file.write_text(json.dumps({"mode": "code", "repositories": [{"path": str(self.root), "targetBranch": "develop",
+            "checks": [[sys.executable, "-c", "from pathlib import Path; assert Path('file.txt').exists()"]]}]}))
+        extra = ["--task-mode", mode, "--workspace-file", str(workspace_file)]
+        started = self.start(extra)
+        return started, extra
+
+    def init_fixture_repository(self):
+        from tasks import workspaces
+        workspaces.worktrees.git(self.root, "init", "-b", "develop")
+        workspaces.worktrees.git(self.root, "config", "user.name", "Fixture")
+        workspaces.worktrees.git(self.root, "config", "user.email", "fixture@example.invalid")
+        (self.root / ".gitignore").write_text("*.md\n*.json\n")
+        (self.root / "file.txt").write_text("base\n")
+        workspaces.worktrees.git(self.root, "add", ".gitignore", "file.txt")
+        workspaces.worktrees.git(self.root, "commit", "-m", "base")
+
+    def checked_code_work(self, started):
+        run = self.runtime.complete_work("work-agent", started["latestWorkRunId"])
+        receipt = json.loads(Path(run["receiptPath"]).read_text())
+        receipt.update(changedPaths=["file.txt"], tests={"run": True, "reason": "fixture own checks passed"})
+        self.agent_exec.atomic_write_json(Path(run["receiptPath"]), receipt)
+        self.agent_exec.atomic_write_json(Path(run["statePath"]), run)
+        return run
+
+    def test_code_workspace_precedes_dispatch_duplicate_start_and_checked_completion(self):
+        started, extra = self.code_workspace_start()
+        workspace = started["taskWorkspaces"]["task-one"]
+        path = Path(workspace["path"])
+        self.assertTrue(path.exists())
+        self.assertEqual(self.runtime.runs[("work-agent", started["latestWorkRunId"])]["workingDirectory"], str(path))
+        before = len(self.runtime.dispatches)
+        duplicate = self.start(extra)
+        self.assertEqual(duplicate["loopId"], started["loopId"])
+        self.assertEqual(len(self.runtime.dispatches), before)
+        (path / "file.txt").write_text("result")
+        self.checked_code_work(started)
+        complete = self.reconcile(started)
+        self.assertEqual(complete["status"], "completed")
+        self.assertEqual((self.root / "file.txt").read_text(), "result")
+        self.assertEqual(len(self.runtime.dispatches), 1)
+        self.assertEqual(complete["taskWorkspaces"]["task-one"]["verification"], "not requested")
+
+    def test_code_conflict_revision_reuses_session_and_unclear_resolution_stops(self):
+        from execution import worktrees
+        started, _extra = self.code_workspace_start()
+        path = Path(started["taskWorkspaces"]["task-one"]["path"])
+        (path / "file.txt").write_text("work")
+        (self.root / "file.txt").write_text("target")
+        worktrees.git(self.root, "commit", "-am", "target")
+        self.checked_code_work(started)
+        revised = self.reconcile(started)
+        self.assertEqual(revised["status"], "active")
+        self.assertEqual(self.runtime.dispatches[-1]["operation"], "send")
+        self.assertEqual(self.runtime.dispatches[-1]["agent_id"], "work-agent")
+        self.assertEqual(Path(revised["taskWorkspaces"]["task-one"]["path"]), path)
+        request = self.runtime.dispatches[-1]["request_file"].read_text()
+        self.assertIn("Git stages 1/2/3", request)
+        self.assertIn("file.txt", request)
+        self.checked_code_work(revised)  # No invented semantics and no staged resolution.
+        paused = self.reconcile(revised)
+        self.assertEqual(paused["status"], "needs-human-decision")
+        self.assertEqual(paused["controlPlaneError"]["code"], "task_conflict_unresolved")
+        self.assertTrue(path.exists())
+        self.assertEqual(len(self.runtime.dispatches), 2)
+
+    def test_requested_verification_precedes_code_integration(self):
+        started, _extra = self.code_workspace_start("work-verification")
+        path = Path(started["taskWorkspaces"]["task-one"]["path"])
+        (path / "file.txt").write_text("verified result")
+        self.checked_code_work(started)
+        verifying = self.reconcile(started)
+        self.assertEqual((self.root / "file.txt").read_text(), "base\n")
+        run = self.runtime.complete_verification("verification-agent", verifying["latestVerificationRunId"], "pass")
+        self.agent_exec.atomic_write_json(Path(run["statePath"]), run)
+        complete = self.reconcile(verifying)
+        self.assertEqual(complete["status"], "completed")
+        self.assertEqual(complete["taskWorkspaces"]["task-one"]["verification"], "pass")
+        self.assertEqual((self.root / "file.txt").read_text(), "verified result")
+
+    def test_code_conflict_resolution_rechecks_and_integrates_same_task(self):
+        from execution import worktrees
+        started, _extra = self.code_workspace_start()
+        path = Path(started["taskWorkspaces"]["task-one"]["path"])
+        (path / "file.txt").write_text("work")
+        (self.root / "file.txt").write_text("target")
+        worktrees.git(self.root, "commit", "-am", "target")
+        self.checked_code_work(started)
+        revised = self.reconcile(started)
+        first_session = self.agent_exec.safe_read_json(self.agent_exec.session_file(self.root, "work-agent"))["sessionId"]
+        (path / "file.txt").write_text("both meanings")
+        worktrees.git(path, "add", "file.txt")
+        self.checked_code_work(revised)
+        completed = self.reconcile(revised)
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(self.agent_exec.safe_read_json(self.agent_exec.session_file(self.root, "work-agent"))["sessionId"], first_session)
+        self.assertEqual((self.root / "file.txt").read_text(), "both meanings")
+        unit = completed["taskWorkspaces"]["task-one"]["repositories"][0]
+        self.assertEqual(unit["integrationChecks"][0]["exitCode"], 0)
+        self.assertTrue(unit["cleaned"])
+        self.assertEqual([d["role"] for d in self.runtime.dispatches], ["work", "work"])
+
+    def test_cancellation_preserves_code_workspace_and_never_integrates(self):
+        from execution import worktrees
+        started, _extra = self.code_workspace_start()
+        path = Path(started["taskWorkspaces"]["task-one"]["path"])
+        (path / "file.txt").write_text("partial result")
+        before = worktrees.git(self.root, "rev-parse", "HEAD").stdout
+        def cancel(arguments):
+            self.runtime.runs[("work-agent", started["latestWorkRunId"])]["status"] = "cancelled"
+            return {"kind": "ack"}
+        with mock.patch.object(self.runtime, "call", create=True, side_effect=cancel):
+            stopped = self.stop_task(started)
+        self.assertEqual(stopped["status"], "cancelled")
+        self.assertTrue(path.exists())
+        self.assertEqual(worktrees.git(self.root, "rev-parse", "HEAD").stdout, before)
+        self.assertEqual(len(self.runtime.dispatches), 1)
+
+    def isolated_brief_start(self, plan, agent="work-agent"):
+        workspace_file = self.root / "isolated-workspace.json"
+        workspace_file.write_text(json.dumps(plan))
+        self.request.write_text("Goal: change file.txt\n\nScope: file.txt only\nDone: file changed\n", encoding="utf-8")
+        args = self.agent_loop.build_parser().parse_args([
+            "start", "--project-root", str(self.root), "--request-file", str(self.request), "--task-mode", "work",
+            "--work-agent", agent, "--codex", "/bin/true", "--work-isolation", "--workspace-file", str(workspace_file)])
+        return self.agent_loop.start_loop(args)
+
+    def isolated_repository(self):
+        from execution import worktrees
+        self.init_fixture_repository()
+        worktrees.git(self.root, "checkout", "-b", "feature")
+        return {"mode": "code", "repositories": [{"path": str(self.root),
+                "checks": [[sys.executable, "-c", "from pathlib import Path; assert Path('file.txt').exists()"]]}]}
+
+    def isolated_checked_work(self, started, agent="work-agent"):
+        run = self.runtime.complete_work(agent, started["latestWorkRunId"])
+        receipt = json.loads(Path(run["receiptPath"]).read_text())
+        receipt.update(changedPaths=["file.txt"], tests={"run": True, "reason": "fixture own checks passed"})
+        self.agent_exec.atomic_write_json(Path(run["receiptPath"]), receipt)
+        self.agent_exec.atomic_write_json(Path(run["statePath"]), run)
+        return run
+
+    def test_work_isolation_brief_targets_current_branch_and_merges_with_bilingual_messages(self):
+        from execution import worktrees
+        plan = self.isolated_repository()
+        for invalid, code in ((None, "task_workspace_required"), ({"mode": "shared"}, "task_workspace_invalid")):
+            with self.subTest(code=code), self.assertRaises(self.agent_exec.ContractError) as raised:
+                if invalid is None:
+                    self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args([
+                        "start", "--project-root", str(self.root), "--request-file", str(self.request), "--task-mode", "work",
+                        "--work-agent", "work-agent", "--codex", "/bin/true", "--work-isolation"]))
+                else:
+                    self.isolated_brief_start(invalid)
+            self.assertEqual(raised.exception.code, code)
+        started = self.isolated_brief_start(plan)
+        state = json.loads(Path(started["statePath"]).read_text())
+        self.assertIs(state["execution"]["workIsolation"], True)
+        workspace = started["taskWorkspaces"][state["execution"]["taskBinding"]["taskId"]]
+        self.assertEqual(workspace["repositories"][0]["targetBranch"], "feature")
+        (Path(workspace["path"]) / "file.txt").write_text("isolated result")
+        self.isolated_checked_work(started)
+        complete = self.reconcile(started)
+        self.assertEqual(complete["status"], "completed")
+        self.assertEqual((self.root / "file.txt").read_text(), "isolated result")
+        self.assertTrue(complete["taskWorkspaces"][workspace["taskId"]]["repositories"][0]["cleaned"])
+        subjects = [worktrees.git(self.root, "log", "-1", "--format=%s", ref).stdout.decode().strip() for ref in ("HEAD", "HEAD^2")]
+        name = workspace["workflowId"] + "/" + workspace["taskId"]
+        self.assertEqual(subjects, ["Merge task " + name + " / 작업 " + name + " 병합", "Task " + name + " / 작업 " + name])
+
+    def isolated_conflict(self):
+        from execution import worktrees
+        started = self.isolated_brief_start(self.isolated_repository())
+        task_id = next(iter(started["taskWorkspaces"]))
+        path = Path(started["taskWorkspaces"][task_id]["path"])
+        (path / "file.txt").write_text("work")
+        (self.root / "file.txt").write_text("target")
+        worktrees.git(self.root, "commit", "-am", "target")
+        self.isolated_checked_work(started)
+        revised = self.reconcile(started)
+        self.assertEqual(revised["status"], "active")
+        request = self.runtime.dispatches[-1]["request_file"].read_text()
+        self.assertIn("never return needs-human-decision", request)
+        self.assertNotIn("Return needs-human-decision with specific unresolved choices", request)
+        return revised, task_id, path
+
+    def assert_preserved(self, result, task_id, path, cause):
+        from execution import worktrees
+        self.assertEqual(result["status"], "completed")
+        self.assertIsNone(result["controlPlaneError"])
+        self.assertEqual(result["terminalReason"]["code"], "integration_preserved")
+        self.assertEqual(result["terminalReason"]["cause"], cause)
+        unit = result["taskWorkspaces"][task_id]["repositories"][0]
+        self.assertEqual(result["terminalReason"]["preserved"][0]["branch"], unit["branch"])
+        self.assertIn(unit["branch"], result["terminalReason"]["message"])
+        self.assertIn(str(path), result["terminalReason"]["message"])
+        self.assertTrue(path.exists())
+        self.assertFalse(unit.get("cleaned"))
+        self.assertEqual(worktrees.git(self.root, "show-ref", "--verify", "--quiet", "refs/heads/" + unit["branch"], check=False).returncode, 0)
+
+    def test_work_isolation_unresolved_conflict_preserves_branch_without_human_decision(self):
+        revised, task_id, path = self.isolated_conflict()
+        self.isolated_checked_work(revised)  # Conflict stages left unchanged.
+        preserved = self.reconcile(revised)
+        self.assert_preserved(preserved, task_id, path, "task_conflict_unresolved")
+        self.assertEqual(preserved["terminalReason"]["files"], ["file.txt"])
+        self.assertEqual((self.root / "file.txt").read_text(), "target")
+        self.assertEqual(len(self.runtime.dispatches), 2)
+
+    def test_work_isolation_conflict_revision_asking_a_human_preserves_branch(self):
+        revised, task_id, path = self.isolated_conflict()
+        self.runtime.runs[("work-agent", revised["latestWorkRunId"])]["status"] = "needs-human-decision"
+        self.assert_preserved(self.reconcile(revised), task_id, path, "task_conflict_unresolved")
+
+    def test_work_isolation_conflict_revision_limit_preserves_branch(self):
+        revised, task_id, path = self.isolated_conflict()
+        state_path = Path(revised["statePath"])
+        state = json.loads(state_path.read_text())
+        state["execution"]["maxRevisions"] = 1
+        state["lastIntegrationConflict"] = "an earlier conflict"
+        self.agent_exec.atomic_write_json(state_path, state)
+        self.isolated_checked_work(revised)
+        self.assert_preserved(self.reconcile(revised), task_id, path, "task_conflict_revision_limit")
+
+    def test_work_isolation_dirty_target_preserves_branch_without_merging(self):
+        from execution import worktrees
+        started = self.isolated_brief_start(self.isolated_repository())
+        task_id = next(iter(started["taskWorkspaces"]))
+        path = Path(started["taskWorkspaces"][task_id]["path"])
+        (path / "file.txt").write_text("isolated result")
+        (self.root / "unrelated.txt").write_text("Human work in progress")
+        before = worktrees.git(self.root, "rev-parse", "HEAD").stdout
+        self.isolated_checked_work(started)
+        preserved = self.reconcile(started)
+        self.assert_preserved(preserved, task_id, path, "task_target_dirty")
+        self.assertEqual(worktrees.git(self.root, "rev-parse", "HEAD").stdout, before)
+        self.assertEqual((self.root / "unrelated.txt").read_text(), "Human work in progress")
+
+    def test_work_isolation_follows_the_captured_main_selection(self):
+        parent = self.root / "parent-state.json"
+        args = self.agent_loop.build_parser().parse_args([
+            "start", "--project-root", str(self.root), "--request-file", str(self.request), "--work-agent", "work-agent"])
+        self.assertIs(self.agent_loop.work_isolation(args), False)
+        for captured, requested, expected in ((True, None, True), (False, None, False), (None, True, True), (True, True, True)):
+            parent.write_text(json.dumps({"executionOptions": {} if captured is None else {"workIsolation": captured}}))
+            args.work_isolation = requested
+            with self.subTest(captured=captured, requested=requested), \
+                    mock.patch.dict(os.environ, {self.agent_exec.execution_policy.PARENT_STATE_ENV: str(parent)}):
+                self.assertIs(self.agent_loop.work_isolation(args), expected)
+        parent.write_text(json.dumps({"executionOptions": {"workIsolation": False}}))
+        args.work_isolation = True
+        with mock.patch.dict(os.environ, {self.agent_exec.execution_policy.PARENT_STATE_ENV: str(parent)}), \
+                self.assertRaises(self.agent_exec.ContractError) as raised:
+            self.agent_loop.work_isolation(args)
+        self.assertEqual(raised.exception.code, "work_isolation_mismatch")
+
+    def test_same_worker_moves_from_cleaned_code_task_to_read_only_task(self):
+        second = self.root / "second.md"
+        second.write_text("read-only follow-up")
+        document = json.loads(self.tasks.read_text())
+        document["tasks"].append({"id": "task-two", "title": "Read-only", "description": "inspect result", "completionCriteria": "report result",
+                                  "requestFile": str(second), "workspace": {"mode": "read-only"}})
+        self.tasks.write_text(json.dumps(document))
+        started, _extra = self.code_workspace_start()
+        path = Path(started["taskWorkspaces"]["task-one"]["path"])
+        (path / "file.txt").write_text("code result")
+        self.checked_code_work(started)
+        following = self.reconcile(started)
+        self.assertFalse(path.exists())
+        self.assertEqual(self.runtime.runs[("work-agent", following["latestWorkRunId"])]["workingDirectory"], str(self.root))
+        self.assertEqual(set(following["taskWorkspaces"]), {"task-one"})
+        self.runtime.complete_work("work-agent", following["latestWorkRunId"])
+        complete = self.reconcile(following)
+        self.assertEqual(complete["status"], "completed")
+        self.assertEqual(set(complete["taskWorkspaces"]), {"task-one"})
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -2066,3 +2416,127 @@ class RolePermissionDispatchTests(unittest.TestCase):
             os.environ[exec_module.execution_policy.PARENT_STATE_ENV] = '/tmp/parent-state.json'
             with self.assertRaises(exec_module.ContractError):
                 exec_module.requested_execution(argparse.Namespace(agent_permissions='{"work":"bypass"}'))
+
+
+class WorkspacePlanDispatchBindingTests(unittest.TestCase):
+    """loop start -> real exec submit -> complete_pending_dispatch with a captured task workspace."""
+
+    def setUp(self) -> None:
+        from tasks import workspaces
+        self.agent_exec, self.agent_loop = load_modules()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        git = workspaces.worktrees.git
+        git(self.root, "init", "-b", "develop")
+        git(self.root, "config", "user.name", "Fixture")
+        git(self.root, "config", "user.email", "fixture@example.invalid")
+        (self.root / ".gitignore").write_text("*.md\n*.json\n")
+        (self.root / "file.txt").write_text("base\n")
+        git(self.root, "add", ".gitignore", "file.txt")
+        git(self.root, "commit", "-m", "base")
+        self.brief = self.root / "brief.md"
+        self.brief.write_text("Goal: change file.txt\n\nScope: file.txt only\nDone: file changed\n", encoding="utf-8")
+        agent_exec = self.agent_exec
+
+        def bridge(runtime, arguments):
+            with mock.patch.object(agent_exec, "spawn_worker", return_value=123), \
+                    mock.patch.object(agent_exec, "emit") as emit:
+                agent_exec.main([*arguments, "--project-root", str(self.root)])
+            response = emit.call_args.args[0]
+            if response.get("kind") == "error":
+                raise agent_exec.ContractError(response["error"]["code"], response["error"]["message"])
+            return response
+
+        policy = runtime_test_home.policy("workspace-write", self.root)
+        for patch in (mock.patch.object(agent_exec.native_codex, "inspect_capabilities",
+                          return_value={"submit": {"goal": True}, "send": {"goal": True}, "diagnostic": None}),
+                      mock.patch.object(self.agent_loop.AgentRuntime, "_call", bridge),
+                      mock.patch.dict(os.environ, {"AGENT_FACTORY_EXECUTION_POLICY": json.dumps(policy)})):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def start(self, agent, plan):
+        workspace_file = self.root / (agent + "-workspace.json")
+        workspace_file.write_text(json.dumps(plan))
+        return self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args([
+            "start", "--project-root", str(self.root), "--request-file", str(self.brief), "--task-mode", "work",
+            "--work-agent", agent, "--codex", "/bin/true", "--work-isolation", "--workspace-file", str(workspace_file)]))
+
+    def reconcile(self, agent, loop_id):
+        return self.agent_loop.reconcile_loop(self.agent_loop.build_parser().parse_args([
+            "reconcile", "--project-root", str(self.root), "--work-agent", agent, "--loop-id", loop_id]))
+
+    def plans(self):
+        code = {"mode": "code", "repositories": [{"path": str(self.root),
+                "checks": [[sys.executable, "-c", "from pathlib import Path; assert Path('file.txt').exists()"]]}]}
+        return (("read-only-agent", {"mode": "read-only"}), ("code-agent", code))
+
+    def test_workspace_plan_dispatch_binds_to_the_exec_accepted_run(self):
+        for agent, plan in self.plans():
+            with self.subTest(mode=plan["mode"]):
+                started = self.start(agent, plan)
+                self.assertEqual(started["phase"], "work-running")
+                state = self.agent_exec.safe_read_json(Path(started["statePath"]))
+                workspace = self.agent_exec.safe_read_json(Path(state["execution"]["taskWorkspacePath"]))
+                run = self.agent_exec.safe_read_json(
+                    self.agent_exec.state_file(self.root, agent, started["latestWorkRunId"]))
+                self.assertEqual(run["dispatchTuple"]["taskWorkspaceId"], workspace["id"])
+                self.assertEqual(run["workingDirectory"], workspace["path"])
+                # Read-only Work stays at the project root; code Work is relocated to its worktree.
+                roots = run["dispatchTuple"]["executionPolicy"]["sandboxPolicy"]["writable_roots"]
+                if plan["mode"] == "read-only":
+                    self.assertEqual(workspace["path"], str(self.root))
+                    self.assertEqual(roots, [str(self.root)])
+                else:
+                    self.assertNotEqual(workspace["path"], str(self.root))
+                    self.assertEqual(roots, [workspace["path"]])
+                self.assertEqual(run["executionPolicy"], run["dispatchTuple"]["executionPolicy"])
+
+    def start_with_lost_acknowledgement(self, agent, plan):
+        """Accept the run in exec, then lose the loop's binding as a crash before saving would."""
+        pending = {}
+        original = self.agent_loop.complete_pending_dispatch
+
+        def lose_ack(state, path, runtime):
+            pending.update(state["pendingDispatch"])
+            original(state, path, runtime)
+            raise self.agent_exec.ContractError("child_runtime_failure", "fixture lost acknowledgement")
+
+        with mock.patch.object(self.agent_loop, "complete_pending_dispatch", side_effect=lose_ack), \
+                self.assertRaises(self.agent_exec.ContractError):
+            self.start(agent, plan)
+        state_path = next((self.agent_exec.agent_root(self.root) / agent / "loops").glob("*/state.json"))
+        state = self.agent_exec.safe_read_json(state_path)
+        run_id = state["latestWorkRunId"]
+        state.update(pendingDispatch=pending, phase="work-dispatching", currentChild=None, latestWorkRunId=None)
+        self.agent_exec.atomic_write_json(state_path, state)
+        return state, run_id
+
+    def runs(self, agent):
+        return sorted((self.agent_exec.agent_root(self.root) / agent / "runs").iterdir())
+
+    def test_accepted_dispatch_rebinds_after_lost_acknowledgement_without_resubmission(self):
+        for agent, plan in self.plans():
+            with self.subTest(mode=plan["mode"]):
+                state, run_id = self.start_with_lost_acknowledgement(agent, plan)
+                runs = self.runs(agent)
+                bound = self.reconcile(agent, state["loopId"])
+                self.assertEqual((bound["phase"], bound["latestWorkRunId"]), ("work-running", run_id))
+                self.assertEqual(self.runs(agent), runs)
+
+    def test_run_accepted_before_the_tuple_field_rebinds_only_to_its_recorded_workspace(self):
+        agent, plan = self.plans()[0]
+        state, run_id = self.start_with_lost_acknowledgement(agent, plan)
+        run_path = self.agent_exec.state_file(self.root, agent, run_id)
+        legacy = self.agent_exec.safe_read_json(run_path)
+        del legacy["dispatchTuple"]["taskWorkspaceId"]
+        foreign = {**legacy, "taskWorkspace": {**legacy["taskWorkspace"], "id": "0" * 24}}
+        self.agent_exec.atomic_write_json(run_path, foreign)
+        with self.assertRaises(self.agent_exec.ContractError) as raised:
+            self.reconcile(agent, state["loopId"])
+        self.assertEqual(raised.exception.code, "dispatch_binding_invalid")
+        self.agent_exec.atomic_write_json(run_path, legacy)
+        bound = self.reconcile(agent, state["loopId"])
+        self.assertEqual((bound["phase"], bound["latestWorkRunId"]), ("work-running", run_id))
+        self.assertEqual(self.runs(agent), [run_path.parent])

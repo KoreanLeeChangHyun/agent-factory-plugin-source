@@ -414,6 +414,31 @@ def test_root_progress_rejects_inconsistent_contract_directories(tmp_path):
     assert "needs progress.md" in result.stderr
 
 
+def test_direct_execution_record_is_listed_without_contract_versions(tmp_path):
+    folder = contract(tmp_path, attachment=False)
+    (folder / "contract-v1.md").unlink()
+    progress = folder / "progress.md"
+    text = progress.read_text().replace("- 계약: [v1](contract-v1.md#tasks).\n", "")
+    progress.write_text(text.replace("  language: ko\n", "  language: ko\n  record-type: direct-execution\n"))
+    result = run(CATALOG, tmp_path)
+    assert result.returncode == 0, result.stderr
+    (entry,) = json.loads(result.stdout)["documents"]
+    assert entry["contract"] == {"id": "WC-001", "latestVersion": None, "taskIds": [],
+                                 "versions": [], "attachments": []}
+
+    progress.write_text(progress.read_text().replace("  record-type", "  contract-version: 1\n  record-type"))
+    result = run(CATALOG, tmp_path)
+    assert result.returncode == 1
+    assert "cannot carry contract versions" in result.stderr
+
+    progress.write_text(text.replace("  language: ko\n", "  language: ko\n  record-type: direct-execution\n"))
+    contract(tmp_path / "other", attachment=False)
+    (folder / "contract-v1.md").write_text((tmp_path / "other/docs/progress/WC-001/contract-v1.md").read_text())
+    result = run(CATALOG, tmp_path)
+    assert result.returncode == 1
+    assert "cannot carry contract versions" in result.stderr
+
+
 def test_legacy_root_progress_is_listed_and_same_contract_id_conflicts(tmp_path):
     legacy = contract(tmp_path, base="progress")
     result = run(CATALOG, tmp_path)

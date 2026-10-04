@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from adapters.plan_progress import first_line
+
 
 def cancel_requested(runtime, state_path: Path, cancel_event: threading.Event, reader=None) -> bool:
     if cancel_event.is_set():
@@ -76,13 +78,21 @@ def run_codex_attempt(
     if state.get("workingDirectory", str(working_directory)) != str(working_directory):
         raise runtime.AttemptFailure("worktree_binding_changed", "Run working directory no longer matches its conversation", False)
     session["workingDirectory"] = str(working_directory)
-    if session.get("worktree"):
+    if session.get("worktree") or session.get("taskWorkspace"):
         from execution.prompts import PromptParts
         location_guidance = ("\nConversation working directory: " + str(working_directory)
             + ". Perform source edits, commands and tests in this directory. Original workspace: "
             + str(project_root) + ". This explicit conversation worktree overrides the default shared-checkout rule. "
             + "Use the original workspace only as --project-root for Agent Factory runtime identity; "
             + "child Agents inherit this working directory. Do not edit the original checkout while isolated.\n")
+        if session.get("taskWorkspace", {}).get("mode") == "code":
+            location_guidance += ("Task Work Units (source changes are excluded): " + json.dumps(session["taskWorkspace"], ensure_ascii=False)
+                + "\nReceipt changedPaths remain relative to the ORIGINAL project root, using each repository's relativePath prefix. "
+                + "Git commits and integration belong to the runtime; do not commit, reset, rebase or clean up. "
+                + "For merge conflicts, edit only justified in-scope conflict files and explicitly git add those resolutions. "
+                + "If semantics or authority is unclear, preserve the conflict and return needs-human-decision.\n")
+        elif session.get("taskWorkspace", {}).get("mode") == "read-only":
+            location_guidance += "This task is classified read-only and acquires no Git mutation or code-change authority.\n"
         prompt_parts = PromptParts(prompt_parts.fixed + location_guidance, prompt_parts.dynamic)
     try:
         if "executionPolicy" not in session:
@@ -314,6 +324,17 @@ def run_codex_attempt(
                 if limits:
                     runtime.update_json(state_path, state_path.parent / ".state.lock",
                                 lambda value: value.update({"contextUsage": {**(value.get("contextUsage") or {}), **limits}}))
+            if (event.get("type") == "plan.progress" and type(event.get("total")) is int and type(event.get("completed")) is int
+                    and 0 < event["total"] <= 200 and 0 <= event["completed"] <= event["total"]):
+                progress = {"completed": event["completed"], "total": event["total"]}
+                runtime.update_json(state_path, state_path.parent / ".state.lock",
+                            lambda value: value.update({"planProgress": progress}))
+            if event.get("type") == "native.commentary":
+                # The agent's latest own words, one line, so a status list can say what it is doing.
+                line = first_line(event.get("text"))
+                if line:
+                    runtime.update_json(state_path, state_path.parent / ".state.lock",
+                                lambda value: value.update({"activity": line}))
             if event.get("type") == "goal.error":
                 runtime.record_goal_uncertainty(state_path, str(event.get("message", "Native Goal state unconfirmed")))
             if event.get("type") == "thread.started":

@@ -46,6 +46,36 @@ RECORDED = [
                                                   cache_read_tokens=8000)}},
 ]
 
+# Recorded from agy 1.2.16 (default model, --effort high, --dangerously-skip-permissions) in a temporary
+# directory: each tool named in the prompt once. Steps 1-19 are one run; step 20 (notebook_edit) is from a
+# second run with gemini-3.8-flash-high. Paths are shortened and the grep output trimmed. Response steps
+# carried only token usage; agy streamed no thinking text even with thousands of thinking tokens.
+RECORDED_TOOLS = [
+    INIT,
+    step(1, "DONE", "agent_response", usage=usage(input_tokens=9682, output_tokens=421, thinking_tokens=376, total_tokens=10103)),
+    step(2, "ACTIVE", "tool", tool_name="list_dir", tool_info={"name": "list_dir", "parameters": {"DirectoryPath": "/tmp/agy-probe/sub"}}),
+    step(2, "DONE", "tool", tool_name="list_dir", tool_info={"name": "list_dir", "parameters": {"DirectoryPath": "/tmp/agy-probe/sub"}, "output": "notes.txt"}),
+    step(4, "ACTIVE", "tool", tool_name="view_file", tool_info={"name": "view_file", "parameters": {"AbsolutePath": "/tmp/agy-probe/sub/notes.txt"}}),
+    step(4, "DONE", "tool", tool_name="view_file", tool_info={"name": "view_file", "parameters": {"AbsolutePath": "/tmp/agy-probe/sub/notes.txt"}, "output": "4 lines, 24 bytes"}),
+    step(6, "ACTIVE", "tool", tool_name="grep_search", tool_info={"name": "grep_search", "parameters": {"Query": "needle", "SearchPath": "/tmp/agy-probe"}}),
+    step(6, "DONE", "tool", tool_name="grep_search", tool_info={"name": "grep_search", "parameters": {"Query": "needle", "SearchPath": "/tmp/agy-probe"}, "output": "./sub/notes.txt:"}),
+    step(8, "ACTIVE", "tool", tool_name="find_by_name", tool_info={"name": "find_by_name", "parameters": {"Pattern": "*.txt", "SearchDirectory": "/tmp/agy-probe"}}),
+    step(8, "DONE", "tool", tool_name="find_by_name", tool_info={"name": "find_by_name", "parameters": {"Pattern": "*.txt", "SearchDirectory": "/tmp/agy-probe"}, "output": "edit.txt\nerr.txt\nsub/notes.txt"}),
+    step(10, "ACTIVE", "tool", tool_name="run_command", tool_info={"name": "run_command", "parameters": {"CommandLine": "echo probe-ok"}}),
+    step(10, "DONE", "tool", tool_name="run_command", tool_info={"name": "run_command", "parameters": {"CommandLine": "echo probe-ok"}, "output": "probe-ok\r\n"}),
+    step(12, "ACTIVE", "tool", tool_name="search_web", tool_info={"name": "search_web", "parameters": {"query": "Python 3.13 release date"}}),
+    step(12, "DONE", "tool", tool_name="search_web", tool_info={"name": "search_web", "parameters": {"query": "Python 3.13 release date"}}),
+    step(14, "ACTIVE", "tool", tool_name="read_url_content", tool_info={"name": "read_url_content", "parameters": {"Url": "https://example.com"}}),
+    step(14, "DONE", "tool", tool_name="read_url_content", tool_info={"name": "read_url_content", "parameters": {"Url": "https://example.com"}}),
+    step(15, "DONE", "agent_response", usage=usage(input_tokens=12447, output_tokens=2216, thinking_tokens=2112, total_tokens=14663)),
+    step(16, "ACTIVE", "tool", tool_name="replace_file_content", tool_info={"name": "replace_file_content", "parameters": {"TargetFile": "/tmp/agy-probe/edit.txt"}}),
+    step(16, "DONE", "tool", tool_name="replace_file_content", tool_info={"name": "replace_file_content", "parameters": {"TargetFile": "/tmp/agy-probe/edit.txt"}}),
+    step(18, "ACTIVE", "tool", tool_name="write_to_file", tool_info={"name": "write_to_file", "parameters": {"TargetFile": "/tmp/agy-probe/new.txt"}}),
+    step(18, "DONE", "tool", tool_name="write_to_file", tool_info={"name": "write_to_file", "parameters": {"TargetFile": "/tmp/agy-probe/new.txt"}}),
+    step(20, "ACTIVE", "tool", tool_name="notebook_edit", tool_info={"name": "notebook_edit", "parameters": {"Action": "add", "NotebookPath": "/tmp/agy-probe/n.ipynb"}}),
+    step(20, "DONE", "tool", tool_name="notebook_edit", tool_info={"name": "notebook_edit", "parameters": {"Action": "add", "NotebookPath": "/tmp/agy-probe/n.ipynb"}}),
+]
+
 
 def translate(events, **options):
     translator = Events(**options)
@@ -261,6 +291,37 @@ class AntigravityEventTests(unittest.TestCase):
         question = next(event for event in events if event["type"] == "interview.question")["question"]
         self.assertEqual((question["current"], question["recommendedValue"]), (1, "safe"))
         self.assertEqual(json.loads(events[-1]["item"]["text"])["resultText"], "Choose one.")
+
+    def test_recorded_tool_arguments_name_each_target(self):
+        _, events = translate(RECORDED_TOOLS)
+        started = {event["item"]["id"].rsplit(":", 1)[1]: event["item"] for event in events if event["type"] == "item.started"}
+        completed = [event["item"] for event in events if event["type"] == "item.completed"]
+        self.assertEqual(len(completed), len(started))
+        self.assertEqual(started["2"]["arguments"], {"path": "/tmp/agy-probe/sub"})
+        self.assertEqual(started["4"]["arguments"], {"file_path": "/tmp/agy-probe/sub/notes.txt"})
+        self.assertEqual(started["6"]["arguments"], {"query": "needle", "path": "/tmp/agy-probe"})
+        self.assertEqual(started["8"]["arguments"], {"pattern": "*.txt", "path": "/tmp/agy-probe"})
+        self.assertEqual(started["10"], {"id": f"{CONVERSATION}:10", "type": "command_execution", "command": "echo probe-ok"})
+        self.assertEqual(started["12"]["action"], {"type": "search", "query": "Python 3.13 release date"})
+        self.assertEqual(started["14"]["action"], {"type": "openPage", "url": "https://example.com"})
+        self.assertEqual(started["16"]["changes"], [{"path": "/tmp/agy-probe/edit.txt", "kind": "update"}])
+        self.assertEqual(started["18"]["changes"], [{"path": "/tmp/agy-probe/new.txt", "kind": "update"}])
+        self.assertEqual(started["20"]["changes"], [{"path": "/tmp/agy-probe/n.ipynb", "kind": "update"}])
+        self.assertEqual(completed[4]["aggregated_output"], "probe-ok\r\n")
+
+    def test_thinking_is_reported_only_as_token_usage(self):
+        # agy 1.2.16 streams no thinking text, so no reasoning item can be shown.
+        _, events = translate(RECORDED_TOOLS)
+        self.assertFalse([event for event in events if event.get("item", {}).get("type") == "reasoning"])
+        self.assertNotIn("native.commentary", [event["type"] for event in events])
+
+    def test_failed_web_page_tool_keeps_its_target(self):
+        _, events = translate([INIT,
+            step(5, "ACTIVE", "tool", tool_name="read_url_content", tool_info={"parameters": {"Url": "https://example.com/x"}}),
+            step(5, "ERROR", "tool", tool_name="read_url_content", tool_info={"error": {"message": "blocked"}})])
+        items = [event["item"] for event in events if event["type"] in ("item.started", "item.completed")]
+        self.assertEqual(items[0]["action"], {"type": "openPage", "url": "https://example.com/x"})
+        self.assertEqual((items[1]["type"], items[1]["status"], items[1]["error"]), ("web_search", "failed", "blocked"))
 
     def test_recorded_stream_yields_tools_usage_and_terminal_result(self):
         translator, events = translate(RECORDED)

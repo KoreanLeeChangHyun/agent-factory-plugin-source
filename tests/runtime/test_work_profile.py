@@ -1,6 +1,7 @@
 import runtime_test_home
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -95,6 +96,23 @@ class WorkProfileRecordTests(unittest.TestCase):
                 # structured revision-limit pause a host renders as a decision view.
                 self.assertEqual(emit.call_args.args[0][operation]["responseContract"], 2)
                 self.assertIs(emit.call_args.args[0][operation]["revisionLimitPause"], True)
+                # Hosts pass the Human's Work isolation toggle only to a runtime that accepts it.
+                self.assertIs(emit.call_args.args[0][operation]["workIsolation"], True)
+
+    def test_work_isolation_is_captured_only_from_the_host(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for value, expected in (("on", True), ("off", False)):
+                args = self.runtime.parse_args(["submit", "--project-root", directory, "--agent", "main-agent",
+                    "--role", "main", "--codex", "/bin/true", "--message", self.request, "--work-isolation", value])
+                self.assertIs(self.runtime.requested_execution(args)["workIsolation"], expected)
+            args = self.runtime.parse_args(["submit", "--project-root", directory, "--agent", "main-agent",
+                "--role", "main", "--codex", "/bin/true", "--message", self.request])
+            self.assertNotIn("workIsolation", self.runtime.requested_execution(args))
+            args.work_isolation = "on"
+            with mock.patch.dict(os.environ, {self.runtime.execution_policy.PARENT_STATE_ENV: str(Path(directory) / "parent.json")}), \
+                    self.assertRaises(self.runtime.ContractError) as raised:
+                self.runtime.requested_execution(args)
+            self.assertEqual(raised.exception.code, "work_isolation_invalid")
 
     def test_loop_start_and_exec_agree_on_the_labelled_brief_dispatch(self):
         """The loop's expected tuple and the run exec records must match, or every labelled dispatch fails."""

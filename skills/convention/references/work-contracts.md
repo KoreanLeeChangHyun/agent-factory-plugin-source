@@ -84,6 +84,9 @@
   Historical accepted snapshots remain immutable; do not retrofit or replace them.
 - Historical contracts bound to `progress.md` keep that path and its original
   recording contract. Do not rewrite or migrate their accepted snapshots.
+- Work run without a contract creates no `docs/progress/<contract-id>/` and claims no
+  `contract-version`. Existing contract-less records use the Document
+  [direct-execution record](../../document/references/progress.md#package-and-metadata) form.
 - Under bypass, routine reporting within the accepted outcome adds no approval gate.
   A progress bookkeeping omission alone must not block otherwise authorized Work:
   report it to Main and continue independent in-scope work. Never expand destructive,

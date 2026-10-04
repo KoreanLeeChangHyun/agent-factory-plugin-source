@@ -60,7 +60,7 @@ def check_submission(read_json, parent_path, parent, document):
     for task, announced in zip(tasks, expected["tasks"]):
         if task.get("requiredFileOperations") != announced.get("requiredFileOperations"):
             raise ContractError("task_announcement_contract_mismatch", "Required file operations differ from the announcement")
-        for key in ("title", "description", "completionCriteria"):
+        for key in ("title", "description", "completionCriteria", "workspace"):
             if task.get(key) != announced.get(key):
                 raise ContractError("task_announcement_metadata_mismatch", f"Task {task['id']!r} field {key!r} differs from the announcement")
 
