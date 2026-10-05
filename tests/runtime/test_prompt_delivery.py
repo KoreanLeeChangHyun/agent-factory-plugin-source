@@ -85,7 +85,7 @@ class PromptDeliveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             state = {"resultPath": str(Path(directory) / "result.md"),
                      "responseSchemaPath": str(Path(directory) / "response.schema.json")}
-            schema = process_transport.response_schema_document(state["resultPath"])
+            schema = process_transport.response_schema_document(state["resultPath"], decision_scope=False)
             schema["required"].remove("decisionKind")
             path = Path(state["responseSchemaPath"])
             path.write_text(json.dumps(schema))

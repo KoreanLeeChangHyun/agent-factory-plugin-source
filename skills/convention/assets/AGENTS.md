@@ -31,7 +31,7 @@
 ## 2. Ownership and storage
 
 - This project uses Agent Factory.
-- Use `<project-root>/docs/artifact/` for standalone generated outputs outside Document
+- Use `<project-root>/docs/artifact/<category>/<task-or-topic>/` for standalone generated outputs outside Document
   packages, following Convention's Artifacts contract. No `SKILL.md` wrapper is required.
 - Keep canonical Refined and Human-requested Specification (Skill document) packages below `docs/refined/`
   and `docs/skills/`, following Document's type-specific routing in the Human's language plus optional `assets/`
@@ -40,6 +40,7 @@
   separate editable original.
 - Refined uses `document-type: processed` for compatibility and is not automatically an active Skill or Specification.
 - Route Original packages below `docs/original/`.
+- Consult Document's `references/layout.md` for the complete directory map and runtime boundary.
 - Route contract Progress below `docs/progress/<contract-id>/` and Lessons Learned below
   `docs/lessons-learned/`, following their Document type guides.
 - Discover Original, Refined, Progress and Lessons Learned packages through the Document Skill's local catalog

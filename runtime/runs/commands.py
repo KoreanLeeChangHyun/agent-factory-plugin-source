@@ -3,13 +3,59 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
+import re
 import signal
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+
+
+def emit_read_page(runtime, args, document, *, force=False):
+    """Page the selected value, including a single huge string, without dropping data.
+
+    Legacy invocations retain their response shape. Revisions prevent combining pages
+    from different live states; callers restart an observation if the source changes.
+    """
+    if not force and not any(getattr(args, key, None) is not None for key in ("field", "offset", "length", "revision")):
+        runtime.emit(document)
+        return
+    pointer = getattr(args, "field", None)
+    value = document
+    if pointer:
+        if not pointer.startswith("/"):
+            raise runtime.ContractError("read_field_invalid", "field must be a JSON Pointer")
+        for token in pointer[1:].split("/"):
+            if re.search(r"~(?![01])", token):
+                raise runtime.ContractError("read_field_invalid", "JSON Pointer escapes must be ~0 or ~1")
+            token = token.replace("~1", "/").replace("~0", "~")
+            try:
+                if isinstance(value, list) and re.fullmatch(r"0|[1-9][0-9]*", token):
+                    value = value[int(token)]
+                elif isinstance(value, dict):
+                    value = value[token]
+                else:
+                    raise KeyError(token)
+            except (KeyError, IndexError, ValueError) as error:
+                raise runtime.ContractError("read_field_missing", "selected field does not exist") from error
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
+    offset = getattr(args, "offset", None)
+    length = getattr(args, "length", None)
+    offset = 0 if offset is None else offset
+    length = 4000 if length is None else length
+    if offset < 0 or offset > len(text) or length <= 0:
+        raise runtime.ContractError("read_range_invalid", "offset must be within the text and length must be positive")
+    revision = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if getattr(args, "revision", None) not in (None, revision):
+        raise runtime.ContractError("read_revision_changed", "selected text changed; restart from offset 0")
+    end = min(offset + length, len(text))
+    runtime.emit({"schemaVersion": runtime.SCHEMA_VERSION, "kind": "text-page", "field": pointer,
+                  "encoding": "unicode-characters", "format": "text" if isinstance(value, str) else "json",
+                  "offset": offset, "nextOffset": end if end < len(text) else None,
+                  "totalCharacters": len(text), "revision": revision, "text": text[offset:end]})
 
 
 def command_status(runtime, args: argparse.Namespace) -> int:
@@ -25,9 +71,29 @@ def command_status(runtime, args: argparse.Namespace) -> int:
         state = matches[0]
     else:
         state = runtime.find_run(root, args.agent, args.run_id)
+    document = getattr(args, "document", None)
+    if document:
+        if document == "state":
+            value = runtime.public_state(state)
+        else:
+            workspace = state.get("taskWorkspace") or {}
+            paths = {"request": state.get("requestPath"), "result": state.get("resultPath"),
+                     "receipt": state.get("receiptPath"), "capability": state.get("capabilityBindingPath"),
+                     "loop": workspace.get("loopStatePath")}
+            path = paths[document]
+            if not path:
+                raise runtime.ContractError("read_document_unavailable", "run has no reference for this document")
+            # Only captured run references, never an arbitrary caller-supplied path.
+            raw = runtime.safe_read_bytes(Path(path), None)
+            try:
+                value = raw.decode("utf-8") if document in {"request", "result"} else json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise runtime.ContractError("read_document_invalid", "document is not valid UTF-8 text/JSON") from error
+        emit_read_page(runtime, args, value, force=True)
+        return 0
     heartbeat_path = Path(state["heartbeatPath"])
     heartbeat = runtime.safe_read_json(heartbeat_path)
-    runtime.emit(
+    emit_read_page(runtime, args,
         {
             "schemaVersion": runtime.SCHEMA_VERSION,
             "kind": "status",
@@ -66,7 +132,7 @@ def command_list(runtime, args: argparse.Namespace) -> int:
     for directory in runtime.iter_agent_directories(root):
         with contextlib.suppress(runtime.ContractError):
             agents.append(runtime.safe_read_json(directory / "session.json"))
-    runtime.emit(
+    emit_read_page(runtime, args,
         {
             "schemaVersion": runtime.SCHEMA_VERSION,
             "kind": "agent-list",

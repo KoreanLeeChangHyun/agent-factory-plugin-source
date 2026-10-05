@@ -71,6 +71,9 @@ metadata:
 
 ## 4. Routing
 
+- Use the [complete project directory map and storage boundaries](references/layout.md)
+  when placing or reorganizing `docs/`, including artifact and runtime boundaries.
+
 | Type | Canonical project package |
 |---|---|
 | Original | `<project-root>/docs/original/<category>[-<domain>]-<name>/` |

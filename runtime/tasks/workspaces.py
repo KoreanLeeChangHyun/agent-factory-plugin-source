@@ -177,6 +177,20 @@ def paths_changed(unit):
 
 
 def check(unit, save, stage):
+    if unit.get("checkDirectory"):
+        from tasks import checks
+        unit["checkCommit"] = worktrees.git(unit["path"], "rev-parse", "HEAD").stdout.decode().strip()
+        operation = checks.observe(unit, Path(unit["checkDirectory"]), stage)
+        unit[stage + "CheckOperation"] = operation
+        unit[stage + "Checks"] = operation["results"]
+        save()
+        if operation["status"] in {"starting", "running"}:
+            return False
+        if operation["status"] != "completed":
+            raise ContractError("task_integration_check_failed", "Check " + operation["status"] + "; evidence: " + operation["statePath"])
+        if paths_changed(unit) or worktrees.merge_pending(unit["path"]):
+            raise ContractError("task_check_modified_sources", "Checks changed nonignored files; preserve and inspect before integration")
+        return True
     evidence = []
     for argv in unit["checks"]:
         # No shell expansion; stdin is closed and the bounded output stays in runtime evidence.
@@ -196,6 +210,7 @@ def check(unit, save, stage):
             raise ContractError("task_integration_check_failed", "Integration check failed; Work Unit preserved: " + unit["path"])
     if paths_changed(unit) or worktrees.merge_pending(unit["path"]):
         raise ContractError("task_check_modified_sources", "Checks changed nonignored files; preserve and inspect them before integration")
+    return True
 
 
 def target_checkout(unit, create=False):
@@ -340,6 +355,14 @@ def integrate(runtime, state, work, receipt, save):
         root = Path(unit["repositoryRoot"])
         common = worktrees.git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.decode().strip()
         with runtime.file_lock(Path(common) / ".agent-factory-integration.lock", blocking=False):
+            for stage in ("work", "integration"):
+                operation = unit.get(stage + "CheckOperation") or {}
+                if operation.get("status") in {"starting", "running"}:
+                    current_tip = worktrees.git(unit["path"], "rev-parse", "HEAD").stdout.decode().strip()
+                    if operation["inputs"]["commit"] != current_tip:
+                        raise ContractError("task_check_input_changed", "Checkout changed during an owned check; preserve both operations")
+                    if check(unit, save, stage) is False:
+                        return {"status": "checking", "unit": unit}
             target = target_checkout(unit, create=True)
             save()
             # Uncommitted target files block only when the merge would change them (checked below).
@@ -366,7 +389,15 @@ def integrate(runtime, state, work, receipt, save):
             unit["resultCommit"] = worktrees.git(unit["path"], "rev-parse", "HEAD").stdout.decode().strip()
             unit["phase"] = "checking"
             save()
-            check(unit, save, "work")
+            if state.get("lifecycleVersion"):
+                unit["checkDirectory"] = str(Path(state["statePath"]).parent)
+            # An integration check may still own this checkout after the loop
+            # process restarted. Observe it before any new repository mutation.
+            integration_check = unit.get("integrationCheckOperation") or {}
+            integration_inputs = integration_check.get("inputs", {})
+            already_combined = integration_inputs.get("commit") == unit["resultCommit"]
+            if not already_combined and check(unit, save, "work") is False:
+                return {"status": "checking", "unit": unit}
             target_tip = worktrees.git(target, "rev-parse", "HEAD").stdout.decode().strip()
             # A crash after the target update is recovered by ancestry, not a second merge.
             if unit.get("candidateCommit") and worktrees.git(target, "merge-base", "--is-ancestor", unit["candidateCommit"], "HEAD", check=False).returncode == 0:
@@ -402,7 +433,8 @@ def integrate(runtime, state, work, receipt, save):
             overlap = target_overlap(target, target_tip, unit["candidateCommit"])
             if overlap:
                 refuse_target_overlap(unit, target, overlap, save)
-            check(unit, save, "integration")
+            if check(unit, save, "integration") is False:
+                return {"status": "checking", "unit": unit}
             require_checkout_idle(runtime, state, Path(value["path"]), "task_workspace_busy")
             require_checkout_idle(runtime, state, target, "task_target_busy", target=True)
             if worktrees.branch(target) != unit["targetBranch"] or worktrees.merge_pending(target) or worktrees.git(target, "rev-parse", "HEAD").stdout.decode().strip() != target_tip:

@@ -101,6 +101,11 @@ Required: `--agent AGENT`
 One of: `--run-id` | `--dispatch-id`
 - `--run-id RUN_ID`
 - `--dispatch-id DISPATCH_ID`
+- `--document {state,request,result,receipt,capability,loop}`: Read a document as lossless Unicode text pages (default page: 4000 characters)
+- `--field FIELD`: Select a JSON Pointer before paging; strings are returned verbatim
+- `--offset OFFSET`: Zero-based Unicode character offset (enables paging)
+- `--length LENGTH`: Characters per page, default 4000; no total document limit
+- `--revision REVISION`: Require the SHA-256 returned by the first page; changed data fails closed
 
 ## `result`
 Required: `--agent AGENT`, `--run-id RUN_ID`
@@ -141,6 +146,10 @@ Required: `--agent AGENT`, `action {status,create,merge,repositories}`
 - `--writable-root WRITABLE_ROOT`
 
 ## `list`
+- `--field FIELD`: Select a JSON Pointer before paging; strings are returned verbatim
+- `--offset OFFSET`: Zero-based Unicode character offset (enables paging)
+- `--length LENGTH`: Characters per page, default 4000; no total document limit
+- `--revision REVISION`: Require the SHA-256 returned by the first page; changed data fails closed
 
 ## `reset-conversation`: Start a fresh provider conversation while preserving the Agent and run history
 Required: `--agent AGENT`

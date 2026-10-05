@@ -44,7 +44,7 @@ STALE_CHECK_SECONDS = 30.0
 INTEGRATION_WAIT_ATTEMPTS = 150
 INTEGRATION_WAIT_ERRORS = {"task_target_busy", "task_workspace_busy", "lock_busy"}
 # Human-invoked commands that return a stopped loop to `active`.
-RESUMING_COMMANDS = {"recover-receipt", "extend-revisions"}
+RESUMING_COMMANDS = {"recover-receipt", "extend-revisions", "answer", "steer", "retry-preparation"}
 # Commands after which an active loop must have a driver; one is launched only when none holds the driver lock.
 DRIVER_ENSURING_COMMANDS = RESUMING_COMMANDS | {"reconcile", "skip"}
 # Private systemd EnvironmentFile kept beside the loop so Restart=on-failure can reread it.
@@ -76,6 +76,7 @@ FAILURE_CLASSES = {
         "task_repository_invalid", "task_repository_overlap", "parent_session_invalid",
         "parent_conversation_reset", "task_workspace_binding", "task_workspace_missing",
         "task_target_busy_timeout", "task_workspace_busy_timeout", "lock_busy_timeout",
+        "task_preparation_failed", "task_guidance_missing", "task_guidance_unsafe", "task_check_input_changed",
     },
     "human": {"needs-human-decision", "revision_limit_reached", "cancelled"},
 }
@@ -384,6 +385,11 @@ def public_state(state: dict[str, Any], child: dict[str, Any] | None = None) -> 
         "pendingDispatch": state.get("pendingDispatch"),
         "controlPlaneError": state.get("controlPlaneError"),
         "integrationWait": copy.deepcopy(state.get("integrationWait")),
+        "pendingDecision": copy.deepcopy(state.get("decisions", {}).get(state.get("pendingDecisionId"))),
+        "recovery": copy.deepcopy(state.get("recovery")),
+        "completion": copy.deepcopy(state.get("completion")),
+        "preflight": copy.deepcopy(state.get("preflight")),
+        "steering": copy.deepcopy(state.get("steering", [])),
         "failureClass": failure_class(state.get("controlPlaneError")),
         "receiptRecovery": state.get("receiptRecovery"),
         "revisionCount": state.get("revisionCount", 0),
@@ -457,6 +463,8 @@ def prepare_dispatch(
         and state.get("lastVerificationDecision") != "fail"
         and recovery_of_run_id is None
         and not state.get("integrationRevisionPending")
+        and not state.get("decisionContinuationPending")
+        and not state.get("steeringContinuationPending")
     ):
         raise agent_exec.ContractError("graph_transition_invalid", "a Work revision requires failed Verification")
     agent_id = assigned_agent(state, role)
@@ -468,6 +476,13 @@ def prepare_dispatch(
     if recovery_of_run_id is not None and operation != "send":
         raise agent_exec.ContractError("receipt_recovery_session_invalid", "Receipt recovery requires the existing Work session")
     content = agent_exec.safe_read_bytes(request_file, agent_exec.MAX_REQUEST_BYTES)
+    queued = [item for item in state.get("steering", []) if item["status"] == "queued"
+              and item["taskId"] == state["execution"]["taskBinding"]["taskId"]]
+    if role == "work" and queued:
+        request_file = write_request(path.parent, "steering-" + uuid.uuid4().hex + ".md",
+            content.decode("utf-8") + "\n\n[Bound additions to this task; preserve captured authority]\n"
+            + json.dumps(queued, ensure_ascii=False))
+        content = agent_exec.safe_read_bytes(request_file, agent_exec.MAX_REQUEST_BYTES)
     role_binding = state.get("capabilityBindings", {}).get(role, {})
     state["pendingDispatch"] = {
         "dispatchId": f"dispatch-{uuid.uuid4().hex}",
@@ -481,11 +496,15 @@ def prepare_dispatch(
         "verifiedWorkRunId": verified_work_run_id,
         "capabilityBindingPath": role_binding.get("path"),
         "capabilityBindingHash": role_binding.get("hash"),
+        "steeringIds": [item["id"] for item in queued] if role == "work" else [],
     }
     if recovery_of_run_id is not None:
         state["pendingDispatch"]["recoveryOfRunId"] = recovery_of_run_id
     state["phase"] = f"{role}-dispatching"
     state.pop("integrationRevisionPending", None)
+    state.pop("steeringContinuationPending", None)
+    if state.get("decisionContinuationPending"):
+        state["pendingDispatch"]["decisionId"] = state.pop("decisionContinuationPending")
     state["updatedAt"] = now()
     save_loop_state(path, state)
 
@@ -510,6 +529,14 @@ def complete_pending_dispatch(
     except agent_exec.ContractError as error:
         if error.code != "dispatch_not_found":
             raise
+        if state.get("lifecycleVersion"):
+            from tasks import preparation
+            if not preparation.ready(agent_exec, state, path, lambda: save_loop_state(path, state)):
+                state["phase"] = "preparing"
+                save_loop_state(path, state)
+                return None
+        pending["attemptedAt"] = now()
+        save_loop_state(path, state)
         acknowledgement = runtime.dispatch(
             operation=pending["operation"],
             agent_id=pending["agentId"],
@@ -613,6 +640,13 @@ def complete_pending_dispatch(
             raise agent_exec.ContractError("receipt_recovery_binding_invalid", "Receipt recovery audit linkage is invalid")
         recovery.update({"recoveryWorkRunId": run_id, "dispatchedAt": now()})
     state["updatedAt"] = now()
+    if pending.get("decisionId"):
+        decision = state["decisions"][pending["decisionId"]]
+        decision.update(status="resumed", continuationRunId=run_id, dispatchId=pending["dispatchId"])
+        state["pendingDecisionId"] = None
+    for item in state.get("steering", []):
+        if item["id"] in pending.get("steeringIds", []):
+            item.update(status="delivered", continuationRunId=run_id, dispatchId=pending["dispatchId"])
     save_loop_state(path, state)
     return run
 
@@ -803,6 +837,7 @@ def start_loop_captured(args: argparse.Namespace) -> dict[str, Any]:
     path = directory / "state.json"
     state = {
         "schemaVersion": SCHEMA_VERSION,
+        "lifecycleVersion": 1,
         "loopId": loop_id,
         "status": "active",
         "phase": "starting",
@@ -1074,7 +1109,10 @@ def preserve_integration(state, path, code, message, files=None):
     summary = ("Work completed but was not merged (" + code + "): " + message + ". Preserved unmerged branches: "
                + "; ".join(item["branch"] + " at " + item["path"] + " (target " + item["targetBranch"] + " in " + item["repositoryRoot"] + ")" for item in preserved)
                + (". Already merged: " + ", ".join(merged) if merged else ""))
-    state.update(status="completed", phase="ended", currentChild=None, controlPlaneError=None, updatedAt=now(),
+    if state.get("lifecycleVersion"):
+        state["completion"] = {"work": "completed", "integration": "partial" if merged else "preserved",
+                               "nextAction": "Resolve the recorded cause and reconcile the same loop"}
+    state.update(status="runtime-error" if state.get("lifecycleVersion") else "completed", phase="ended", currentChild=None, controlPlaneError=None, updatedAt=now(),
                  terminalReason={"code": "integration_preserved", "message": summary, "cause": code,
                                  "preserved": preserved, "merged": merged, **({"files": files} if files else {})})
     save_loop_state(path, state)
@@ -1084,6 +1122,8 @@ def preserve_integration(state, path, code, message, files=None):
 def finish_workflow_task(state, path, runtime, reason):
     if state.get("taskWorkspaces"):
         state["phase"] = "integrating"
+        if state.get("lifecycleVersion"):
+            state["completion"] = {"work": "completed", "integration": "checking"}
         save_loop_state(path, state)
         from tasks import workspaces
         root = Path(state["projectRoot"])
@@ -1095,6 +1135,21 @@ def finish_workflow_task(state, path, runtime, reason):
         try:
             outcome = workspaces.integrate(agent_exec, state, work, receipt, lambda: save_loop_state(path, state))
         except agent_exec.ContractError as error:
+            if state.get("lifecycleVersion") and error.code == "task_integration_check_failed":
+                units = state["taskWorkspaces"][state["execution"]["taskBinding"]["taskId"]]["repositories"]
+                failed = [unit.get(stage + "CheckOperation") for unit in units for stage in ("work", "integration")
+                          if (unit.get(stage + "CheckOperation") or {}).get("status") == "failed"]
+                evidence = hashlib.sha256(json.dumps(failed, sort_keys=True).encode()).hexdigest()
+                if failed and evidence not in state.get("integrationFailureRepairs", []):
+                    state.setdefault("integrationFailureRepairs", []).append(evidence)
+                    state.update(integrationRevisionPending=True, status="active", controlPlaneError=None)
+                    request = write_request(path.parent, "check-repair-" + evidence + ".md",
+                        agent_exec.safe_read_bytes(Path(state["originalRequestPath"]), agent_exec.MAX_REQUEST_BYTES).decode("utf-8")
+                        + "\n\nRuntime integration checks failed. Repair these failures within the original scope, "
+                        "rerun affected checks, and submit a new result. Preserve prior evidence.\n"
+                        + json.dumps(failed, ensure_ascii=False))
+                    dispatch(state, path, runtime, role="work", request_file=request)
+                    return public_state(state, state["currentChild"])
             if error.code in INTEGRATION_WAIT_ERRORS:
                 owners = getattr(error, "owners", [])
                 verified_wait = bool(owners) and all(owner["evidence"] == "live" for owner in owners)
@@ -1103,7 +1158,7 @@ def finish_workflow_task(state, path, runtime, reason):
                 state["integrationWait"] = {"code": error.code, "message": error.message,
                                             "attempts": attempts, "limit": INTEGRATION_WAIT_ATTEMPTS,
                                             "verifiedLive": verified_wait, "owners": owners}
-                if attempts >= INTEGRATION_WAIT_ATTEMPTS:
+                if attempts >= INTEGRATION_WAIT_ATTEMPTS and not state.get("lifecycleVersion"):
                     if isolation:
                         return preserve_integration(state, path, error.code + "_timeout", error.message)
                     state.update(status="runtime-error", controlPlaneError={"code": error.code + "_timeout", "message": error.message})
@@ -1117,6 +1172,9 @@ def finish_workflow_task(state, path, runtime, reason):
         state.pop("integrationWait", None)
         # Reconcile of a historical busy stop returns to the same completed Work.
         state.update(status="active", controlPlaneError=None)
+        if outcome["status"] == "checking":
+            save_loop_state(path, state)
+            return public_state(state)
         if outcome["status"] == "target-changed":
             state["integrationRetries"] = state.get("integrationRetries", 0) + 1
             limit = state["execution"].get("maxRevisions") or DEFAULT_MAX_REVISIONS
@@ -1190,6 +1248,9 @@ def finish_workflow_task(state, path, runtime, reason):
             return public_state(state, state["currentChild"])
     state.update(status="completed", phase="ended", currentChild=None,
                  terminalReason={"code": reason, "message": "All submitted tasks completed"}, updatedAt=now())
+    if state.get("lifecycleVersion"):
+        state["completion"] = {"work": "completed", "integration": "merged" if state.get("taskWorkspaces") else "not-requested",
+                               "cleanupPending": any(u.get("cleanupPending") for v in state.get("taskWorkspaces", {}).values() for u in v["repositories"])}
     save_loop_state(path, state)
     return public_state(state)
 
@@ -1200,6 +1261,14 @@ def reconcile_loop(args: argparse.Namespace) -> dict[str, Any]:
     with agent_exec.file_lock(path.parent / ".loop.lock"):
         state = agent_exec.safe_read_json(path)
         if state["status"] in {"completed", "cancelled"}:
+            if state["status"] == "completed" and state.get("lifecycleVersion"):
+                from tasks import workspaces
+                for value in state.get("taskWorkspaces", {}).values():
+                    if any(unit.get("cleanupPending") for unit in value["repositories"]):
+                        workspaces.cleanup(agent_exec, state, value, lambda: save_loop_state(path, state))
+                if state.get("completion"):
+                    state["completion"]["cleanupPending"] = any(unit.get("cleanupPending") for value in state.get("taskWorkspaces", {}).values() for unit in value["repositories"])
+                    save_loop_state(path, state)
             return public_state(state)
         upgrade_execution_policy(state, path, args, root)
         runtime = AgentRuntime(root, state.get("parentStatePath"))
@@ -1207,6 +1276,8 @@ def reconcile_loop(args: argparse.Namespace) -> dict[str, Any]:
             child = complete_pending_dispatch(state, path, runtime)
             return public_state(state, child)
         current = state.get("currentChild")
+        if not current and state.get("lifecycleVersion") and (state.get("completion") or {}).get("integration") in {"preserved", "partial", "checking"}:
+            return finish_workflow_task(state, path, runtime, "work-completed")
         if not isinstance(current, dict):
             raise agent_exec.ContractError("loop_state_invalid", "active loop has no child")
         child = runtime.status(current["agentId"], current["runId"])
@@ -1217,6 +1288,19 @@ def reconcile_loop(args: argparse.Namespace) -> dict[str, Any]:
             # Work isolation never waits for a Human on conflicts; the unmerged branch stays for inspection.
             return preserve_integration(state, path, "task_conflict_unresolved", "Work could not resolve the integration conflict")
         if child["status"] != "completed":
+            if state.get("lifecycleVersion") and child["status"] == "needs-human-decision":
+                from tasks import decisions
+                decision = decisions.capture(agent_exec, state, child)
+                # Correct only an explicitly classified request to reauthorize
+                # this task. Never infer authority from question wording.
+                correction_key = state["execution"]["taskBinding"]["taskId"] + ":" + current["role"]
+                if (decision["kind"] == "approval" and decision.get("scope") == "task-execution"
+                        and decision["policy"].get("humanApprovalPolicy") == "bypass"
+                        and correction_key not in state.get("approvalCorrections", [])):
+                    state.setdefault("approvalCorrections", []).append(correction_key)
+                    decision.update(status="answered", response={"answer": "Execute the already authorized bounded task under the captured bypass policy. Do not expand scope or bypass missing credentials.",
+                                    "authorizationReference": "captured-task-policy", "evidence": decision["policy"]})
+                    return resume_decision(state, path, decision, runtime)
             if state.get("workflow"):
                 state["workflow"]["tasks"][state["workflow"]["index"]]["workStatus" if current["role"] == "work" else "verificationStatus"] = "blocked" if child["status"] == "needs-human-decision" else child["status"]
             state.update({
@@ -1237,6 +1321,10 @@ def reconcile_loop(args: argparse.Namespace) -> dict[str, Any]:
         directory = path.parent
         if current["role"] == "work":
             receipt = agent_exec.validate_receipt(root, child, agent_id=current["agentId"], run_id=current["runId"])
+            if any(item["status"] == "queued" for item in state.get("steering", [])):
+                state["steeringContinuationPending"] = True
+                dispatch(state, path, runtime, role="work", request_file=Path(state["originalRequestPath"]))
+                return public_state(state, state["currentChild"])
             pending_findings = set(state.get("pendingFindingIds", []))
             if not pending_findings.issubset(set(receipt["addressedFindingIds"])):
                 raise agent_exec.ContractError("finding_binding_invalid", "Work receipt omitted failed Verification findings")
@@ -1298,6 +1386,90 @@ def reconcile_loop(args: argparse.Namespace) -> dict[str, Any]:
         state["revisionCount"] = state.get("revisionCount", 0) + 1
         dispatch(state, path, runtime, role="work", request_file=request)
         return public_state(state, state["currentChild"])
+
+
+def retry_preparation(args):
+    root = agent_exec.resolve_project_root(args.project_root)
+    path, _ = read_state(root, args.work_agent, args.loop_id)
+    if args.actor != "human" or not args.authorization_reference.strip() or not args.decision_evidence.strip():
+        raise agent_exec.ContractError("preparation_retry_unauthorized", "Retry requires the Human's prerequisite resolution")
+    with agent_exec.file_lock(path.parent / ".loop.lock"):
+        state = agent_exec.safe_read_json(path)
+        if args.authorization_reference in state.get("preparationRetries", []):
+            return public_state(state)
+        pending = state.get("pendingDispatch") or {}
+        if (state["execution"]["taskBinding"]["taskId"] != args.task_id or not pending
+                or pending.get("attemptedAt") or state["status"] != "runtime-error"):
+            raise agent_exec.ContractError("preparation_retry_invalid", "Only this undispatched task's failed preparation can be retried")
+        from system import containment
+        value = state.get("taskWorkspaces", {}).get(args.task_id, {})
+        for unit in value.get("repositories", []):
+            operation = unit.get("dependencyPreparation") or {}
+            if operation.get("status") in {"starting", "running", "interrupted"}:
+                for key in ("owner", "child"):
+                    if operation.get(key) and containment.process_identity_status(operation[key]) not in {"dead", "mismatch"}:
+                        raise agent_exec.ContractError("preparation_owner_active", "Observe or cancel the existing preparation owner before retrying")
+            unit["preparationRevision"] = unit.get("preparationRevision", 0) + 1
+        state.setdefault("preparationRetries", []).append(args.authorization_reference)
+        state.update(status="active", controlPlaneError=None, phase="preparing")
+        save_loop_state(path, state)
+        return public_state(state)
+
+
+def steer_loop(args):
+    """Persist bounded additions without interrupting a live provider turn."""
+    root = agent_exec.resolve_project_root(args.project_root)
+    path, _ = read_state(root, args.work_agent, args.loop_id)
+    if not args.authorization_reference.strip() or not args.decision_evidence.strip() or not args.message.strip():
+        raise agent_exec.ContractError("steering_evidence_required", "Provide the exact authorized addition and its reference")
+    with agent_exec.file_lock(path.parent / ".loop.lock"):
+        state = agent_exec.safe_read_json(path)
+        task = state["execution"]["taskBinding"]
+        if (args.task_id != task["taskId"] or state.get("latestWorkRunId") != args.run_id
+                or state["status"] in {"completed", "cancelled"}):
+            raise agent_exec.ContractError("steering_binding_invalid", "Addition must bind the current task and Work run")
+        identity = hashlib.sha256((args.authorization_reference + "\0" + args.task_id).encode()).hexdigest()
+        previous = next((item for item in state.get("steering", []) if item["id"] == identity), None)
+        if previous:
+            if previous["message"] != args.message:
+                raise agent_exec.ContractError("steering_conflict", "This reference already records a different addition")
+        else:
+            state.setdefault("steering", []).append({"id": identity, "taskId": args.task_id,
+                "runId": args.run_id, "message": args.message, "actor": args.actor,
+                "authorizationReference": args.authorization_reference, "evidence": args.decision_evidence,
+                "status": "queued", "createdAt": now()})
+            save_loop_state(path, state)
+        return public_state(state)
+
+
+def resume_decision(state, path, decision, runtime):
+    role = decision["role"]
+    request = write_request(path.parent, decision["id"] + ".md",
+        agent_exec.safe_read_bytes(Path(decision["requestPath"]), agent_exec.MAX_REQUEST_BYTES).decode("utf-8")
+        + "\n\n[Bound decision — same task and session]\n" + json.dumps(decision, ensure_ascii=False)
+        + "\nApply only this exact answer within captured authority. Preserve prior results. Complete the remaining authorized steps and submit this run's result.")
+    state.update(decisionContinuationPending=decision["id"], status="active", controlPlaneError=None)
+    prepare_dispatch(state, path, role=role, request_file=request,
+                     verified_work_run_id=state.get("latestWorkRunId") if role == "verification" else None)
+    complete_pending_dispatch(state, path, runtime)
+    return public_state(state, state["currentChild"])
+
+
+def answer_decision(args: argparse.Namespace) -> dict[str, Any]:
+    """Resume the same Work session with an exact, durable Human answer."""
+    from tasks import decisions
+    root = agent_exec.resolve_project_root(args.project_root)
+    path, _ = read_state(root, args.work_agent, args.loop_id)
+    response = agent_exec.safe_read_json(args.response_file) if args.response_file else json.loads(args.response_json)
+    with agent_exec.file_lock(path.parent / ".loop.lock"):
+        state = agent_exec.safe_read_json(path)
+        decision, fresh = decisions.accept(state, response, actor=args.actor,
+                                          reference=args.authorization_reference, evidence=args.decision_evidence)
+        if not fresh:
+            return public_state(state)
+        if not agent_exec.session_file(root, decision["agentId"]).exists():
+            raise agent_exec.ContractError("decision_session_missing", "Preserve the original session before resuming Work")
+        return resume_decision(state, path, decision, AgentRuntime(root, state.get("parentStatePath")))
 
 
 def extend_revisions(args: argparse.Namespace) -> dict[str, Any]:
@@ -1398,11 +1570,18 @@ def stop_task(args):
         tasks = workflow.get("tasks", [])
         if workflow.get("id") != args.workflow_id or len(tasks) != 1 or tasks[0].get("id") != args.task_id:
             raise agent_exec.ContractError("loop_stop_scope", "Only an exactly bound single-task Loop can be stopped")
-        if state.get("pendingDispatch"):
+        if state.get("pendingDispatch") and (state["pendingDispatch"].get("attemptedAt") or state.get("phase") != "preparing"):
             raise agent_exec.ContractError("loop_stop_dispatch_uncertain", "Resolve the uncertain dispatch before stopping this task")
         if state["status"] in {"completed", "cancelled"} and not state.get("stopPending"):
             return public_state(state)
         current = state.get("currentChild")
+        from tasks import checks
+        for value in state.get("taskWorkspaces", {}).values():
+            for unit in value["repositories"]:
+                for field in ("workCheckOperation", "integrationCheckOperation", "dependencyPreparation"):
+                    operation = unit.get(field) or {}
+                    if operation.get("status") in {"starting", "running"}:
+                        checks.cancel(operation["statePath"])
         state.update(status="cancelled", phase="ended", stopPending=True, updatedAt=now(), terminalReason={
             "code": "human-stopped-task", "message": "Human stopped this task",
             "actor": args.actor, "authorizationReference": args.authorization_reference.strip(),
@@ -1493,6 +1672,23 @@ def drive_loop(args):
                     state = agent_exec.safe_read_json(path)
                     if state["status"] == "cancelled":
                         return public_state(state)
+                    code = getattr(error, "code", "driver_error")
+                    if state.get("lifecycleVersion") and code in (INTEGRATION_WAIT_ERRORS | TRANSIENT_READ_ERRORS | {"dispatch_status_unavailable"}):
+                        attempts = (state.get("recovery") or {}).get("attempts", 0) + 1
+                        delay = min(30, 2 ** min(attempts, 5))
+                        state["recovery"] = {"code": code, "message": str(error), "attempts": attempts,
+                                             "observedAt": now(), "backoffSeconds": delay,
+                                             "nextAction": "Observe accepted dispatch identity, then reconcile the same durable graph",
+                                             "pendingDispatchId": (state.get("pendingDispatch") or {}).get("dispatchId")}
+                        state.update(status="active", controlPlaneError=None)
+                        save_loop_state(path, state)
+                    else:
+                        delay = None
+                if delay is not None:
+                    time.sleep(delay)
+                    continue
+                with agent_exec.file_lock(path.parent / ".loop.lock"):
+                    state = agent_exec.safe_read_json(path)
                     state.update(status="runtime-error", controlPlaneError={"code": getattr(error, "code", "driver_error"), "message": str(error)})
                     if state.get("workflow"):
                         task = state["workflow"]["tasks"][state["workflow"]["index"]]
@@ -1612,17 +1808,27 @@ def build_parser() -> agent_exec.JsonArgumentParser:
                        help="Work revisions per task after failed Verification before the loop stops for a Human decision; 0 is unlimited")
     start.add_argument("--receipt-recovery", choices=("auto", "manual"), default="auto",
                        help="auto gives Work one repair turn for an allowlisted receipt failure; manual stops for recover-receipt")
-    for name in ("status", "reconcile", "recover-receipt", "skip", "drive", "close", "stop-task", "refresh-progress", "extend-revisions"):
+    for name in ("status", "reconcile", "recover-receipt", "skip", "drive", "close", "stop-task", "refresh-progress", "extend-revisions", "answer", "steer", "retry-preparation"):
         command = commands.add_parser(name)
         agent_exec.add_project_argument(command)
         if name in {"reconcile", "recover-receipt", "drive", "extend-revisions"}:
             agent_exec.execution_policy.add_policy_arguments(command)
         command.add_argument("--work-agent", required=True)
         command.add_argument("--loop-id", required=True)
-        if name in {"skip", "close", "stop-task", "extend-revisions"}:
+        if name in {"skip", "close", "stop-task", "extend-revisions", "answer", "steer", "retry-preparation"}:
             command.add_argument("--actor", choices=agent_exec.ACTORS, required=True)
             command.add_argument("--authorization-reference", required=True)
             command.add_argument("--decision-evidence", required=True)
+        if name == "answer":
+            response = command.add_mutually_exclusive_group(required=True)
+            response.add_argument("--response-file", type=Path, help="Exact decision identity and Human answer JSON")
+            response.add_argument("--response-json", help="Inline exact decision identity and Human answer JSON")
+        if name == "steer":
+            command.add_argument("--task-id", required=True)
+            command.add_argument("--run-id", required=True)
+            command.add_argument("--message", required=True, help="Authorized in-scope addition, delivered at the next safe Work turn boundary")
+        if name == "retry-preparation":
+            command.add_argument("--task-id", required=True)
         if name == "stop-task":
             command.add_argument("--workflow-id", required=True)
             command.add_argument("--task-id", required=True)
@@ -1643,7 +1849,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         agent_exec.response_operation.set({"schemaVersion": 1, "provider": "agent-factory", "script": "loop.py", "action": args.command})
         agent_exec.require_managed_platform()
         agent_exec.runtime_paths.resolve(args.project_root, home=args.runtime_home, project_id=args.project_id)
-        handlers = {"start": start_loop, "status": status_loop, "reconcile": reconcile_loop, "recover-receipt": recover_receipt, "skip": skip_loop, "drive": drive_loop, "close": close_loop, "stop-task": stop_task, "refresh-progress": refresh_progress, "extend-revisions": extend_revisions}
+        handlers = {"start": start_loop, "status": status_loop, "reconcile": reconcile_loop, "recover-receipt": recover_receipt, "skip": skip_loop, "drive": drive_loop, "close": close_loop, "stop-task": stop_task, "refresh-progress": refresh_progress, "extend-revisions": extend_revisions, "answer": answer_decision, "steer": steer_loop}
+        handlers["retry-preparation"] = retry_preparation
         result = handlers[args.command](args)
         if args.command == "drive":
             # The loop is no longer active, so systemd will not restart this driver.

@@ -96,7 +96,8 @@ class GoalTracker:
         seconds = result.get("duration_ms")
         seconds = seconds // 1000 if type(seconds) is int and seconds >= 0 else 0
         # Claude stops successfully only after its Stop hook judged the condition met.
-        self.publish(goal_record(self.session_id, self.objective, "complete" if succeeded else "paused",
+        complete = succeeded and isinstance(events.structured, dict) and events.structured.get("status") == "completed"
+        self.publish(goal_record(self.session_id, self.objective, "complete" if complete else "paused",
                                  tokens=tokens, seconds=seconds))
 
 
@@ -140,9 +141,10 @@ def main():
                     emit(event)
             code = process.wait()
             if not events.acknowledged:
-                raise ValueError(f"Claude exited with {code} before acknowledging the current request")
+                raise ContractError("start_ack_missing", f"Claude exited with {code} before acknowledging the current request")
             if code != 0 or not events.finished:
-                raise ValueError(f"Claude exited with {code}; terminal result received: {events.finished}")
+                raise ContractError("native_backend_error" if code else "result_missing",
+                                    f"Claude exited with {code}; terminal result received: {events.finished}")
             if setup:
                 goal.finish(events, succeeded=True)
             session_id = events.session
@@ -154,7 +156,10 @@ def main():
         if goal is not None:
             with contextlib.suppress(Exception):
                 goal.finish(events, succeeded=False)
-        emit({"type": "error", "message": str(error)})
+        emit({"type": "error", "message": str(error),
+              "code": getattr(error, "code", "result_invalid" if isinstance(error, (ValueError, KeyError)) else "native_backend_error"),
+              "stage": "adapter", "requestId": getattr(events, "request_id", None),
+              "acceptance": "started" if events and events.acknowledged else "unknown"})
         return 1
     finally:
         if process is not None:

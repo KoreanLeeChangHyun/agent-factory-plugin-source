@@ -81,3 +81,15 @@ Required: `--work-agent WORK_AGENT`, `--loop-id LOOP_ID`, `--actor {main,human}`
 - `--network-access | --no-network-access`
 - `--writable-root WRITABLE_ROOT`
 - `--additional ADDITIONAL`: Further Work revisions the Human authorizes after the limit stopped the loop
+
+## `answer`
+Required: `--work-agent WORK_AGENT`, `--loop-id LOOP_ID`, `--actor {main,human}`, `--authorization-reference AUTHORIZATION_REFERENCE`, `--decision-evidence DECISION_EVIDENCE`
+One of: `--response-file` | `--response-json`
+- `--response-file RESPONSE_FILE`: Exact decision identity and Human answer JSON
+- `--response-json RESPONSE_JSON`: Inline exact decision identity and Human answer JSON
+
+## `steer`
+Required: `--work-agent WORK_AGENT`, `--loop-id LOOP_ID`, `--actor {main,human}`, `--authorization-reference AUTHORIZATION_REFERENCE`, `--decision-evidence DECISION_EVIDENCE`, `--task-id TASK_ID`, `--run-id RUN_ID`, `--message MESSAGE`
+
+## `retry-preparation`
+Required: `--work-agent WORK_AGENT`, `--loop-id LOOP_ID`, `--actor {main,human}`, `--authorization-reference AUTHORIZATION_REFERENCE`, `--decision-evidence DECISION_EVIDENCE`, `--task-id TASK_ID`

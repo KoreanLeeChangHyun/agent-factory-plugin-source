@@ -52,6 +52,12 @@ def work_subagent_arguments():
     return ["--settings", json.dumps({"hooks": {"PreToolUse": [hook]}}), "--disallowedTools", "Workflow"]
 
 
+def inspection_arguments(plugin_root):
+    """Allow only the existing read-only inspectors, including their page options."""
+    script = str(plugin_root / "scripts" / "exec.py")
+    return ["--allowedTools", ",".join(f"Bash(python3 {script} {command} *)" for command in ("status", "list"))]
+
+
 def orchestrator_arguments(plugin_root, run_directory):
     """Orchestrate Main may read, write its own run files and run Agent Factory scripts; nothing else.
 

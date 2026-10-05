@@ -329,7 +329,8 @@ class NativeCodexTests(unittest.TestCase):
                 bridge, _, _ = native_fixture(Path(directory), statuses=(status,))
                 bridge.run("Main role")
                 final = json.loads(json.loads(output.getvalue().splitlines()[-1])["item"]["text"])
-                self.assertEqual(final["status"], "needs-human-decision" if status in {"paused", "blocked"} else "failed")
+                self.assertEqual(final["status"], "failed")
+                self.assertIsNone(final.get("decisionKind"))
 
     def test_pause_and_clear_are_native_controls_with_no_model_turn(self):
         for action in ("pause", "cancel", "disable"):

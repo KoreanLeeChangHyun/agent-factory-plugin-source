@@ -41,7 +41,7 @@ class WorkGoalTests(unittest.TestCase):
             self.assertEqual(bridge.thread_id, "thread-exact")
 
     def test_goal_limits_input_and_failure_remain_distinct(self):
-        for status, expected in [("blocked", "needs-human-decision"), ("paused", "needs-human-decision"),
+        for status, expected in [("blocked", "failed"), ("paused", "failed"),
                                  ("budgetLimited", "failed"), ("usageLimited", "failed")]:
             with self.subTest(status=status), tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
                 bridge, _, _ = self.fixture(Path(directory), statuses=(status,))

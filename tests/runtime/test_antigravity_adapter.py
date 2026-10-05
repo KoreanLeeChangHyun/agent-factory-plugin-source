@@ -169,7 +169,7 @@ class AntigravityProviderTests(unittest.TestCase):
             path = Path(directory) / "schema.json"
             path.write_text(json.dumps(response_schema_document("/r/result.md")), encoding="utf-8")
             schema, nullable = command.result_schema({"responseSchemaPath": str(path)})
-        self.assertEqual(nullable, ("decisionKind",))
+        self.assertEqual(nullable, ("decisionKind", "decisionScope"))
         self.assertNotIn("decisionKind", schema["required"])
         self.assertEqual((schema["properties"]["decisionKind"]["enum"], schema["properties"]["decisionKind"]["type"]),
                          (["approval", "clarification"], "string"))
@@ -177,7 +177,7 @@ class AntigravityProviderTests(unittest.TestCase):
         result = {"conversation_id": CONVERSATION, "status": "SUCCESS", "response": ANSWER,
                   "structured_output": {"content": "hello", "status": "ok"}}
         translator, _ = translate([INIT, {"event": "result", "result": result}], nullable=nullable)
-        self.assertEqual(translator.structured, {"decisionKind": None, "content": "hello", "status": "ok"})
+        self.assertEqual(translator.structured, {"decisionKind": None, "decisionScope": None, "content": "hello", "status": "ok"})
         # Recorded from gemini-3.8-flash-low: decisionKind filled on a completed result is dropped.
         filled = {"decisionKind": "clarification", "resultText": "Done.", "status": "completed"}
         raw = json.dumps(filled)
@@ -271,7 +271,7 @@ class AntigravityProviderTests(unittest.TestCase):
                     # Gemini rejects null enum members; the receipt fields add none.
                     self.assertNotIn("null", json.dumps({key: schema["properties"][key] for key in receipt_fields & set(schema["properties"])}))
             # Only the nullable decision metadata is optional for Gemini; receipt fields stay required.
-            self.assertEqual(command.result_schema(prepared)[1], ("decisionKind",))
+            self.assertEqual(command.result_schema(prepared)[1], ("decisionKind", "decisionScope"))
 
     def test_plan_work_routes_plan_then_execute(self):
         self.assertEqual(command.planning_phases({"role": "work", "executionOptions": {"taskMode": "plan-work"}}), ["plan", "execute"])

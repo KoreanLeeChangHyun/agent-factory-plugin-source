@@ -9,7 +9,7 @@ import uuid
 
 from adapters.claude.capabilities import MODELS
 from adapters.claude.control import goal_commands
-from adapters.claude.policy import effort, orchestrator_arguments, permission_arguments, validate, work_subagent_arguments
+from adapters.claude.policy import effort, inspection_arguments, orchestrator_arguments, permission_arguments, validate, work_subagent_arguments
 from storage.files import atomic_write, atomic_write_json, safe_read_bytes, safe_read_json
 from contracts.receipts import result_only_schema
 
@@ -69,6 +69,9 @@ def cli_command(session, state, parts, phase=None):
         command += orchestrator_arguments(root, directory)
     else:
         command += permission_arguments(session, working_directory)
+    if phase == "plan" or (command[command.index("--permission-mode") + 1] == "dontAsk"
+                           and "--allowedTools" not in command):
+        command += inspection_arguments(root)
     if state.get("role") == "work":
         command += work_subagent_arguments()  # Every Work phase, including plan.
     if session.get("sessionId"):

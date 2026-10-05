@@ -55,5 +55,7 @@ def work_goal_options(options, request_text):
     options.setdefault("goalObjective", request_text if len(request_text) <= 4000 else
                        "Complete this run's bounded request supplied in the developer instructions, "
                        "including necessary own checks and the exact result/receipt contract. "
-                       "Stop on failure or a required unresolved Human decision.")
+                       "Repair in-scope implementation and check failures and rerun affected checks until they pass. "
+                       "Preserve progress and stop only for cancellation, an unavailable external prerequisite, "
+                       "exhausted provider limits or a required unresolved Human decision.")
     return options

@@ -245,6 +245,115 @@ class RuntimeResponseTests(unittest.TestCase):
                     run_id='run-one', request=request)
                 self.assertEqual('<agent-factory-request>' in prompt, inline)
                 self.assertEqual('Read the delegated request from' in prompt, not inline)
+                self.assertEqual('--document request --offset 0 --length 4000' in prompt, not inline)
+                self.assertEqual('do not read the request file merely' in prompt, inline)
+
+    def test_paged_inspection_restores_long_unicode_documents_fields_and_lists(self):
+        from runs.commands import emit_read_page
+        from argparse import Namespace
+        capture = patch.object(rt, "emit")
+        emitted = capture.start()
+        self.addCleanup(capture.stop)
+        request = json.dumps({"원문": "한글😀e\u0301\r\n" * 12000}, ensure_ascii=False).encode()
+        state = self.new_run(role="work", request=request)
+        path = Path(state["statePath"])
+        original = rt.safe_read_json(path)
+        original["taskBinding"] = {"workflowId": "flow-one", "taskId": "task-one", "description": request.decode()}
+        original["executionPolicy"] = {"sandboxPolicy": {"type": "read-only"}, "approvalPolicy": "never"}
+        rt.atomic_write_json(path, original)
+        before = path.read_bytes()
+        def read_document(document, field=None):
+            offset, revision, pieces = 0, None, []
+            while True:
+                args = rt.parse_args(["status", "--project-root", str(self.root), "--agent", state["agentId"],
+                                     "--run-id", state["runId"], "--document", document,
+                                     "--offset", str(offset), "--length", "997"] +
+                                    (["--field", field] if field is not None else []) +
+                                    (["--revision", revision] if revision else []))
+                with redirect_stdout(io.StringIO()):
+                    rt.command_status(args)
+                page = emitted.call_args.args[0]
+                self.assertEqual(page["offset"], offset)
+                self.assertLessEqual(len(page["text"]), 997)
+                pieces.append(page["text"])
+                revision = page["revision"]
+                offset = page["nextOffset"]
+                if offset is None:
+                    self.assertEqual(len("".join(pieces)), page["totalCharacters"])
+                    return "".join(pieces), revision
+        self.assertEqual(read_document("request")[0].encode(), request)
+        self.assertEqual(read_document("state", "/taskBinding/description")[0], request.decode())
+        self.assertEqual(json.loads(read_document("state", "/executionPolicy")[0]), original["executionPolicy"])
+        Path(state["resultPath"]).write_bytes(request)
+        self.assertEqual(read_document("result")[0].encode(), request)
+        for document, key in (("receipt", "receiptPath"), ("capability", "capabilityBindingPath")):
+            target = path.parent / ("receipt.json" if document == "receipt" else "capability-bindings.json")
+            data = {"taskId": "task-one", "authority": "승인 원문😀" * 9000, "a/b~c": ["end"]}
+            target.write_text(json.dumps(data, ensure_ascii=False))
+            original[key] = str(target)
+            rt.atomic_write_json(path, original)
+            self.assertEqual(json.loads(read_document(document)[0]), data)
+            self.assertEqual(read_document(document, "/a~1b~0c/0")[0], "end")
+        loop = path.parent / "synthetic-loop.json"
+        unresolved = {"status": "needs-human-decision", "dependencies": ["task-previous"],
+                      "pause": {"reason": "차단 원인😀" * 9000, "decision": "unresolved"}}
+        loop.write_text(json.dumps(unresolved, ensure_ascii=False))
+        original["taskWorkspace"] = {"loopStatePath": str(loop)}
+        rt.atomic_write_json(path, original)
+        before = path.read_bytes()
+        self.assertEqual(json.loads(read_document("loop")[0]), unresolved)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(Path(state["requestPath"]).read_bytes(), request)
+        # A collection and a single string both page without a total-size/count cap.
+        document = {"agents": [{"agentId": f"work-{i}", "description": "😀" * 100} for i in range(1100)]}
+        chunks, offset, revision = [], 0, None
+        while True:
+            args = Namespace(field="/agents", offset=offset, length=4000, revision=revision)
+            with redirect_stdout(io.StringIO()):
+                emit_read_page(rt, args, document)
+            page = emitted.call_args.args[0]; chunks.append(page["text"])
+            offset, revision = page["nextOffset"], page["revision"]
+            if offset is None:
+                break
+        self.assertEqual(json.loads("".join(chunks)), document["agents"])
+        with self.assertRaises(rt.ContractError) as error:
+            emit_read_page(rt, Namespace(field="/agents", offset=0, length=4000, revision=revision), {"agents": []})
+        self.assertEqual(error.exception.code, "read_revision_changed")
+        for offset, length in [(-1, 1), (2, 1), (0, 0)]:
+            with self.assertRaises(rt.ContractError):
+                emit_read_page(rt, Namespace(field=None, offset=offset, length=length, revision=None), "a")
+        with redirect_stdout(io.StringIO()):
+            emit_read_page(rt, Namespace(), document)
+        self.assertEqual(emitted.call_args.args[0], document)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(rt.main(["list", "--project-root", str(self.root), "--offset", "0", "--length", "10"]), 0)
+        self.assertEqual(emitted.call_args.args[0]["kind"], "text-page")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(rt.main(["status", "--project-root", str(self.root), "--agent", state["agentId"],
+                                      "--run-id", state["runId"], "--document", "request", "--length", "1"]), 0)
+        self.assertEqual(emitted.call_args.args[0]["text"], request.decode()[:1])
+
+    def test_paged_inspection_validates_pointers_and_optional_workspace(self):
+        from argparse import Namespace
+        from runs.commands import emit_read_page
+        with patch.object(rt, "emit") as emitted:
+            for field, document in [("/a~2b", {"a~2b": "bad"}), ("/01", ["zero", "one"])]:
+                with self.subTest(field=field), self.assertRaises(rt.ContractError):
+                    emit_read_page(rt, Namespace(field=field), document)
+            emit_read_page(rt, Namespace(field=""), {"": "empty key"})
+            self.assertEqual(json.loads(emitted.call_args.args[0]["text"]), {"": "empty key"})
+            emit_read_page(rt, Namespace(field="/"), {"": "empty key"})
+            self.assertEqual(emitted.call_args.args[0]["text"], "empty key")
+            state = self.new_run(request="원문😀".encode())
+            state["taskWorkspace"] = None
+            rt.atomic_write_json(Path(state["statePath"]), state)
+            arguments = ["status", "--project-root", str(self.root), "--agent", state["agentId"],
+                         "--run-id", state["runId"], "--document"]
+            rt.command_status(rt.parse_args(arguments + ["request"]))
+            self.assertEqual(emitted.call_args.args[0]["text"], "원문😀")
+            with self.assertRaises(rt.ContractError) as error:
+                rt.command_status(rt.parse_args(arguments + ["loop"]))
+            self.assertEqual(error.exception.code, "read_document_unavailable")
 
     def test_changed_request_is_rejected_before_delivery(self):
         state = self.new_run()
@@ -308,7 +417,7 @@ class RuntimeResponseTests(unittest.TestCase):
         self.assertEqual(state['responseContract'], 2)
         self.assertEqual(rt.public_state(state)['responseContract'], 2)
         schema = rt.safe_read_json(Path(state['responseSchemaPath']))
-        self.assertEqual(schema['required'], ['status', 'resultPath', 'resultText', 'decisionKind',
+        self.assertEqual(schema['required'], ['status', 'resultPath', 'resultText', 'decisionKind', 'decisionScope',
                                               'outcome', 'changedPaths', 'tests', 'addressedFindingIds'])
         # Flat and small: only keywords every provider's output schema accepts.
         self.assertNotIn('pattern', json.dumps(schema))

@@ -139,6 +139,25 @@ class ClaudeAdapterTests(unittest.TestCase):
                 self.assertEqual(other[other.index("--permission-mode") + 1], "bypassPermissions")
                 self.assertNotIn("--allowedTools", other)
 
+    def test_read_only_work_can_page_managed_documents_without_general_shell_access(self):
+        from adapters.claude.policy import inspection_arguments
+        from adapters.claude.command import cli_command
+        with tempfile.TemporaryDirectory() as root:
+            state = runtime.create_run(project_root=Path(root), agent_id="work-pages", actor="main", request=b"test",
+                                       session={"role": "work", "maxAttempts": 1})
+            policy = {"schemaVersion": 1, "sandboxPolicy": {"type": "read-only"}, "approvalPolicy": "never"}
+            session = {"claude": "/local/claude", "executionPolicy": policy, "projectRoot": root}
+            command, _ = cli_command(session, state, PromptParts("fixed", "request"))
+            self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
+            allowed = command[command.index("--allowedTools") + 1].split(",")
+            self.assertEqual(len(allowed), 2)
+            self.assertTrue(allowed[0].endswith("/scripts/exec.py status *)"))
+            self.assertTrue(allowed[1].endswith("/scripts/exec.py list *)"))
+            self.assertNotIn("Bash", allowed)
+            self.assertNotIn("Edit", allowed)
+            self.assertEqual(session["executionPolicy"], policy)
+            self.assertEqual(len(inspection_arguments(Path(root))), 2)
+
     def test_work_may_spawn_only_the_read_only_explore_subagent(self):
         # Human decision 2026-10-03: launch configuration, not prompt wording, blocks every other sub-agent type.
         import shlex

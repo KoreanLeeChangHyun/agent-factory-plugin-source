@@ -8,6 +8,8 @@ import json
 import os
 import sys
 import tempfile
+import time
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -138,7 +140,10 @@ class FakeRuntime:
         return {"runId": run_id}
 
     def status(self, agent_id, run_id):
-        return self.runs[(agent_id, run_id)]
+        run = self.runs[(agent_id, run_id)]
+        if run["status"] == "needs-human-decision" and not Path(run["resultPath"]).exists():
+            Path(run["resultPath"]).write_text("Provide the missing project choice.")
+        return run
 
     def reconcile_stale(self, agent_id):
         self.stale_checks.append(agent_id)
@@ -561,7 +566,15 @@ class AgentLoopContractTests(unittest.TestCase):
             "reconcile", "--project-root", str(self.root), "--work-agent", "work-agent",
             "--loop-id", started["loopId"],
         ])
-        return self.agent_loop.reconcile_loop(args)
+        deadline = time.monotonic() + 20
+        while True:
+            result = self.agent_loop.reconcile_loop(args)
+            operations = [unit.get(stage + "CheckOperation", {}) for value in result.get("taskWorkspaces", {}).values()
+                          for unit in value["repositories"] for stage in ("work", "integration")]
+            if result["status"] != "active" or not any(op.get("status") in {"starting", "running"} for op in operations):
+                return result
+            self.assertLess(time.monotonic(), deadline, "Detached fixture check did not finish")
+            threading.Event().wait(0.02)
 
     def recover_receipt(self, started):
         args = self.agent_loop.build_parser().parse_args([
@@ -2232,6 +2245,10 @@ class AgentLoopContractTests(unittest.TestCase):
 
     def test_busy_wait_limit_preserves_isolated_result_and_receipt(self):
         started = self.isolated_brief_start(self.isolated_repository())
+        # Historical loops retain their captured finite uncertain-owner budget.
+        stored = self.agent_exec.safe_read_json(Path(started["statePath"]))
+        stored.pop("lifecycleVersion")
+        self.agent_exec.atomic_write_json(Path(started["statePath"]), stored)
         task_id = next(iter(started["taskWorkspaces"]))
         path = Path(started["taskWorkspaces"][task_id]["path"])
         (path / "file.txt").write_text("result")
@@ -2283,6 +2300,9 @@ class AgentLoopContractTests(unittest.TestCase):
 
     def test_nonisolated_busy_timeout_stops_with_work_evidence_preserved(self):
         started, _ = self.code_workspace_start()
+        stored = self.agent_exec.safe_read_json(Path(started["statePath"]))
+        stored.pop("lifecycleVersion")
+        self.agent_exec.atomic_write_json(Path(started["statePath"]), stored)
         path = Path(started["taskWorkspaces"]["task-one"]["path"])
         (path / "file.txt").write_text("result")
         work = self.checked_code_work(started)
@@ -2455,7 +2475,10 @@ class AgentLoopContractTests(unittest.TestCase):
 
     def assert_preserved(self, result, task_id, path, cause):
         from execution import worktrees
-        self.assertEqual(result["status"], "completed")
+        stored = self.agent_exec.safe_read_json(Path(result["statePath"]))
+        self.assertEqual(result["status"], "runtime-error" if stored.get("lifecycleVersion") else "completed")
+        if stored.get("lifecycleVersion"):
+            self.assertIn(result["completion"]["integration"], {"partial", "preserved"})
         self.assertIsNone(result["controlPlaneError"])
         self.assertEqual(result["terminalReason"]["code"], "integration_preserved")
         self.assertEqual(result["terminalReason"]["cause"], cause)
