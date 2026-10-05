@@ -35,7 +35,7 @@ def plan(root, value, selected_unit=None, isolation=False):
         if not path.is_absolute():
             path = root / path
         if path.resolve() != path or not path.is_relative_to(root):
-            raise ContractError("task_repository_invalid", "Select a canonical repository within the project")
+            raise ContractError("task_repository_invalid", "Select a canonical repository within the bound project; do not switch project-root to bypass the parent binding")
         actual = worktrees.git(path, "rev-parse", "--show-toplevel").stdout.decode().strip()
         if Path(actual) != path or str(path) in seen:
             raise ContractError("task_repository_invalid", "Select each repository root once")
@@ -253,6 +253,72 @@ def target_merge_message(unit, value):
     return task_message("Merge " + unit["targetBranch"] + " into task", "작업", value, "에 " + unit["targetBranch"] + " 병합")
 
 
+def run_owner_evidence(runtime, run, root):
+    """Unknown/queued owners block; only expired, positively empty runs can be ignored.
+
+    This is observation only: integration never reconciles or replays another run.
+    Numeric PIDs and old timestamps alone are not evidence of an empty checkout.
+    """
+    if run.get("status") not in runtime.ACTIVE_STATES:
+        return "inactive"
+    try:
+        runtime.validate_state_containment_fields(run)
+        if run.get("containment") is not None:
+            empty = runtime.containment_is_empty(runtime._validate_state_containment(run))
+            if not empty:
+                return "live"
+        else:
+            identities = [run[key] for key in ("workerIdentity", "codexIdentity") if run.get(key) is not None]
+            statuses = [runtime.process_identity_status(identity) for identity in identities]
+            if "match" in statuses:
+                return "live"
+            empty = bool(statuses) and all(status == "dead" for status in statuses)
+        if not empty or run.get("status") in {"accepted", "queued"}:
+            return "uncertain"
+        session = runtime.load_session(root, run["agentId"])
+        return "inactive" if runtime.heartbeat_stale(run, session) else "uncertain"
+    except (ContractError, OSError, ValueError, KeyError, TypeError):
+        return "uncertain"
+
+
+def run_owns_checkout(runtime, run, root):
+    return run_owner_evidence(runtime, run, root) != "inactive"
+
+
+def checkout_owners(runtime, state, checkout, *, target=False):
+    root = Path(state["projectRoot"])
+    parent = state.get("parentStatePath")
+    child = None
+    if target and parent and state.get("latestWorkRunId"):
+        agent = state["execution"]["taskBinding"].get("workAgentId", state["workAgentId"])
+        child = runtime.safe_read_json(runtime.state_file(root, agent, state["latestWorkRunId"]))
+    owners = []
+    for run in runtime.iter_run_states(root, strict=True):
+        cwd = Path(run.get("workingDirectory", str(root)))
+        if not (cwd.is_relative_to(checkout) or checkout.is_relative_to(cwd)):
+            continue
+        # The exact accepted Main is the coordinator of this integration, not a
+        # competing worker. Never exempt the caller, another Main, or a Work run.
+        if (target and child and run.get("role") == "main"
+                and child.get("parentAgentId") == run.get("agentId")
+                and child.get("parentRunId") == run.get("runId")
+                and str(runtime.state_file(root, run["agentId"], run["runId"])) == parent):
+            continue
+        evidence = run_owner_evidence(runtime, run, root)
+        if evidence != "inactive":
+            owners.append({"agentId": run["agentId"], "runId": run["runId"], "status": run["status"],
+                           "workingDirectory": str(cwd), "evidence": evidence})
+    return owners
+
+
+def require_checkout_idle(runtime, state, checkout, code, *, target=False):
+    owners = checkout_owners(runtime, state, checkout, target=target)
+    if owners:
+        error = ContractError(code, "Checkout has an active run or unproven owner; integration paused: " + str(checkout))
+        error.owners = owners
+        raise error
+
+
 def integrate(runtime, state, work, receipt, save):
     value = state.get("taskWorkspaces", {}).get(state["execution"]["taskBinding"]["taskId"])
     if value is None:
@@ -266,22 +332,20 @@ def integrate(runtime, state, work, receipt, save):
     value["verification"] = "not requested" if mode in {"work", "plan-work"} else "skipped" if state.get("humanSkip") else "pass"
     # Lessons the runtime recorded into this Work Unit are committed with the task.
     allowed = set(receipt["changedPaths"]) | runtime.lesson_capture.recorded_paths(runtime.iter_run_states(Path(state["projectRoot"])), value["id"])
-    if any(s.get("status") in runtime.ACTIVE_STATES and Path(s.get("workingDirectory", state["projectRoot"])).is_relative_to(Path(value["path"])) for s in runtime.iter_run_states(Path(state["projectRoot"]))):
-        raise ContractError("task_workspace_busy", "An active run owns this Work Unit; integration paused")
+    require_checkout_idle(runtime, state, Path(value["path"]), "task_workspace_busy")
     for unit in value["repositories"]:
         if unit["phase"] == "merged":
             continue
         validate_unit(unit)
         root = Path(unit["repositoryRoot"])
         common = worktrees.git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.decode().strip()
-        with runtime.file_lock(Path(common) / ".agent-factory-integration.lock"):
+        with runtime.file_lock(Path(common) / ".agent-factory-integration.lock", blocking=False):
             target = target_checkout(unit, create=True)
             save()
             # Uncommitted target files block only when the merge would change them (checked below).
             if worktrees.merge_pending(target):
                 raise ContractError("task_target_dirty", "Target checkout has a pending merge; Work Unit retained: " + str(target))
-            if any(s.get("status") in runtime.ACTIVE_STATES and s.get("workingDirectory") == str(target) for s in runtime.iter_run_states(Path(state["projectRoot"]))):
-                raise ContractError("task_target_busy", "Target checkout has an active run; integration paused")
+            require_checkout_idle(runtime, state, target, "task_target_busy", target=True)
             names = paths_changed(unit)
             prefix = Path(unit["relativePath"])
             changed = {str(prefix / name) for name in names}
@@ -339,6 +403,8 @@ def integrate(runtime, state, work, receipt, save):
             if overlap:
                 refuse_target_overlap(unit, target, overlap, save)
             check(unit, save, "integration")
+            require_checkout_idle(runtime, state, Path(value["path"]), "task_workspace_busy")
+            require_checkout_idle(runtime, state, target, "task_target_busy", target=True)
             if worktrees.branch(target) != unit["targetBranch"] or worktrees.merge_pending(target) or worktrees.git(target, "rev-parse", "HEAD").stdout.decode().strip() != target_tip:
                 return {"status": "target-changed", "unit": unit}
             overlap = target_overlap(target, target_tip, unit["candidateCommit"])
@@ -363,8 +429,16 @@ def cleanup(runtime, state, value, save):
     # Use the same repository lock for integration and cleanup.
     for unit in value["repositories"]:
         common = worktrees.git(unit["repositoryRoot"], "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.decode().strip()
-        with runtime.file_lock(Path(common) / ".agent-factory-integration.lock"):
-            cleanup_unit(runtime, state, value, unit, save)
+        try:
+            with runtime.file_lock(Path(common) / ".agent-factory-integration.lock", blocking=False):
+                cleanup_unit(runtime, state, value, unit, save)
+        except ContractError as error:
+            if error.code != "lock_busy":
+                raise
+            # The target update is already durable. Deferred cleanup must never
+            # masquerade as unmerged Work or make a completed task wait again.
+            unit["cleanupPending"] = "integration lock busy"
+            save()
 
 
 def cleanup_unit(runtime, state, value, unit, save):
@@ -372,9 +446,8 @@ def cleanup_unit(runtime, state, value, unit, save):
     if unit.get("cleaned") and (not integration or unit.get("integrationCleaned")):
         return
     path = Path(unit["path"])
-    if unit["phase"] != "merged" or any(s.get("status") in runtime.ACTIVE_STATES and
-            (Path(s.get("workingDirectory", state["projectRoot"])).is_relative_to(Path(value["path"])) or s.get("workingDirectory") == integration)
-            for s in runtime.iter_run_states(Path(state["projectRoot"]))):
+    if (unit["phase"] != "merged" or checkout_owners(runtime, state, Path(value["path"]))
+            or (integration and checkout_owners(runtime, state, Path(integration), target=True))):
         unit["cleanupPending"] = "active run or incomplete integration"
         save()
         return

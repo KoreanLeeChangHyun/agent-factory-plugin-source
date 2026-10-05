@@ -309,14 +309,14 @@ def managed_parent_identity(runtime, project_root: Path) -> dict[str, str] | Non
         state = runtime.safe_read_json(state_path)
     except ValueError as error:
         # Storage validates persisted bindings before the parent fields are available.
-        raise runtime.ContractError("parent_session_invalid", f"Managed parent run binding could not be validated: {error}") from error
+        raise runtime.ContractError("parent_session_invalid", f"Managed parent run binding could not be validated: {error}. Dispatch from the owning project's Main; do not rebind this parent or retry in another project") from error
     binding = state.get("runtimeBinding")
     agent_id, run_id = state.get("agentId"), state.get("runId")
     if (not isinstance(binding, dict) or binding.get("projectRoot") != str(project_root)
             or not isinstance(agent_id, str) or not runtime.AGENT_ID.fullmatch(agent_id)
             or not isinstance(run_id, str) or not runtime.AGENT_ID.fullmatch(run_id)
             or state_path != runtime.agent_directory(project_root, agent_id) / "runs" / run_id / "state.json"):
-        raise runtime.ContractError("parent_session_invalid", "Managed parent run binding is invalid")
+        raise runtime.ContractError("parent_session_invalid", "Managed parent run binding is invalid; dispatch from the owning project's Main without rebinding this parent")
     return {"agentId": agent_id, "runId": run_id}
 
 

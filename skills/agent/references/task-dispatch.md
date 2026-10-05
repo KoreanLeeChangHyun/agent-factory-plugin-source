@@ -187,6 +187,16 @@
   Verification pass or recorded Human skip, runtime commits receipt-bound changes and prepares
   a checked ordinary two-parent target merge. Integration locks serialize each repository.
   Latest-target checks precede the target update; external updates require rechecking.
+- An active competing checkout owner or integration lock keeps the loop `active` in
+  `integrating`, with `integrationWait` evidence. The driver retries the same completed
+  Work and receipt, without re-dispatch. Positively live owners can finish normally;
+  uncertain owners or repeated lock refusals have at most 150 observations per task.
+  This budget survives restarts and repeated reconciliation. Only the exact accepted parent Main is
+  exempt on the target; another Main, queued runs and uncertain process ownership block.
+  Expired runs are ignored only with positive empty containment or dead identity evidence.
+  Exhaustion preserves isolated results as `integration_preserved`; other loops stop with
+  the corresponding `*_timeout` environment error. Historical busy stops can be reconciled
+  in their original loop. Project bindings, provider failures and Human decisions remain enforced.
 - Conflicts remain isolated. Runtime sends exact files/base/target and Git-stage instructions
   to the same Work session. Work stages justified resolutions and rechecks without committing.
   Requested Verification runs again. Without isolation, revision limits and unchanged conflict
