@@ -174,11 +174,103 @@ class WorkDecisionTests(unittest.TestCase):
                 json.dumps({"tool_name": "spawn_agent", "tool_input": {}}))), redirect_stdout(io.StringIO()) as output:
             guard.main()
         decision = json.loads(output.getvalue())["hookSpecificOutput"]
-        self.assertEqual((decision["permissionDecision"], decision["permissionDecisionReason"]), ("deny", guard.WORK_REASON))
+        self.assertEqual((decision["permissionDecision"], decision["permissionDecisionReason"]), ("deny", "[guard_profile_scope] " + guard.WORK_REASON))
         with mock.patch.dict(os.environ, environment), mock.patch("sys.stdin", io.StringIO('["not an event"]')), \
                 redirect_stdout(io.StringIO()) as output:
             guard.main()
         self.assertEqual(json.loads(output.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
+class ProfileDecisionTests(unittest.TestCase):
+    """Explorer and Scribe Work runs: Main's read rules, their own write root, never a sub-agent."""
+    decide = GuardDecisionTests.decide
+
+    def setUp(self):
+        self.docs = tempfile.mkdtemp()
+        self.explore = {"role": "work", "profile": "explore", "pluginRoots": [PLUGIN],
+                        "scripts": list(guard.PROFILE_SCRIPTS["explore"]), "writeRoot": None}
+        self.scribe = {**self.explore, "profile": "scribe", "scripts": list(guard.PROFILE_SCRIPTS["scribe"]),
+                       "writeRoot": self.docs}
+
+    def codex(self, config, tool, **arguments):
+        return self.decide({"tool_name": tool, "tool_input": arguments, "cwd": "/tmp"}, config=config)
+
+    def agy(self, config, name, **arguments):
+        return self.decide({"toolCall": {"name": name, "args": arguments}, "workspacePaths": ["/tmp"]}, config=config)
+
+    def patch(self, path):
+        return f"*** Begin Patch\n*** Add File: {path}\n+x\n*** End Patch"
+
+    def test_explorer_reads_and_writes_nothing(self):
+        self.assertTrue(self.codex(self.explore, "Bash", command="git log --oneline -3"))
+        self.assertTrue(self.codex(self.explore, "Bash", command=f"python3 {PLUGIN}/scripts/search_documents.py --query x"))
+        for command in ("touch a", "cat a > b", f"python3 {PLUGIN}/scripts/loop.py start", f"python3 {PLUGIN}/scripts/exec.py submit",
+                        f"python3 {PLUGIN}/scripts/sync_documents.py"):
+            self.assertFalse(self.codex(self.explore, "Bash", command=command), command)
+        self.assertFalse(self.codex(self.explore, "apply_patch", command=self.patch(f"{self.docs}/a.md")))
+        self.assertFalse(self.codex(self.explore, "apply_patch", command=self.patch("/tmp/.agent-factory-run/a.md")))
+        self.assertTrue(self.agy(self.explore, "search_web", query="x"))
+        self.assertTrue(self.agy(self.explore, "read_url_content", Url="https://example.com"))
+        self.assertTrue(self.agy(self.explore, "view_file", AbsolutePath="/etc/hosts"))
+        self.assertFalse(self.agy(self.explore, "write_to_file", TargetFile=f"{self.docs}/a.md"))
+        self.assertFalse(self.agy(self.explore, "generate_image", Prompt="x"))
+
+    def test_scribe_writes_only_inside_docs_without_web(self):
+        self.assertTrue(self.codex(self.scribe, "apply_patch", command=self.patch(f"{self.docs}/refined/a.md")))
+        self.assertFalse(self.codex(self.scribe, "apply_patch", command=self.patch("/tmp/project/src/a.py")))
+        self.assertFalse(self.codex(self.scribe, "apply_patch", command=self.patch(f"{self.docs}/../src/a.py")))
+        self.assertTrue(self.codex(self.scribe, "Bash", command=f"python3 {PLUGIN}/scripts/catalog_documents.py --project-root /tmp"))
+        self.assertFalse(self.codex(self.scribe, "Bash", command=f"python3 {PLUGIN}/scripts/loop.py start"))
+        self.assertFalse(self.codex(self.scribe, "Bash", command=f"echo x > {self.docs}/a.md"))
+        self.assertTrue(self.agy(self.scribe, "replace_file_content", TargetFile=f"{self.docs}/a.md"))
+        self.assertFalse(self.agy(self.scribe, "write_to_file", TargetFile="/tmp/project/a.py"))
+        self.assertFalse(self.agy(self.scribe, "search_web", query="x"))
+        self.assertFalse(self.agy(self.scribe, "read_url_content", Url="https://example.com"))
+
+    def test_profiles_never_start_sub_agents_and_name_their_rule(self):
+        for config in (self.explore, self.scribe):
+            for tool in ("spawn_agent", "multi_agent_v1spawn_agent", "multi_agent_v1resume_agent"):
+                self.assertFalse(self.codex(config, tool, message="x"), tool)
+        with mock.patch.dict(os.environ, {guard.ENV: json.dumps(self.scribe)}), mock.patch("sys.stdin", io.StringIO(
+                json.dumps({"tool_name": "Bash", "tool_input": {"command": "rm -rf x"}}))), redirect_stdout(io.StringIO()) as output:
+            guard.main()
+        self.assertEqual(json.loads(output.getvalue())["hookSpecificOutput"]["permissionDecisionReason"],
+                         "[guard_profile_scope] " + guard.PROFILE_REASONS["scribe"])
+
+    def test_lesson_queries_do_not_authorize_writes_or_shell_expansion(self):
+        for action in ("retrieve", "audit"):
+            command = f"python3 {PLUGIN}/scripts/lessons.py {action} --project-root /tmp --input-json '{{}}'"
+            self.assertTrue(self.codex(self.explore, "Bash", command=command))
+            self.assertTrue(self.agy(self.explore, "run_command", CommandLine=command))
+        for args in ("record --project-root /tmp --input-json '{}'", "audit record --project-root /tmp --input x",
+                     "audit --project-r /tmp --input x", "audit --project-root /tmp --input x --input-json '{}'",
+                     "audit --project-root /tmp --input-json '{}' ; touch x",
+                     'retrieve --project-root "$PWD" --input x'):
+            self.assertFalse(self.codex(self.explore, "Bash", command=f"python3 {PLUGIN}/scripts/lessons.py {args}"), args)
+        self.assertTrue(self.codex(self.scribe, "Bash", command=f"python3 {PLUGIN}/scripts/lessons.py record --project-root /tmp --input-json '{{}}'"))
+
+    def test_specific_reasons_distinguish_correctable_format_from_scope(self):
+        for command, phrase in (("pwd\nnl -ba a.py", "each read command separately"),
+                                ('cat "$PWD/a.py"', "literal absolute paths"),
+                                ("cat a > b", "redirects")):
+            code, reason = guard.denial_detail({"tool_name": "Bash", "tool_input": {"command": command}}, self.scribe, "scope")
+            self.assertEqual(code, "guard_command_format")
+            self.assertIn(phrase, reason)
+        self.assertTrue(self.codex(self.scribe, "Bash", command="nl -ba a.py\n"))
+        text = guard.profile_instruction({"workProfile": "scribe"}, "/tmp/project", "/tmp/worktree")
+        self.assertIn("--input-json", text)
+        self.assertIn("guard_command_format", text)
+        self.assertIn("Scribe may use the Document CLIs", text)
+
+    def test_scribe_root_is_docs_or_an_isolated_documents_repository(self):
+        with tempfile.TemporaryDirectory() as project:
+            with self.assertRaises(ValueError):
+                guard.scribe_root({"projectRoot": project})
+            (Path(project) / "docs").mkdir()
+            self.assertEqual(guard.scribe_root({"projectRoot": project}), os.path.realpath(Path(project) / "docs"))
+            with tempfile.TemporaryDirectory() as worktree:
+                self.assertEqual(guard.scribe_root({"projectRoot": project, "workingDirectory": worktree}),
+                                 os.path.realpath(worktree))
 
 
 class ProviderWiringTests(unittest.TestCase):
@@ -222,6 +314,24 @@ class ProviderWiringTests(unittest.TestCase):
         # Antigravity's managed agent lists no sub-agent tool; its Work runs stay unarmed.
         self.assertFalse(guard.orchestrating(self.work_state))
         self.assertTrue(guard.working(self.work_state) and not guard.working(self.state))
+
+    def test_profiles_arm_their_own_rules_for_codex_and_antigravity(self):
+        with tempfile.TemporaryDirectory() as project:
+            (Path(project) / "docs").mkdir()
+            session = {"role": "work", "projectRoot": project}
+            for profile in ("explore", "scribe"):
+                state = {**self.work_state, "workProfile": profile}
+                self.assertEqual(guard.work_profile(state, session), profile)
+                arming = json.loads(codex_policy.guard_environment(state, session)[guard.ENV])
+                self.assertEqual((arming["role"], arming["profile"]), ("work", profile))
+                self.assertEqual(arming["writeRoot"], os.path.realpath(Path(project) / "docs") if profile == "scribe" else None)
+                command, _ = codex_policy.app_server({**session, "codex": "codex"}, state)
+                self.assertIn(profile, codex_policy.guard_signature(state, session))
+                self.assertEqual(command[-1], codex_policy.guard_hook_toml())  # One hook definition for every rule set.
+            for state in (self.work_state, {**self.work_state, "workProfile": "workLight"}, {**self.state, "workProfile": "explore"}):
+                self.assertIsNone(guard.work_profile(state, session))
+            self.assertEqual(codex_policy.guard_environment({**self.work_state, "workProfile": "work"}, session),
+                             guard.WORK_ENVIRONMENT)
 
     def test_codex_trust_is_written_once_and_confirmed(self):
         hook = {"source": "sessionFlags", "eventName": "preToolUse", "command": guard.HOOK_COMMAND,

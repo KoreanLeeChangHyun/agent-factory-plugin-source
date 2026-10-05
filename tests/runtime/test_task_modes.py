@@ -157,8 +157,10 @@ class PlanWorkTests(TaskModeTests):
                          "environment - stop and report the cause to the Human",
                          "human - pass the decision to the Human",
                          "provider - report the provider's message and do not dispatch again unless the Human asks",
-                         "retry a failed workLight attempt once with the work profile (--work-profile work) only when its "
-                         "failureClass is contract or absent"):
+                         "retry a failed workLight or scribe attempt once with the work profile (--work-profile work) only "
+                         "when its failureClass is contract or absent",
+                         "a failed explore run is reported, not retried with write access",
+                         "explore runs read-only with web access; scribe writes only inside docs/ and has no web access"):
             self.assertIn(expected, instruction)
         for mode in ("direct", "work", "work-verification"):
             self.assertNotIn("failureClass", route_instruction(mode, "main"))

@@ -49,7 +49,7 @@ def add_request_arguments(parser: argparse.ArgumentParser) -> None:
         help="Main delegation approval policy; omitted sends preserve the session policy",
     )
     parser.add_argument("--task-mode", choices=TASK_MODES, help="Captured execution route; new Main requests default to orchestrate")
-    parser.add_argument("--work-profile", choices=WORK_PROFILES, help="Work profile label Main chose (work = Expert, workLight = Worker); recorded for display only, selects no model or authority")
+    parser.add_argument("--work-profile", choices=WORK_PROFILES, help="Work profile Main chose (work = Expert, workLight = Worker, explore = Explorer, scribe = Scribe); selects no model; explore runs read-only and scribe writes only inside docs/")
     parser.add_argument("--model")
     parser.add_argument("--provider", choices=("codex", "claude", "antigravity"))
     parser.add_argument("--reasoning-effort", choices=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"))

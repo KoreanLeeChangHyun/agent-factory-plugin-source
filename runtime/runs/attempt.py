@@ -78,6 +78,9 @@ def run_codex_attempt(
     if state.get("workingDirectory", str(working_directory)) != str(working_directory):
         raise runtime.AttemptFailure("worktree_binding_changed", "Run working directory no longer matches its conversation", False)
     session["workingDirectory"] = str(working_directory)
+    from tasks.orchestrator_guard import profile_instruction
+    from execution.prompts import PromptParts
+    prompt_parts = PromptParts(prompt_parts.fixed + profile_instruction(state, project_root, working_directory), prompt_parts.dynamic)
     if session.get("worktree") or session.get("taskWorkspace"):
         from execution.prompts import PromptParts
         location_guidance = ("\nConversation working directory: " + str(working_directory)
@@ -652,5 +655,8 @@ def worker(runtime, args: argparse.Namespace) -> int:
         # The run's outcome is stored; now record what earlier runs could not write. Best effort:
         # it never changes this run's status and whatever fails stays pending.
         with contextlib.suppress(Exception):
+            runtime.lesson_capture.replay(project_root, state)
             runtime.lesson_capture.apply_pending(project_root, state)
+            runtime.update_json(state_path, state_path.parent / ".state.lock",
+                                lambda value: value.update(pendingLessons=len(runtime.lesson_capture.audit(state))))
         heartbeat.close()

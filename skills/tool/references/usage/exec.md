@@ -35,7 +35,7 @@ One of: `--request-file` | `--message` | `--input-file`
 - `--actor {main,human}`
 - `--human-approval-policy {required,bypass}`: Main delegation approval policy; omitted sends preserve the session policy
 - `--task-mode {orchestrate,direct,work,plan,verification,plan-work,work-verification,plan-work-verification}`: Captured execution route; new Main requests default to orchestrate
-- `--work-profile {work,workLight}`: Work profile label Main chose (work = Expert, workLight = Worker); recorded for display only, selects no model or authority
+- `--work-profile {work,workLight,explore,scribe}`: Work profile Main chose (work = Expert, workLight = Worker, explore = Explorer, scribe = Scribe); selects no model; explore runs read-only and scribe writes only inside docs/
 - `--model MODEL`
 - `--provider {codex,claude,antigravity}`
 - `--reasoning-effort {none,minimal,low,medium,high,xhigh,max,ultra}`
@@ -75,7 +75,7 @@ One of: `--request-file` | `--message` | `--input-file`
 - `--actor {main,human}`
 - `--human-approval-policy {required,bypass}`: Main delegation approval policy; omitted sends preserve the session policy
 - `--task-mode {orchestrate,direct,work,plan,verification,plan-work,work-verification,plan-work-verification}`: Captured execution route; new Main requests default to orchestrate
-- `--work-profile {work,workLight}`: Work profile label Main chose (work = Expert, workLight = Worker); recorded for display only, selects no model or authority
+- `--work-profile {work,workLight,explore,scribe}`: Work profile Main chose (work = Expert, workLight = Worker, explore = Explorer, scribe = Scribe); selects no model; explore runs read-only and scribe writes only inside docs/
 - `--model MODEL`
 - `--provider {codex,claude,antigravity}`
 - `--reasoning-effort {none,minimal,low,medium,high,xhigh,max,ultra}`

@@ -158,6 +158,43 @@ class ClaudeAdapterTests(unittest.TestCase):
             self.assertEqual(session["executionPolicy"], policy)
             self.assertEqual(len(inspection_arguments(Path(root))), 2)
 
+    def test_explore_and_scribe_narrow_claude_tools_under_any_permission(self):
+        from tasks import orchestrator_guard
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "docs").mkdir()
+            prepared = runtime.create_run(project_root=Path(root), agent_id="claude-work-profiles", actor="main", request=b"test",
+                                          session={"role": "main", "maxAttempts": 1})
+            directory = Path(prepared["statePath"]).parent
+            schema = directory / "schema.json"
+            schema.write_text(json.dumps(runtime.response_schema_document(str(directory / "result.md"))))
+            state = {"statePath": str(directory / "state.json"), "responseSchemaPath": str(schema), "role": "work",
+                     "executionOptions": {"taskMode": "work"}}
+            docs = os.path.realpath(Path(root) / "docs")
+            for sandbox in ({"type": "danger-full-access"}, {"type": "workspace-write", "writable_roots": [root]}):
+                policy = runtime.execution_policy.normalize({"schemaVersion": 1, "sandboxPolicy": sandbox, "approvalPolicy": "never"})
+                session = {"claude": "/local/claude", "executionPolicy": policy, "projectRoot": root}
+                for profile in ("explore", "scribe"):
+                    command, _ = claude.cli_command(session, {**state, "workProfile": profile}, PromptParts("fixed", "request"))
+                    self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
+                    allowed = command[command.index("--allowedTools") + 1].split(",")
+                    self.assertTrue({"Read", "Grep", "Glob", "Bash(git status*)"} <= set(allowed))
+                    scripts = [tool for tool in allowed if "/scripts/" in tool]
+                    self.assertEqual(sorted(tool.rsplit("/", 1)[1].split()[0] for tool in scripts),
+                                     sorted(orchestrator_guard.PROFILE_SCRIPTS[profile]))
+                    self.assertFalse(any(name in tool for tool in allowed for name in ("exec.py", "loop.py")))
+                    self.assertNotIn("Bash", allowed)
+                    if profile == "explore":
+                        self.assertTrue({"WebSearch", "WebFetch"} <= set(allowed))
+                        self.assertFalse(any(tool.startswith(("Edit", "Write")) for tool in allowed))
+                    else:
+                        self.assertEqual([tool for tool in allowed if tool.startswith(("Edit", "Write"))],
+                                         [f"Edit(/{docs}/**)", f"Write(/{docs}/**)"])
+                        self.assertFalse({"WebSearch", "WebFetch"} & set(allowed))
+                    self.assertIn("--settings", command)  # The sub-agent guard still applies.
+                for profile in ("work", "workLight", None):
+                    command, _ = claude.cli_command(session, {**state, "workProfile": profile}, PromptParts("fixed", "request"))
+                    self.assertNotEqual(command[command.index("--permission-mode") + 1], "dontAsk")
+
     def test_work_may_spawn_only_the_read_only_explore_subagent(self):
         # Human decision 2026-10-03: launch configuration, not prompt wording, blocks every other sub-agent type.
         import shlex

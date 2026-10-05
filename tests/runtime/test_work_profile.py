@@ -10,7 +10,7 @@ from test_agent_exec import load_module
 
 
 class WorkProfileRecordTests(unittest.TestCase):
-    """--work-profile records Main's Expert/Worker choice; it selects nothing."""
+    """--work-profile records Main's choice; it selects no model (explore/scribe tool limits are adapter tests)."""
 
     def setUp(self):
         self.runtime = load_module()
@@ -89,6 +89,7 @@ class WorkProfileRecordTests(unittest.TestCase):
                 self.assertEqual(self.runtime.main(["capabilities", "--project-root", directory, "--codex", "/bin/true"]), 0)
             for operation in ("submit", "send"):
                 self.assertIs(emit.call_args.args[0][operation]["workProfile"], True)
+                self.assertIs(emit.call_args.args[0][operation]["restrictedWorkProfiles"], True)
                 # Advertised together: per-class failure guidance and runs that finish with pending captures.
                 self.assertIs(emit.call_args.args[0][operation]["failureClass"], True)
                 self.assertIs(emit.call_args.args[0][operation]["pendingLessons"], True)
@@ -140,8 +141,11 @@ class WorkProfileRecordTests(unittest.TestCase):
             with mock.patch.object(agent_exec.native_codex, "inspect_capabilities",
                     return_value={"submit": {"goal": True}, "send": {"goal": True}, "diagnostic": None}), \
                     mock.patch.object(agent_loop.AgentRuntime, "_call", bridge):
+                (Path(directory) / "docs").mkdir()
                 for agent, extra, expected in (("light-agent", ["--work-profile", "workLight"], "workLight"),
                                                ("expert-agent", ["--work-profile", "work"], "work"),
+                                               ("explorer-agent", ["--work-profile", "explore"], "explore"),
+                                               ("scribe-agent", ["--work-profile", "scribe"], "scribe"),
                                                ("plain-agent", [], None)):
                     with self.subTest(agent=agent):
                         started = start(agent, extra)
@@ -151,6 +155,13 @@ class WorkProfileRecordTests(unittest.TestCase):
                             agent_exec.state_file(Path(directory), agent, started["latestWorkRunId"]))
                         self.assertEqual(run.get("workProfile"), expected)
                         self.assertEqual(run["dispatchTuple"].get("workProfile"), expected)
+
+
+    def test_scribe_requires_a_docs_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(self.runtime.ContractError) as raised:
+                self.submit(directory, "scribe-without-docs", ["--work-profile", "scribe", "--dispatch-id", "dispatch-scribe"])
+            self.assertEqual(raised.exception.code, "scribe_docs_missing")
 
 
 if __name__ == "__main__":

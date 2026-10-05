@@ -164,7 +164,8 @@ def is_saved(pending):
 
 
 def read_only(state):
-    return state.get('executionPolicy', {}).get('sandboxPolicy', {}).get('type') == 'read-only'
+    return (state.get('workProfile') == 'explore'
+            or state.get('executionPolicy', {}).get('sandboxPolicy', {}).get('type') == 'read-only')
 
 
 def record_root(project_root, state):
@@ -226,16 +227,48 @@ def record(project_root, state, pending):
     """Record one capture input and store its receipt; returns the observe() result."""
     if not document_workspace_available(project_root, state):
         return {'saved': False, 'pending': str(pending), 'reason': 'document-workspace-unavailable'}
+    blocked = storage_block(project_root, state)
+    if blocked:
+        return {'saved': False, 'pending': str(pending), 'reason': 'lesson-storage-blocked', **blocked}
     result = subprocess.run([sys.executable, str(SCRIPT), '--project-root', str(project_root), '--documents-root', str(record_root(project_root, state)),
                              'record', '--input', str(pending)], capture_output=True, text=True, timeout=20)
     occurrence = json.loads(pending.read_text(encoding='utf-8'))['occurrenceId']
     receipt = pending.with_suffix('.receipt')
     if result.returncode:
-        receipt.write_text(json.dumps({'saved': False, 'occurrenceId': occurrence}), encoding='utf-8')
-        return {'saved': False, 'pending': str(pending)}
+        blocked = block_storage_failure(project_root, state, result)
+        receipt.write_text(json.dumps({'saved': False, 'occurrenceId': occurrence, **blocked}), encoding='utf-8')
+        return {'saved': False, 'pending': str(pending), **blocked}
     saved = json.loads(result.stdout)
     receipt.write_text(json.dumps({'saved': True, 'occurrenceId': occurrence, **saved}), encoding='utf-8')
     return {'saved': True, **saved}
+
+
+def storage_block(project_root, state):
+    """A permanent storage failure blocks only this run and physical document workspace."""
+    path = Path(state['statePath']).parent / 'lesson-storage-block.json'
+    try:
+        value = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if (isinstance(value, dict) and value.get('projectRoot') == str(Path(project_root).resolve())
+            and value.get('documentsRoot') == str(record_root(project_root, state).resolve())
+            and isinstance(value.get('diagnostic'), dict)):
+        return {'reason': 'lesson-storage-blocked', 'diagnostic': value['diagnostic']}
+    return None
+
+
+def block_storage_failure(project_root, state, result):
+    try:
+        diagnostic = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(diagnostic, dict) or diagnostic.get('code') != 'lesson_storage_incompatible' or diagnostic.get('retryable') is not False:
+        return {}
+    path = Path(state['statePath']).parent / 'lesson-storage-block.json'
+    path.write_text(json.dumps({'projectRoot': str(Path(project_root).resolve()),
+                               'documentsRoot': str(record_root(project_root, state).resolve()),
+                               'diagnostic': diagnostic}), encoding='utf-8')
+    return {'reason': 'lesson-storage-blocked', 'diagnostic': diagnostic}
 
 
 def recover(project_root, state, item, event_key):
@@ -309,7 +342,8 @@ def replay(project_root, state):
     """
     if read_only(state) or not document_workspace_available(project_root, state):
         return
-    root = record_root(project_root, state)
+    if storage_block(project_root, state):
+        return
     for attempt in range(REPLAY_ATTEMPTS):
         remaining = [pending for pending in captures(state) if not is_saved(pending)]
         if not remaining:
@@ -318,13 +352,11 @@ def replay(project_root, state):
             time.sleep(REPLAY_BACKOFF_SECONDS * attempt)
         for pending in remaining:
             try:
-                result = subprocess.run([sys.executable, str(SCRIPT), '--project-root', str(project_root), '--documents-root', str(root),
-                                         'record', '--input', str(pending)], capture_output=True, text=True, timeout=20)
+                result = record(project_root, state, pending)
             except subprocess.TimeoutExpired:
                 continue
-            if result.returncode == 0:
-                pending.with_suffix('.receipt').write_text(
-                    json.dumps({'saved': True, **json.loads(result.stdout)}), encoding='utf-8')
+            if result.get('reason') == 'lesson-storage-blocked':
+                return
 
 
 def apply_pending(project_root, state, *, clock=time.monotonic):
@@ -342,6 +374,8 @@ def apply_pending(project_root, state, *, clock=time.monotonic):
     branch contains, so it never overlaps a merge and cannot block integration."""
     run_directory = Path(state['statePath']).parent
     if read_only(state) or not document_workspace_available(project_root, state) or run_directory.parent.name != 'runs':
+        return 0
+    if storage_block(project_root, state):
         return 0
     deadline = clock() + APPLY_BUDGET_SECONDS
     applied = 0
@@ -372,6 +406,11 @@ def apply_pending(project_root, state, *, clock=time.monotonic):
                 result = subprocess.run([sys.executable, str(SCRIPT), '--project-root', str(project_root),
                                          'record', '--input', str(pending)], capture_output=True, text=True,
                                         timeout=max(1.0, min(20.0, deadline - clock())))
+                if result.returncode:
+                    blocked = block_storage_failure(project_root, state, result)
+                    if blocked:
+                        receipt.write_text(json.dumps({**recorded, 'saved': False, **blocked}), encoding='utf-8')
+                        return applied
                 saved = json.loads(result.stdout) if result.returncode == 0 else None
             except (subprocess.SubprocessError, ValueError):
                 saved = None

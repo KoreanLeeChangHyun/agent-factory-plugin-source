@@ -649,6 +649,40 @@ class AgentLoopContractTests(unittest.TestCase):
                 self.start()
             self.assertEqual(self.runtime.dispatches, [])
 
+    def review(self, started, decision, actor="human", note=None):
+        return self.agent_loop.review_draft(self.agent_loop.build_parser().parse_args([
+            "review", "--project-root", str(self.root), "--work-agent", "work-agent", "--loop-id", started["loopId"],
+            "--actor", actor, "--authorization-reference", "test-request", "--decision-evidence", "Human reviewed the draft",
+            "--decision", decision, *(["--note", note] if note else [])]))
+
+    def test_scribe_draft_waits_for_the_human_review_decision(self):
+        # Human decision 2026-10-06: a Scribe's changes are drafts until the Human accepts, revises or discards them.
+        started = self.start(["--task-mode", "work", "--work-profile", "scribe"])
+        self.runtime.complete_work("work-agent", started["latestWorkRunId"])
+        completed = self.reconcile(started)
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["draftReview"]["status"], "pending")
+        self.assertEqual(completed["draftReview"]["paths"], ["changed.txt"])
+        self.assertEqual(completed["draftReview"]["workRunId"], started["latestWorkRunId"])
+        with self.assertRaises(self.agent_exec.ContractError) as raised:
+            self.review(started, "accepted", actor="main")
+        self.assertEqual(raised.exception.code, "draft_review_unauthorized")
+        reviewed = self.review(started, "changes-requested", note="Shorten the summary")
+        self.assertEqual((reviewed["draftReview"]["status"], reviewed["draftReview"]["note"]), ("changes-requested", "Shorten the summary"))
+        with self.assertRaises(self.agent_exec.ContractError) as raised:
+            self.review(started, "accepted")
+        self.assertEqual(raised.exception.code, "draft_review_unavailable")
+
+    def test_only_scribe_loops_carry_a_draft_review(self):
+        started = self.start(["--task-mode", "work", "--work-profile", "workLight"])
+        self.runtime.complete_work("work-agent", started["latestWorkRunId"])
+        completed = self.reconcile(started)
+        self.assertEqual(completed["status"], "completed")
+        self.assertNotIn("draftReview", completed)
+        with self.assertRaises(self.agent_exec.ContractError) as raised:
+            self.review(started, "accepted")
+        self.assertEqual(raised.exception.code, "draft_review_unavailable")
+
     def test_assigned_worker_receipt_recovery_uses_its_session(self):
         self.assign_second_task()
         started = self.start(["--task-mode", "work"])
@@ -2783,12 +2817,21 @@ class WorkspacePlanDispatchBindingTests(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def start(self, agent, plan):
+    def start(self, agent, plan, extra=()):
         workspace_file = self.root / (agent + "-workspace.json")
         workspace_file.write_text(json.dumps(plan))
         return self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args([
             "start", "--project-root", str(self.root), "--request-file", str(self.brief), "--task-mode", "work",
-            "--work-agent", agent, "--codex", "/bin/true", "--work-isolation", "--workspace-file", str(workspace_file)]))
+            "--work-agent", agent, "--codex", "/bin/true", "--work-isolation", "--workspace-file", str(workspace_file), *extra]))
+
+    def test_scribe_never_runs_in_an_auto_merged_work_unit(self):
+        (self.root / "docs").mkdir()
+        code = dict(self.plans())["code-agent"]
+        with self.assertRaises(self.agent_exec.ContractError) as raised:
+            self.start("scribe-code-agent", code, ["--work-profile", "scribe"])
+        self.assertEqual(raised.exception.code, "scribe_draft_review_required")
+        started = self.start("scribe-shared-agent", {"mode": "read-only"}, ["--work-profile", "scribe"])
+        self.assertEqual(started["phase"], "work-running")
 
     def reconcile(self, agent, loop_id):
         return self.agent_loop.reconcile_loop(self.agent_loop.build_parser().parse_args([

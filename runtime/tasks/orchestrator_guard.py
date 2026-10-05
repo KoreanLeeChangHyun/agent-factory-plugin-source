@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""PreToolUse hook that keeps an orchestrator-mode Main from changing the project and a Codex Work
-run from starting sub-agents.
+"""PreToolUse hook that keeps an orchestrator-mode Main from changing the project, a Codex Work
+run from starting sub-agents and an Explorer or Scribe Work run inside its profile.
 
 Codex and Antigravity run this for tool calls. It is inert unless the provider process carries
-AGENT_FACTORY_ORCHESTRATOR_GUARD, which the runtime sets only for orchestrate Main runs and Codex
-Work runs; the variable's content selects the rules.
+AGENT_FACTORY_ORCHESTRATOR_GUARD, which the runtime sets only for orchestrate Main runs, Codex
+Work runs and explore/scribe Work runs; the variable's content selects the rules.
 Main: reading, Agent Factory scripts, read-only Git and file writes inside the run directory.
 Work: everything except the tools that start a sub-agent.
+Explorer: reading, read-only shell commands, Document search and web lookups; no writes or sub-agents.
+Scribe: reading, read-only shell commands, Document scripts and file writes inside docs/; no web lookups.
 Standard library only: hooks start a fresh interpreter for every tool call.
 
 Main's shell commands are allowed only when every part is understood: the guard splits the line as
@@ -19,6 +21,7 @@ from pathlib import Path
 import re
 import shlex
 import sys
+import uuid
 
 ENV = "AGENT_FACTORY_ORCHESTRATOR_GUARD"
 REASON = ("Orchestrator mode: Main may only read, write inside its run directory and run Agent Factory "
@@ -94,6 +97,21 @@ SUBAGENT_TOOLS = ("spawn_agent", "resume_agent")
 WORK_REASON = ("Codex Work cannot start sub-agents: Codex has no read-only exploration sub-agent. Do the "
                "search and the work yourself; never use a sub-agent to review or verify this run's own work.")
 WORK_ENVIRONMENT = {ENV: json.dumps({"role": "work"})}
+# Work profiles the guard confines, and the provider tools that reach the web.
+PROFILES = ("explore", "scribe")
+AGY_WEB = {"search_web", "read_url_content"}
+# Agent Factory Document scripts each profile may run; never exec.py or loop.py, so only Main dispatches agents.
+PROFILE_SCRIPTS = {
+    "explore": ("search_documents.py", "lessons.py"),
+    "scribe": ("catalog_documents.py", "search_documents.py", "sync_documents.py", "export_documents.py", "lessons.py"),
+}
+PROFILE_REASONS = {
+    "explore": ("Explorer runs are read-only: read files, run read-only shell commands and search the web. "
+                "Report findings instead of changing files; never dispatch agents or start a sub-agent."),
+    "scribe": ("Scribe runs write only inside the project's docs/ and use read-only shell commands; no web "
+               "lookups, execution/dispatch scripts or sub-agents. Document scripts, including lessons.py, are allowed. "
+               "Report changes needed elsewhere instead of making them."),
+}
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
@@ -110,6 +128,32 @@ def orchestrating(state, session=None):
 def working(state, session=None):
     """True for a Work run, whose Codex launch the guard keeps from starting sub-agents."""
     return (state.get("role") or (session or {}).get("role")) == "work"
+
+
+def work_profile(state, session=None):
+    """The explore or scribe profile of a Work run, which the guard confines; None for every other run."""
+    profile = state.get("workProfile")
+    return profile if working(state, session) and profile in PROFILES else None
+
+
+def scribe_root(session):
+    """The only directory a Scribe may write: the working directory's docs/, or the whole working
+    directory when it is an isolated Work Unit of the documents repository itself."""
+    working_directory = Path(session.get("workingDirectory") or session["projectRoot"])
+    if (working_directory / "docs").is_dir():
+        return os.path.realpath(working_directory / "docs")
+    if session.get("workingDirectory") and os.path.realpath(working_directory) != os.path.realpath(session["projectRoot"]):
+        return os.path.realpath(working_directory)
+    raise ValueError(f"Scribe has no docs/ directory to write in {working_directory}")
+
+
+def profile_environment(state, session):
+    """Provider-process variables that arm the guard for this explore or scribe Work run."""
+    profile = work_profile(state, session)
+    return {ENV: json.dumps({"role": "work", "profile": profile, "pluginRoots": plugin_roots(),
+                             "scripts": list(PROFILE_SCRIPTS[profile]),
+                             "captureStatePath": state.get("statePath"),
+                             "writeRoot": scribe_root(session) if profile == "scribe" else None}, sort_keys=True)}
 
 
 def plugin_roots():
@@ -138,10 +182,31 @@ def inside(path, root, cwd):
 
 
 def plugin_script(path, config, cwd):
-    """A `scripts/*.py` file directly inside one of the plugin roots fixed when the run was armed."""
+    """A `scripts/*.py` file directly inside one of the plugin roots fixed when the run was armed,
+    limited to the profile's Document scripts when the arming lists them."""
     candidate = Path(os.path.realpath(Path(cwd or ".") / path))
-    return candidate.suffix == ".py" and any(candidate.parent == Path(os.path.realpath(root)) / "scripts"
-                                             for root in config["pluginRoots"])
+    return (candidate.suffix == ".py" and candidate.name in config.get("scripts", (candidate.name,))
+            and any(candidate.parent == Path(os.path.realpath(root)) / "scripts" for root in config["pluginRoots"]))
+
+
+def lesson_query(arguments):
+    """Exact query grammar: never let a second action or an abbreviated option authorize a write."""
+    action, inputs, seen = [], 0, set()
+    words = iter(arguments)
+    for word in words:
+        if not word.startswith("-"):
+            action.append(word)
+            continue
+        option, equals, value = word.partition("=")
+        if option not in ("--project-root", "--documents-root", "--input", "--input-json") or option in seen:
+            return False
+        seen.add(option)
+        if not equals:
+            value = next(words, "")
+        if not value:
+            return False
+        inputs += option in ("--input", "--input-json")
+    return action in (["retrieve"], ["audit"]) and "--project-root" in seen and inputs == 1
 
 
 def split(command):
@@ -149,6 +214,7 @@ def split(command):
 
     Words are (text, unquoted) pairs: `unquoted` keeps the characters the shell could still expand and
     turns quoted or escaped ones into NUL. Operator runs such as `|` or `&&` are (text, None)."""
+    command = command.strip()
     if "\n" in command:
         return None  # A newline starts another command, and a backslash before one joins two words.
     words, text, unquoted, quote, started, index = [], "", "", None, False, 0
@@ -360,7 +426,9 @@ def allowed_segment(words, config, cwd, alone):
     name, arguments = words[0], words[1:]
     if name in ("python3", "python"):
         # Only a whole command, so no pipe can feed a script's output onward.
-        return alone and bool(arguments) and plugin_script(arguments[0], config, cwd)
+        return (alone and bool(arguments) and plugin_script(arguments[0], config, cwd)
+                and (config.get("profile") != "explore" or Path(arguments[0]).name != "lessons.py"
+                     or lesson_query(arguments[1:])))
     if name in ("bash", "sh", "zsh") and len(arguments) == 2 and arguments[0] in ("-c", "-lc"):
         return allowed_command(arguments[1], config, cwd, alone)
     if name == "git":
@@ -414,7 +482,7 @@ def codex_decision(event, config):
         return allowed_command(str(arguments.get("command", "")), config, cwd)
     if tool == "apply_patch":
         paths = list(patch_paths(arguments.get("command", "")))
-        return bool(paths) and all(inside(path, config["writeRoot"], cwd) for path in paths)
+        return bool(paths) and bool(config.get("writeRoot")) and all(inside(path, config["writeRoot"], cwd) for path in paths)
     return True
 
 
@@ -433,8 +501,82 @@ def agy_decision(event, config):
         return allowed_command(str(arguments.get("CommandLine", "")), config, cwd)
     if tool in AGY_WRITES:
         paths = [arguments[key] for key in PATH_ARGUMENTS if isinstance(arguments.get(key), str)]
-        return bool(paths) and all(inside(path, config["writeRoot"], cwd) for path in paths)
+        return bool(paths) and bool(config.get("writeRoot")) and all(inside(path, config["writeRoot"], cwd) for path in paths)
     return False
+
+
+def profile_decision(event, config, agy):
+    """Explorer and Scribe: Main's read and shell rules with the profile's write root, never a sub-agent."""
+    if agy:
+        tool = (event.get("toolCall") or {}).get("name")
+        return config["profile"] == "explore" if tool in AGY_WEB else agy_decision(event, config)
+    return work_decision(event) and codex_decision(event, config)
+
+
+def denial_detail(event, config, reason):
+    """Explain the failed boundary without exposing the command or its arguments."""
+    if not isinstance(event, dict) or not isinstance(config, dict):
+        return "guard_invalid_event", reason
+    call = event.get("toolCall") or {}
+    command = ((call.get("args") or {}).get("CommandLine") if call.get("name") == "run_command"
+               else (event.get("tool_input") or {}).get("command") if event.get("tool_name") == "Bash" else None)
+    if isinstance(command, str):
+        if "\n" in command.strip():
+            return "guard_command_format", "Multiple lines or heredocs are not supported. Send each read command separately; use lessons.py --input-json with a single-quoted JSON object. Correct the command format and retry within the same authorized scope."
+        words = split(command)
+        if words is None:
+            return "guard_command_format", "Shell expansion or unsupported quoting is not allowed. Use literal absolute paths instead of $PWD/$HOME, substitutions or backticks. Correct the command format and retry within the same authorized scope."
+        if any(unquoted is None and word != "|" for word, unquoted in words):
+            return "guard_command_format", "Shell lists, redirects and heredocs are not allowed. Use a single command and --input-json instead of stdin redirection; correct the format without widening permissions."
+        if config.get("profile") == "explore" and any(Path(word).name == "lessons.py" for word, _ in words):
+            return "guard_lesson_action", "Explorer permits lessons.py retrieve and audit only, with --project-root and exactly one --input or --input-json. The runtime preserves errors as pending lessons; report them without writing project files."
+    return "guard_profile_scope", reason
+
+
+def capture_denial(event, config, code):
+    """Persist a redacted pending occurrence even when a provider omits hook failures from events.
+
+    The runtime supplies this path, never tool input. The hook writes only runtime storage;
+    the run owner later replays it into Documents if its profile allows writes.
+    """
+    if not isinstance(config, dict) or not config.get("captureStatePath"):
+        return
+    path = Path(config["captureStatePath"])
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Invalid capture state path")
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if state.get("statePath") != str(path) or not state.get("runId") or not state.get("agentId"):
+        raise ValueError("Invalid capture state binding")
+    capture_root = path.parent / "lesson-capture"
+    if capture_root.is_symlink():
+        raise ValueError("Invalid capture directory")
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(PLUGIN_ROOT / "runtime"))
+    from execution import lessons
+    identity = "guard-" + uuid.uuid4().hex
+    failure = {"type": "item.completed", "item": {"id": identity, "type": "tool_call", "status": "failed",
+               "error": {"code": code}}}
+    pending_state = {**state, "executionPolicy": {"sandboxPolicy": {"type": "read-only"}}}
+    lessons.observe(path.parent, pending_state, failure, state.get("attempt", 0))
+
+
+def profile_instruction(state, project_root, working_directory):
+    if state.get("workProfile") not in PROFILES:
+        return ""
+    command = "python3 " + shlex.quote(str(PLUGIN_ROOT / "scripts/lessons.py"))
+    command += " retrieve --project-root " + shlex.quote(str(project_root))
+    command += " --documents-root " + shlex.quote(str(working_directory))
+    command += " --input-json " + shlex.quote(json.dumps({"query": "<topic>", "scope": "<scope>"}))
+    return ("\nRestricted Work command contract: use one plain shell command per call, with literal paths. "
+            "No multiline command lists, heredocs, redirection, variable expansion ($PWD/$HOME) or substitutions. "
+            "Read/query example (replace topic and scope): " + command + ". "
+            "Use the same --input-json form for audit with an occurrenceIds array. "
+            "Explorer may retrieve/audit lessons but must not record into the project; the runtime preserves hook failures as pending lessons. "
+            "Report pending records and finish the requested read-only result/receipt; pending documentation alone does not require Human approval. "
+            "Scribe may use the Document CLIs, including lessons.py, and write inside docs/. "
+            "A guard_command_format rejection is correctable: use the permitted equivalent command and continue. "
+            "Never retry an unchanged rejected call, broaden authority or classify a syntax restriction as missing credentials. "
+            "Actual forbidden operations remain forbidden; preserve and report a genuinely blocking prerequisite.\n")
 
 
 def main():
@@ -442,17 +584,27 @@ def main():
     agy = "toolCall" in event
     raw = os.environ.get(ENV)
     reason = REASON
+    config = {}
     if not raw:
         allowed = True
     else:
         try:
             config = json.loads(raw)
-            if config.get("role") == "work":
+            if config.get("role") == "work" and config.get("profile"):
+                allowed, reason = profile_decision(event, config, agy), PROFILE_REASONS[config["profile"]]
+            elif config.get("role") == "work":
                 allowed, reason = work_decision(event), WORK_REASON
             else:
                 allowed = agy_decision(event, config) if agy else codex_decision(event, config)
         except Exception:
             allowed = False  # Fail closed while guarding.
+    if not allowed:
+        code, reason = denial_detail(event, config, reason)
+        try:
+            capture_denial(event, config, code)
+        except (OSError, ValueError, KeyError, TypeError):
+            reason += " Runtime error capture failed; include this unresolved recording failure in the result."
+        reason = f"[{code}] {reason}"
     if agy:
         print(json.dumps({"decision": "allow" if allowed else "deny", **({} if allowed else {"reason": reason})}))
     elif not allowed:

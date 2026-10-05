@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 from unittest.mock import patch
 import subprocess
+import sys
 import runtime_test_home  # noqa: F401
 from storage import lessons as body_store
 
@@ -47,6 +48,48 @@ def test_pending_on_storage_failure(tmp_path):
     assert capture.audit(state) == []
 
 
+def test_permanent_storage_failure_stops_same_run_retries_and_preserves_occurrences(tmp_path):
+    run = tmp_path / 'run'
+    run.mkdir()
+    state = {'statePath': str(run / 'state.json'), 'runId': 'blocked', 'agentId': 'a1'}
+    diagnostic = {'error': 'layout mismatch', 'code': 'lesson_storage_incompatible', 'retryable': False}
+    failure = subprocess.CompletedProcess([], 1, json.dumps(diagnostic), '')
+    with patch.object(capture.subprocess, 'run', return_value=failure) as cli:
+        first = capture.observe(tmp_path, state, {'type': 'runtime.failure', 'code': 'first'})
+        second = capture.observe(tmp_path, dict(state), {'type': 'runtime.failure', 'code': 'second'})
+        capture.replay(tmp_path, dict(state))
+    assert cli.call_count == 1
+    assert first['diagnostic'] == diagnostic and second['reason'] == 'lesson-storage-blocked'
+    assert len(capture.audit(state)) == 2
+    assert not (tmp_path / 'docs').exists()
+    # A new run is allowed to retry after repair; no failed tool is re-executed.
+    next_run = tmp_path / 'next-run'
+    next_run.mkdir()
+    next_state = {**state, 'statePath': str(next_run / 'state.json'), 'runId': 'repaired'}
+    for pending in capture.captures(state):
+        assert capture.record(tmp_path, next_state, pending)['saved']
+    assert capture.audit(state) == []
+
+
+def test_pending_sweep_stops_at_first_permanent_storage_failure(tmp_path):
+    base = tmp_path / 'agents/a/runs'
+    old = base / 'old'
+    current = base / 'current'
+    old.mkdir(parents=True)
+    current.mkdir()
+    state = {'statePath': str(old / 'state.json'), 'runId': 'old', 'agentId': 'a',
+             'executionPolicy': {'sandboxPolicy': {'type': 'read-only'}}}
+    for code in ('first', 'second'):
+        capture.observe(tmp_path, state, {'type': 'runtime.failure', 'code': code})
+    writer = {'statePath': str(current / 'state.json'), 'runId': 'current', 'agentId': 'a'}
+    failure = subprocess.CompletedProcess([], 1, json.dumps({'code': 'lesson_storage_incompatible',
+                                         'retryable': False, 'error': 'incompatible'}), '')
+    with patch.object(capture.subprocess, 'run', return_value=failure) as cli:
+        assert capture.apply_pending(tmp_path, writer) == 0
+        assert capture.apply_pending(tmp_path, dict(writer)) == 0
+    assert cli.call_count == 1 and len(capture.audit(state)) == 2
+
+
 def test_replay_and_unidentified_errors(tmp_path):
     run = tmp_path / 'run'
     run.mkdir()
@@ -73,6 +116,37 @@ def test_read_only_never_writes_project(tmp_path):
     capture.replay(tmp_path, state)
     assert not (tmp_path / 'docs').exists()
     assert len(capture.audit(state)) == 1
+
+
+def test_hook_rejection_persists_without_provider_events_and_explore_never_writes(tmp_path):
+    import os
+    from tasks import orchestrator_guard as guard
+    root, run = tmp_path / 'project', tmp_path / 'run'
+    root.mkdir(); run.mkdir()
+    state = {'statePath': str(run / 'state.json'), 'runId': 'r-hook', 'agentId': 'a-hook', 'provider': 'codex',
+             'role': 'work', 'workProfile': 'explore', 'executionPolicy': {'sandboxPolicy': {'type': 'danger-full-access'}}}
+    (run / 'state.json').write_text(json.dumps(state))
+    config = json.loads(guard.profile_environment(state, {'projectRoot': str(root)})[guard.ENV])
+    event = {'tool_name': 'Bash', 'tool_input': {'command': 'pwd\nnl -ba SECRET_PATH'}}
+    result = subprocess.run([sys.executable, '-B', str(Path(guard.__file__))], input=json.dumps(event),
+                            env={**os.environ, guard.ENV: json.dumps(config)}, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    reason = json.loads(result.stdout)['hookSpecificOutput']['permissionDecisionReason']
+    assert 'guard_command_format' in reason
+    assert len(capture.audit(state)) == 1
+    pending = Path(capture.audit(state)[0])
+    assert 'SECRET_PATH' not in pending.read_text()
+    assert 'SECRET_PATH' not in reason
+    capture.replay(root, state)
+    assert len(capture.audit(state)) == 1
+    assert not (root / 'docs').exists()
+    # A write-authorized owner can later persist this exact occurrence idempotently.
+    capture.replay(root, {**state, 'workProfile': 'scribe'})
+    assert capture.audit(state) == []
+    records = list((root / 'docs/lessons-learned/errors').glob('*.md'))
+    assert len(records) == 1
+    capture.replay(root, {**state, 'workProfile': 'scribe'})
+    assert len(list((root / 'docs/lessons-learned/errors').glob('*.md'))) == 1
 
 
 def test_agent_authored_inputs_are_not_pending_captures(tmp_path):

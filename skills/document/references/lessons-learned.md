@@ -120,9 +120,22 @@
 - Use `<plugin-root>/scripts/lessons.py --project-root <root> <action> --input <json-file>` for
   structured records, rule candidates and application evidence. Keep input files in
   the run directory; redact secrets before submitting Human/AI text.
+- When selecting an installed CLI after a storage-layout change, run `check` with `{}`
+  first. It validates stored records without writing and reports supported formats and
+  the exact tool path. A source checkout supporting Markdown does not establish that an
+  older installed CLI supports it.
+- On `code: lesson_storage_incompatible` with `retryable: false`, stop subsequent lifecycle
+  calls for that storage, including record and audit. Preserve pending inputs in the run
+  and report the diagnostic once. Repair the matching tool/body/metadata layout, check it
+  once, then resume recording; never fabricate missing legacy JSON or skip invalid records.
 - JSON input is a command payload, not an editable document copy. The CLI writes prose
   to Markdown and machine fields to runtime metadata. `retrieve` joins them, includes
   independent body notes in matching, filters exact scope and reports application metrics.
+- Use `--input-json '{"query":"topic","scope":"task-scope"}'` for a read-only `retrieve`
+  without creating an input file; `audit` accepts `--input-json '{"occurrenceIds":[]}'`.
+  Both query actions avoid write locks. Restricted runs use literal absolute paths and one
+  command per call, never `$PWD`, heredocs, redirection or multiline shell lists. Scribe may
+  use the Document CLI; Explorer may only retrieve/audit and reports pending error records.
 - Add `--documents-root <physical-workspace-containing-docs>` for an isolated document
   worktree while keeping `--project-root <original-project>` as runtime identity. Neither
   path is inferred from the other; host publication acts on the physical workspace.
@@ -132,6 +145,7 @@
 
 | Action | Input and behavior |
 |---|---|
+| `check` | `{}`; validates storage compatibility and returns supported formats, record count and the exact CLI path without writing. |
 | `record` | `id` (optional stable incident ID), `category`, `title`, `language`, `occurrenceId`, `source`, `scope`; errors require `symptom`, `cause`, `solution`, `verification`; judgments require `humanJudgment`, `humanReason`, `aiJudgment`, `aiReason`, `difference`, `reflection`, `outcome`. |
 | `recover` | `id`; completes an interrupted two-file write only if body and metadata still match its recorded old/new states. Independent edits require manual reconciliation. |
 | `resolve` | Errors: `id`, `cause`, `solution`, `verification`, `evidence`. Judgments: `id`, `outcome`, `reflection`, `evidence`. Appends the category-specific resolution without erasing occurrences. |
@@ -185,6 +199,9 @@
 - A pending capture never fails or delays a run; the run's public state counts it as
   `pendingLessons`. Providers that do not emit a failure event still require Agent recording
   and occurrence auditing before handoff.
+- Restricted-run hooks persist redacted rejection occurrences directly into the bound run's
+  pending capture storage even when the provider emits no failed-tool event. The runtime
+  later records them where permitted. Explorer never writes project lessons through this path.
 - `migrate_runtime_lessons.py` previews merging older per-occurrence captures into signature
   records, keeping each original ID and source on its occurrence; resolved, reviewed and
   Agent-written records stay. It changes files only with `--apply` and an empty backup directory,
@@ -198,3 +215,8 @@
   left pending once its own outcome is stored: idempotent per occurrence, bounded per
   sweep and never changing that run's result. You may also retry `record` with the pending
   JSON. This retries documentation only, never the failed tool.
+- A non-retryable storage diagnostic stops automatic recording, replay and pending sweeps
+  for the same run and document workspace. Its run-local `lesson-storage-block.json`
+  retains the diagnostic; capture inputs remain pending and counts remain accurate.
+  Transient failures retain bounded retries. After repair, a new writable run can resume
+  earlier pending captures; manual lifecycle calls can resume after a successful `check`.

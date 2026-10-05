@@ -375,6 +375,8 @@ def public_state(state: dict[str, Any], child: dict[str, Any] | None = None) -> 
         "taskMode": state.get("execution", {}).get("taskMode", "work-verification"),
         # Present only when Main recorded its choice at start; older loops keep their shape.
         **({"workProfile": state["execution"]["workProfile"]} if state.get("execution", {}).get("workProfile") else {}),
+        # A completed Scribe's uncommitted draft and the Human's review decision.
+        **({"draftReview": copy.deepcopy(state["draftReview"])} if state.get("draftReview") else {}),
         "status": state["status"],
         "phase": state["phase"],
         "workAgentId": state["workAgentId"],
@@ -732,7 +734,7 @@ def start_loop_captured(args: argparse.Namespace) -> dict[str, Any]:
         raise agent_exec.ContractError("revision_limit_invalid", "--max-revisions must be 0 (unlimited) or a positive integer")
     work_profile = getattr(args, "work_profile", None)
     if work_profile is not None and work_profile not in WORK_PROFILES:
-        raise agent_exec.ContractError("work_profile_invalid", "--work-profile must be work or workLight")
+        raise agent_exec.ContractError("work_profile_invalid", "--work-profile must be " + ", ".join(WORK_PROFILES))
     request = agent_exec.safe_read_bytes(args.request_file, agent_exec.MAX_REQUEST_BYTES)
     if not request.decode("utf-8").strip():
         raise agent_exec.ContractError("request_invalid", "request must not be empty")
@@ -768,6 +770,10 @@ def start_loop_captured(args: argparse.Namespace) -> dict[str, Any]:
     workspace_plan = workspace_plans.get(args.task_id, workspace_plan)
     if isolation and any(task["id"] not in workspace_plans for task in tasks) and not getattr(args, "captured_workspace_plan", None):
         raise agent_exec.ContractError("task_workspace_required", "Work isolation is on; every task requires a code or read-only workspace plan")
+    if work_profile == "scribe" and any(plan.get("mode") == "code" for plan in (*workspace_plans.values(), workspace_plan or {})):
+        # A code Work Unit is committed and merged automatically; a Scribe draft must wait for the Human's review.
+        raise agent_exec.ContractError("scribe_draft_review_required",
+                                       "Scribe drafts stay uncommitted in the shared checkout for Human review; use the read-only workspace plan")
     if args.task_id != tasks[0]["id"]:
         raise agent_exec.ContractError("task_order_invalid", "Submit the first task; the engine executes the whole list in order")
     validate_assignments(tasks, root, args.work_agent, args.verification_agent)
@@ -1248,11 +1254,43 @@ def finish_workflow_task(state, path, runtime, reason):
             return public_state(state, state["currentChild"])
     state.update(status="completed", phase="ended", currentChild=None,
                  terminalReason={"code": reason, "message": "All submitted tasks completed"}, updatedAt=now())
+    if state["execution"].get("workProfile") == "scribe" and state.get("latestWorkRunId"):
+        record_draft_review(state, runtime)
     if state.get("lifecycleVersion"):
         state["completion"] = {"work": "completed", "integration": "merged" if state.get("taskWorkspaces") else "not-requested",
                                "cleanupPending": any(u.get("cleanupPending") for v in state.get("taskWorkspaces", {}).values() for u in v["repositories"])}
     save_loop_state(path, state)
     return public_state(state)
+
+
+def record_draft_review(state, runtime):
+    """A Scribe's changes stay uncommitted drafts until the Human accepts, revises or discards them."""
+    work = runtime.status(assigned_agent(state, "work"), state["latestWorkRunId"])
+    receipt = agent_exec.validate_receipt(Path(state["projectRoot"]), work, agent_id=work["agentId"], run_id=work["runId"])
+    paths = sorted({str(path) for path in receipt.get("changedPaths") or []})
+    if paths:
+        state["draftReview"] = {"status": "pending", "paths": paths, "workRunId": work["runId"], "recordedAt": now()}
+
+
+DRAFT_REVIEW_DECISIONS = ("accepted", "changes-requested", "discarded")
+
+
+def review_draft(args: argparse.Namespace) -> dict[str, Any]:
+    """Record the Human's decision on a completed Scribe draft; the runtime itself commits or reverts nothing."""
+    if args.actor != "human" or not args.authorization_reference.strip() or not args.decision_evidence.strip():
+        raise agent_exec.ContractError("draft_review_unauthorized", "A draft review decision requires Human authorization and evidence")
+    root = agent_exec.resolve_project_root(args.project_root)
+    path, _state = read_state(root, args.work_agent, args.loop_id)
+    with agent_exec.file_lock(path.parent / ".loop.lock"):
+        state = agent_exec.safe_read_json(path)
+        review = state.get("draftReview")
+        if state.get("status") != "completed" or not isinstance(review, dict) or review.get("status") != "pending":
+            raise agent_exec.ContractError("draft_review_unavailable", "The loop has no Scribe draft awaiting review")
+        review.update(status=args.decision, decidedAt=now(), authorizationReference=args.authorization_reference,
+                      decisionEvidence=args.decision_evidence, **({"note": args.note} if args.note else {}))
+        state["updatedAt"] = now()
+        save_loop_state(path, state)
+        return public_state(state)
 
 
 def reconcile_loop(args: argparse.Namespace) -> dict[str, Any]:
@@ -1801,21 +1839,21 @@ def build_parser() -> agent_exec.JsonArgumentParser:
         start.add_argument("--" + role + "-fast", action=argparse.BooleanOptionalAction, default=None)
         start.add_argument("--" + role + "-execution-mode", choices=("cli-default", "workspace-write", "danger-full-access", "bypass"))
     start.add_argument("--work-profile", choices=WORK_PROFILES,
-                       help="Work profile label Main chose (work = Expert, workLight = Worker); recorded for display only, selects no model or authority")
+                       help="Work profile Main chose (work = Expert, workLight = Worker, explore = Explorer, scribe = Scribe); selects no model; explore runs read-only and scribe writes only inside docs/")
     start.add_argument("--work-capability-binding-file", type=Path)
     start.add_argument("--verification-capability-binding-file", type=Path)
     start.add_argument("--max-revisions", type=int, default=DEFAULT_MAX_REVISIONS,
                        help="Work revisions per task after failed Verification before the loop stops for a Human decision; 0 is unlimited")
     start.add_argument("--receipt-recovery", choices=("auto", "manual"), default="auto",
                        help="auto gives Work one repair turn for an allowlisted receipt failure; manual stops for recover-receipt")
-    for name in ("status", "reconcile", "recover-receipt", "skip", "drive", "close", "stop-task", "refresh-progress", "extend-revisions", "answer", "steer", "retry-preparation"):
+    for name in ("status", "reconcile", "recover-receipt", "skip", "drive", "close", "stop-task", "refresh-progress", "extend-revisions", "answer", "steer", "retry-preparation", "review"):
         command = commands.add_parser(name)
         agent_exec.add_project_argument(command)
         if name in {"reconcile", "recover-receipt", "drive", "extend-revisions"}:
             agent_exec.execution_policy.add_policy_arguments(command)
         command.add_argument("--work-agent", required=True)
         command.add_argument("--loop-id", required=True)
-        if name in {"skip", "close", "stop-task", "extend-revisions", "answer", "steer", "retry-preparation"}:
+        if name in {"skip", "close", "stop-task", "extend-revisions", "answer", "steer", "retry-preparation", "review"}:
             command.add_argument("--actor", choices=agent_exec.ACTORS, required=True)
             command.add_argument("--authorization-reference", required=True)
             command.add_argument("--decision-evidence", required=True)
@@ -1832,6 +1870,10 @@ def build_parser() -> agent_exec.JsonArgumentParser:
         if name == "stop-task":
             command.add_argument("--workflow-id", required=True)
             command.add_argument("--task-id", required=True)
+        if name == "review":
+            command.add_argument("--decision", choices=DRAFT_REVIEW_DECISIONS, required=True,
+                                 help="Human decision on a completed Scribe draft; records only, never commits or reverts files")
+            command.add_argument("--note", help="The Human's requested changes or reason")
         if name == "extend-revisions":
             command.add_argument("--additional", type=int, default=1,
                                  help="Further Work revisions the Human authorizes after the limit stopped the loop")
@@ -1851,6 +1893,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         agent_exec.runtime_paths.resolve(args.project_root, home=args.runtime_home, project_id=args.project_id)
         handlers = {"start": start_loop, "status": status_loop, "reconcile": reconcile_loop, "recover-receipt": recover_receipt, "skip": skip_loop, "drive": drive_loop, "close": close_loop, "stop-task": stop_task, "refresh-progress": refresh_progress, "extend-revisions": extend_revisions, "answer": answer_decision, "steer": steer_loop}
         handlers["retry-preparation"] = retry_preparation
+        handlers["review"] = review_draft
         result = handlers[args.command](args)
         if args.command == "drive":
             # The loop is no longer active, so systemd will not restart this driver.

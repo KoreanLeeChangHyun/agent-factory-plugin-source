@@ -128,7 +128,34 @@ def check_root(root):
                          f'use --project-root {parent} so lessons stay in {parent / "docs/lessons-learned"}')
 
 
+SUPPORTED_FORMATS = ['categorized-markdown-with-runtime-metadata-v2', 'legacy-json-v1', 'legacy-package-v1']
+
+
+class LessonStorageError(ValueError):
+    """A storage contract failure needs repair, not retries with another action."""
+
+    def __init__(self, root, cause):
+        super().__init__(f'Lesson storage is incompatible or incomplete at {root}: {cause}. '
+                         'Use a matching lessons CLI and document/runtime metadata layout; '
+                         'preserve pending inputs and stop subsequent lifecycle calls until repaired.')
+        self.root = str(root)
+
+    def diagnostic(self):
+        return {'error': str(self), 'code': 'lesson_storage_incompatible', 'retryable': False,
+                'documentRoot': self.root, 'toolPath': str(Path(__file__).resolve()),
+                'supportedFormats': SUPPORTED_FORMATS,
+                'recovery': 'Repair the tool/storage mismatch, run check once, then retry pending inputs.'}
+
+
 def records(root, documents_root=None):
+    docroot = body_store.document_root(root, documents_root)
+    try:
+        return read_records(root, docroot)
+    except (ValueError, FileNotFoundError) as error:
+        raise LessonStorageError(docroot, error) from error
+
+
+def read_records(root, documents_root=None):
     docroot = body_store.document_root(root, documents_root)
     directory = safe(docroot, 'docs/lessons-learned')
     if not directory.exists():
@@ -145,6 +172,10 @@ def records(root, documents_root=None):
             continue
         if path.is_dir():
             path = safe(docroot, package.relative_to(docroot) / 'assets/lesson.json')
+            if not path.is_file():
+                raise ValueError(f'Unrecognized lesson directory {package}; expected categorized '
+                                 'Markdown in errors/ or judgment-differences/, or a legacy package '
+                                 'containing assets/lesson.json')
         elif path.suffix != '.json':
             raise ValueError(f'Unsupported lesson entry: {path}')
         output.append(read_lesson(path))
@@ -208,7 +239,11 @@ def operate(root, action, data, documents_root=None):
     root = Path(root).resolve(strict=True)
     docroot = body_store.document_root(root, documents_root)
     check_root(docroot)
-    with locked(root):
+    # Queries must also work for Explorer without creating lock files.
+    with (contextlib.nullcontext() if action in ('check', 'retrieve', 'audit') else locked(root)):
+        if action == 'check':
+            return {'compatible': True, 'count': len(records(root, docroot)),
+                    'supportedFormats': SUPPORTED_FORMATS, 'toolPath': str(Path(__file__).resolve())}
         if action not in ('retrieve', 'audit') and data.get('id'):
             body_store.recover(root, identifier(data['id']), docroot, atomic)
         if action == 'recover':
@@ -393,12 +428,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--project-root', required=True, type=Path)
     parser.add_argument('--documents-root', type=Path, help='Physical workspace containing docs; runtime identity stays --project-root')
-    parser.add_argument('action', choices=['record', 'resolve', 'retrieve', 'audit', 'candidate', 'evaluate', 'publish', 'sync', 'apply', 'retire', 'recover'])
-    parser.add_argument('--input', required=True, type=Path)
+    parser.add_argument('action', choices=['check', 'record', 'resolve', 'retrieve', 'audit', 'candidate', 'evaluate', 'publish', 'sync', 'apply', 'retire', 'recover'])
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument('--input', type=Path)
+    inputs.add_argument('--input-json', help='Inline JSON payload; avoids temporary input files for read-only queries')
     args = parser.parse_args()
     try:
-        print(json.dumps(operate(args.project_root, args.action, json.loads(args.input.read_text(encoding='utf-8')), args.documents_root), ensure_ascii=False))
+        data = json.loads(args.input_json if args.input_json is not None else args.input.read_text(encoding='utf-8'))
+        if not isinstance(data, dict):
+            raise ValueError('Input must be a JSON object')
+        print(json.dumps(operate(args.project_root, args.action, data, args.documents_root), ensure_ascii=False))
         return 0
+    except LessonStorageError as error:
+        print(json.dumps(error.diagnostic(), ensure_ascii=False))
+        return 1
     except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
         print(json.dumps({'error': str(error)}, ensure_ascii=False))
         return 1

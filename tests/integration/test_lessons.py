@@ -22,6 +22,20 @@ def seed(root, category='error'):
     return value
 
 
+def test_inline_queries_create_no_input_file_or_write_lock(tmp_path, monkeypatch, capsys):
+    import json
+    def forbidden_lock(*_args):
+        raise AssertionError('Queries must not acquire a write lock')
+    monkeypatch.setattr(lessons, 'locked', forbidden_lock)
+    for action, payload in (('retrieve', {'query': 'example', 'scope': 'runtime'}),
+                            ('audit', {'occurrenceIds': ['unknown']})):
+        monkeypatch.setattr(sys, 'argv', ['lessons.py', '--project-root', str(tmp_path), action, '--input-json', json.dumps(payload)])
+        assert lessons.main() == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data.get('count') == 0 if action == 'retrieve' else data['missing'] == ['unknown']
+    assert list(tmp_path.iterdir()) == []
+
+
 def candidate(root):
     return lessons.operate(root, 'candidate', dict(id='demo', ruleName='rule-demo', ruleText='# 규칙\n\n## 1. 실행\n\n- 조건을 확인합니다.',
         trigger='관련 작업에 적용합니다.', exceptions='다른 프로젝트 제외', scope='project-a', authority='human-request:LL-001'))['candidateHash']
@@ -235,3 +249,38 @@ def test_judgment_resolution_and_same_event_links_are_distinct(tmp_path):
     judgment = next(entry for entry in entries if entry['name'] == 'demo')
     assert judgment['contentPath'] in error['links']
     assert '판단 차이입니다.' in (tmp_path / judgment['contentPath']).read_text()
+
+
+def test_storage_check_is_read_only_and_reports_markdown_support(tmp_path, monkeypatch):
+    seed(tmp_path)
+    before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    monkeypatch.setattr(lessons, 'locked', lambda _: pytest.fail('check must not acquire a write lock'))
+    result = lessons.operate(tmp_path, 'check', {})
+    assert result['compatible'] is True and result['count'] == 1
+    assert 'categorized-markdown-with-runtime-metadata-v2' in result['supportedFormats']
+    assert result['toolPath'] == str(SCRIPTS / 'lessons.py')
+    assert before == {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+
+
+@pytest.mark.parametrize('broken', ['unknown-directory', 'missing-metadata', 'invalid-body'])
+def test_storage_failures_have_actionable_nonretryable_cli_diagnostics(tmp_path, broken):
+    import json
+    import subprocess
+    seed(tmp_path)
+    if broken == 'unknown-directory':
+        (tmp_path / 'docs/lessons-learned/unrecognized').mkdir()
+    elif broken == 'missing-metadata':
+        lessons.body_store.metadata_path(tmp_path, 'demo').unlink()
+    else:
+        next((tmp_path / 'docs/lessons-learned/errors').glob('*.md')).write_text('invalid')
+    before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    payload = tmp_path / 'check-input.json'
+    payload.write_text('{}')
+    result = subprocess.run([sys.executable, str(SCRIPTS / 'lessons.py'), '--project-root', str(tmp_path),
+                             'check', '--input', str(payload)], capture_output=True, text=True)
+    diagnostic = json.loads(result.stdout)
+    assert result.returncode == 1 and not result.stderr
+    assert diagnostic['code'] == 'lesson_storage_incompatible' and diagnostic['retryable'] is False
+    assert diagnostic['documentRoot'] == str(tmp_path)
+    assert diagnostic['supportedFormats'] and 'check' in diagnostic['recovery']
+    assert all(path.read_bytes() == content for path, content in before.items())

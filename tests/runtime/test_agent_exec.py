@@ -1264,7 +1264,14 @@ class AgentExecTests(unittest.TestCase):
                 "start_ack_missing", "process exited without a start event", False, True
             )
             original_update = self.module.update_json
-            with mock.patch.object(self.module, "Heartbeat", return_value=heartbeat), mock.patch.object(self.module, "run_codex_attempt", side_effect=failure) as attempt, mock.patch.object(self.module, "update_json", wraps=original_update) as updates:
+            saved_states = []
+
+            def observe_update(*args, **kwargs):
+                value = original_update(*args, **kwargs)
+                saved_states.append(dict(value))
+                return value
+
+            with mock.patch.object(self.module, "Heartbeat", return_value=heartbeat), mock.patch.object(self.module, "run_codex_attempt", side_effect=failure) as attempt, mock.patch.object(self.module, "update_json", side_effect=observe_update):
                 outcome = self.module.worker(worker_args)
             final = self.module.safe_read_json(Path(state["statePath"]))
 
@@ -1273,7 +1280,20 @@ class AgentExecTests(unittest.TestCase):
         self.assertEqual(final["attempt"], 1)
         self.assertEqual(final["startDisposition"], "launching")
         self.assertEqual(final["error"]["code"], "start_ack_missing")
-        self.assertEqual(updates.call_count, 2)
+        self.assertEqual(final["status"], "failed")
+        # Lesson accounting may save terminal state again; it must never requeue
+        # the run or alter the attempt after a process has already launched.
+        terminal_seen = False
+        for saved in saved_states:
+            if saved["status"] == "failed":
+                terminal_seen = True
+            if terminal_seen:
+                self.assertEqual(saved["status"], "failed")
+                self.assertEqual(saved["attempt"], 1)
+                self.assertEqual(saved["error"]["code"], "start_ack_missing")
+            else:
+                self.assertEqual(saved["attempt"], 0)
+        self.assertTrue(terminal_seen)
 
     def test_worker_applies_pending_lessons_after_the_outcome_without_affecting_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

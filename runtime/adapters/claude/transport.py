@@ -113,6 +113,10 @@ def main():
         # The host's Codex thread and Claude Code nesting markers must not describe this child.
         environment = {key: value for key, value in os.environ.items()
                        if key not in ("CODEX_THREAD_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")}
+        from tasks import orchestrator_guard
+        environment.pop(orchestrator_guard.ENV, None)
+        if orchestrator_guard.work_profile(state, session):
+            environment.update(orchestrator_guard.profile_environment(state, session))
         phases = planning_phases(state)
         session_id = session.get("sessionId")
         goal = None

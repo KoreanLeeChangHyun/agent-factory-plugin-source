@@ -14,6 +14,8 @@ def public_state(state: dict[str, Any]) -> dict[str, Any]:
         "decisionKind",
         "decisionScope",
         "pendingRpc",
+        "pendingLessons",
+        "lessonRecording",
         "attempt",
         "startDisposition",
         "maxAttempts",
