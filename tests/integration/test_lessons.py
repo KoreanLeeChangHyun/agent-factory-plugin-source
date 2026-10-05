@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 
 import pytest
+import runtime_test_home  # noqa: F401
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
@@ -111,14 +112,17 @@ def test_applied_rule_must_match_published_version(tmp_path):
     assert lessons.find(tmp_path, 'demo')['applications'] == []
 
 
-def test_json_only_storage_and_legacy_update_guard(tmp_path):
+def test_split_storage_and_legacy_update_guard(tmp_path):
     seed(tmp_path)
-    path = tmp_path / 'docs/lessons-learned/demo.json'
+    path = next((tmp_path / 'docs/lessons-learned/errors').glob('*.md'))
     assert path.is_file()
-    assert not list((tmp_path / 'docs/lessons-learned').rglob('SKILL.md'))
-    legacy = path.parent / 'error-demo/assets'
+    record = lessons.find(tmp_path, 'demo')
+    meta = lessons.body_store.metadata_path(tmp_path, 'demo')
+    assert '미확인' not in meta.read_text()  # Prose has only the Markdown source.
+    assert '미확인' in path.read_text()
+    legacy = path.parent.parent / 'error-demo/assets'
     legacy.mkdir(parents=True)
-    (legacy / 'lesson.json').write_bytes(path.read_bytes())
+    (legacy / 'lesson.json').write_text(__import__('json').dumps(record))
     with pytest.raises(ValueError, match='Duplicate'):
         lessons.records(tmp_path)
     path.unlink()
@@ -153,7 +157,7 @@ def test_submodule_root_without_workspace_lessons_is_allowed(tmp_path):
     (tmp_path / '.gitmodules').write_text('[submodule "extension"]\n\tpath = extension\n')
     (tmp_path / 'extension').mkdir()
     seed(tmp_path / 'extension')
-    assert (tmp_path / 'extension/docs/lessons-learned/demo.json').is_file()
+    assert len(list((tmp_path / 'extension/docs/lessons-learned/errors').glob('*.md'))) == 1
 
 
 def test_record_marks_a_known_occurrence_recovered_once(tmp_path):
@@ -165,3 +169,69 @@ def test_record_marks_a_known_occurrence_recovered_once(tmp_path):
     lessons.operate(tmp_path, 'record', {**value, 'recovered': True, 'recoveredBy': 'item-10'})
     again = lessons.find(tmp_path, 'demo')['occurrences']
     assert len(again) == 1 and (again[0]['recoveredBy'], again[0]['recoveredAt']) == ('item-9', stamp)
+
+
+def test_markdown_edits_search_and_candidate_evidence(tmp_path):
+    from search_documents import search
+    seed(tmp_path)
+    hash_ = candidate(tmp_path)
+    for kind in ('original', 'held-out'):
+        lessons.operate(tmp_path, 'evaluate', dict(id='demo', candidateHash=hash_, kind=kind,
+                        caseId=kind, passed=True, evidence='실제 점검'))
+    body = next((tmp_path / 'docs/lessons-learned/errors').glob('*.md'))
+    body.write_text(body.read_text().replace('조건을 확인합니다.', '수정된 조건을 확인합니다.') + '\n사용자님의 추가 메모\n')
+    assert search(tmp_path, '수정된 조건', scope='project-a')['count'] == 1
+    with pytest.raises(ValueError, match='Stale'):
+        lessons.operate(tmp_path, 'publish', {'id': 'demo'})
+    lessons.operate(tmp_path, 'resolve', dict(id='demo', cause='확인된 원인', solution='수정', verification='통과', evidence='점검'))
+    assert '사용자님의 추가 메모' in body.read_text()
+    assert 'resolved' in body.read_text()
+    assert lessons.find(tmp_path, 'demo')['resolutions'][0]['cause'] == '확인된 원인'
+
+
+def test_interrupted_write_replay_and_independent_edit_guard(tmp_path, monkeypatch):
+    seed(tmp_path)
+    original = lessons.runtime_paths.write
+    meta = lessons.body_store.metadata_path(tmp_path, 'demo')
+    def interrupted(path, value):
+        if path == meta:
+            raise OSError('simulated interrupted metadata publication')
+        return original(path, value)
+    value = {**seed(tmp_path), 'occurrenceId': 'run-2'}
+    monkeypatch.setattr(lessons.runtime_paths, 'write', interrupted)
+    with pytest.raises(OSError):
+        lessons.operate(tmp_path, 'record', value)
+    monkeypatch.setattr(lessons.runtime_paths, 'write', original)
+    with pytest.raises(ValueError, match='Interrupted'):
+        lessons.records(tmp_path)
+    lessons.operate(tmp_path, 'record', value)
+    assert len(lessons.find(tmp_path, 'demo')['occurrences']) == 2
+    assert not meta.with_suffix('.pending.json').exists()
+    monkeypatch.setattr(lessons.runtime_paths, 'write', interrupted)
+    with pytest.raises(OSError):
+        lessons.operate(tmp_path, 'record', {**value, 'occurrenceId': 'run-3'})
+    monkeypatch.setattr(lessons.runtime_paths, 'write', original)
+    body = next((tmp_path / 'docs/lessons-learned/errors').glob('*.md'))
+    body.write_text(body.read_text() + '\n사용자님의 독립 수정\n')
+    with pytest.raises(ValueError, match='edited during interrupted write'):
+        lessons.operate(tmp_path, 'recover', {'id': 'demo'})
+    assert '사용자님의 독립 수정' in body.read_text()
+    assert meta.with_suffix('.pending.json').exists()
+
+
+def test_judgment_resolution_and_same_event_links_are_distinct(tmp_path):
+    from catalog_documents import build_catalog
+    value = seed(tmp_path, 'judgment')
+    lessons.operate(tmp_path, 'record', {**value, 'id': 'associated-error', 'category': 'error',
+                    'occurrenceId': 'same-event-error', 'relatedIds': ['demo']})
+    lessons.operate(tmp_path, 'resolve', dict(id='demo', outcome='사용자님 선택 반영',
+                    reflection='목적에 따른 판단 차이입니다.', evidence='대화:1'))
+    record = lessons.find(tmp_path, 'demo')
+    assert record['category'] == 'judgment' and record['status'] == 'resolved'
+    assert record['resolutions'][0]['outcome'] == '사용자님 선택 반영'
+    entries = build_catalog(tmp_path)['documents']
+    error = next(entry for entry in entries if entry['name'] == 'associated-error')
+    assert error['relatedIds'] == ['demo']
+    judgment = next(entry for entry in entries if entry['name'] == 'demo')
+    assert judgment['contentPath'] in error['links']
+    assert '판단 차이입니다.' in (tmp_path / judgment['contentPath']).read_text()

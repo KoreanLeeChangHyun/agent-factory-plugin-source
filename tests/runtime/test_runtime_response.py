@@ -134,7 +134,7 @@ class RuntimeResponseTests(unittest.TestCase):
 
         writer = self.writable()
         self.assertEqual(rt.lesson_capture.apply_pending(self.root, writer), 1)
-        records = list((self.root / 'docs/lessons-learned').glob('*.json'))
+        records = list((self.root / 'docs/lessons-learned').glob('errors/*.md'))
         self.assertEqual(len(records), 1)
         self.assertNotIn('DO_NOT_SAVE', records[0].read_text())
         self.assertEqual(self.pending(state), 0)
@@ -145,8 +145,8 @@ class RuntimeResponseTests(unittest.TestCase):
         for receipt in (Path(state['statePath']).parent / 'lesson-capture').glob('*.receipt'):
             receipt.unlink()
         self.assertEqual(rt.lesson_capture.apply_pending(self.root, self.writable('second')), 1)
-        self.assertEqual(len(list((self.root / 'docs/lessons-learned').glob('*.json'))), 1)
-        self.assertEqual(len(json.loads(records[0].read_text())['occurrences']), 1)
+        self.assertEqual(len(list((self.root / 'docs/lessons-learned').glob('errors/*.md'))), 1)
+        self.assertEqual(len(__import__('lessons').records(self.root)[0]['occurrences']), 1)
 
     def test_pending_capture_sweep_is_bounded_and_keeps_failures_pending(self):
         capture = rt.lesson_capture

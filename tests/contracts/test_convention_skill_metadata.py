@@ -145,10 +145,11 @@ class ConventionSkillMetadataTests(unittest.TestCase):
                 self.assertIn(dependency, manifest_description)
         self.assertIn("../agent/SKILL.md", convention)
         self.assertIn("../document/SKILL.md", convention)
-        for document_type in ("original", "refined", "skills"):
+        for document_type in ("original", "skills"):
             self.assertIn(
                 f"<project-root>/docs/{document_type}/<category>[-<domain>]-<name>/", layout
             )
+        self.assertIn("<project-root>/docs/refined/<category>/<topic>/", layout)
         self.assertIn("not an error fallback", " ".join(layout.split()))
         self.assertNotIn("docs/<category>[-<domain>]-<name>.html", documents)
         self.assertIn(
@@ -177,9 +178,10 @@ class ConventionSkillMetadataTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        for document_type in ("original", "refined", "skills"):
+        for document_type in ("original", "skills"):
             root = f"<project-root>/docs/{document_type}/<category>[-<domain>]-<name>/"
             self.assertIn(root, documents)
+        self.assertIn("<project-root>/docs/refined/<category>/<topic>/", documents)
         for detail in (
             "provenance",
             "fidelity",
@@ -188,7 +190,9 @@ class ConventionSkillMetadataTests(unittest.TestCase):
             "Every AI-generated durable Document is Refined by default",
             "`interview`",
             "`research`",
-            "`analyze`",
+            "`analysis`",
+            "`comparison`",
+            "`history`",
         ):
             with self.subTest(detail=detail):
                 self.assertIn(detail, normalized_documents)
@@ -197,7 +201,7 @@ class ConventionSkillMetadataTests(unittest.TestCase):
             normalized_documents,
         )
         self.assertIn("`docs/skills/`", asset)
-        self.assertIn("<category>[-<domain>]-<name>/SKILL.md", asset)
+        self.assertIn("Document's type-specific routing", asset)
 
     def test_structured_design_json_is_a_linked_asset(self) -> None:
         document = (SKILLS / "document" / "SKILL.md").read_text(encoding="utf-8")

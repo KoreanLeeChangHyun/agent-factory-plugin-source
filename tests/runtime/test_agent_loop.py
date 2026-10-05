@@ -2337,7 +2337,7 @@ class AgentLoopContractTests(unittest.TestCase):
     def test_work_isolation_commits_runtime_lessons_with_the_task(self):
         from execution import worktrees
         plan = self.isolated_repository()
-        (self.root / ".gitignore").write_text("*.md\n*.json\n!docs/lessons-learned/*.json\n")
+        (self.root / ".gitignore").write_text("*.md\n*.json\n!docs/lessons-learned/errors/*.md\n")
         worktrees.git(self.root, "commit", "-qam", "Track lessons")
         started = self.isolated_brief_start(plan)
         task_id = next(iter(started["taskWorkspaces"]))
