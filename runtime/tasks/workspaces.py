@@ -213,6 +213,36 @@ def target_checkout(unit, create=False):
     raise ContractError("task_target_checkout_required", "Open the captured target branch in a checkout before integration")
 
 
+def target_overlap(target, target_tip, candidate):
+    """Uncommitted or untracked target paths that the target tip -> candidate merge would change."""
+    entries = worktrees.git(target, "status", "--porcelain", "-z", "--untracked-files=all").stdout.split(b"\0")
+    dirty, index = set(), 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if not entry:
+            continue
+        dirty.add(os.fsdecode(entry[3:]))
+        if b"R" in entry[:2] or b"C" in entry[:2]:
+            # Porcelain -z lists a rename or copy source as the next entry.
+            dirty.add(os.fsdecode(entries[index]))
+            index += 1
+    merged = {os.fsdecode(name) for name in worktrees.git(target, "diff", "--name-only", "--no-renames", "-z",
+              target_tip, candidate).stdout.split(b"\0") if name}
+    # A path also collides with a file or directory that contains it.
+    return sorted(path for path in dirty if any(path == name or path.startswith(name + "/") or name.startswith(path + "/")
+                                                 for name in merged))
+
+
+def refuse_target_overlap(unit, target, overlap, save):
+    unit["targetOverlap"] = overlap
+    save()
+    error = ContractError("task_target_dirty", "Target checkout has uncommitted changes the merge would change; Work Unit retained: "
+                          + str(target) + " (" + ", ".join(overlap) + ")")
+    error.files = overlap
+    raise error
+
+
 def task_message(english, korean, value, korean_suffix=""):
     # Runtime commits follow the project's bilingual English / Korean message format.
     name = value["workflowId"] + "/" + value["taskId"]
@@ -234,7 +264,8 @@ def integrate(runtime, state, work, receipt, save):
         raise ContractError("task_verification_required", "Wait for the requested Verification pass or recorded Human skip")
     value["workRunId"] = work["runId"]
     value["verification"] = "not requested" if mode in {"work", "plan-work"} else "skipped" if state.get("humanSkip") else "pass"
-    allowed = set(receipt["changedPaths"])
+    # Lessons the runtime recorded into this Work Unit are committed with the task.
+    allowed = set(receipt["changedPaths"]) | runtime.lesson_capture.recorded_paths(runtime.iter_run_states(Path(state["projectRoot"])), value["id"])
     if any(s.get("status") in runtime.ACTIVE_STATES and Path(s.get("workingDirectory", state["projectRoot"])).is_relative_to(Path(value["path"])) for s in runtime.iter_run_states(Path(state["projectRoot"]))):
         raise ContractError("task_workspace_busy", "An active run owns this Work Unit; integration paused")
     for unit in value["repositories"]:
@@ -246,8 +277,9 @@ def integrate(runtime, state, work, receipt, save):
         with runtime.file_lock(Path(common) / ".agent-factory-integration.lock"):
             target = target_checkout(unit, create=True)
             save()
-            if worktrees.dirty(target) or worktrees.merge_pending(target):
-                raise ContractError("task_target_dirty", "Target checkout has unpreserved changes; Work Unit retained: " + str(target))
+            # Uncommitted target files block only when the merge would change them (checked below).
+            if worktrees.merge_pending(target):
+                raise ContractError("task_target_dirty", "Target checkout has a pending merge; Work Unit retained: " + str(target))
             if any(s.get("status") in runtime.ACTIVE_STATES and s.get("workingDirectory") == str(target) for s in runtime.iter_run_states(Path(state["projectRoot"]))):
                 raise ContractError("task_target_busy", "Target checkout has an active run; integration paused")
             names = paths_changed(unit)
@@ -303,10 +335,22 @@ def integrate(runtime, state, work, receipt, save):
                 unit["candidateCommit"] = worktrees.git(unit["path"], "commit-tree", tree, "-p", target_tip, "-p", merged_tip,
                     data=(task_message("Merge task", "작업", value, " 병합") + "\n").encode()).stdout.decode().strip()
             save()
+            overlap = target_overlap(target, target_tip, unit["candidateCommit"])
+            if overlap:
+                refuse_target_overlap(unit, target, overlap, save)
             check(unit, save, "integration")
-            if worktrees.branch(target) != unit["targetBranch"] or worktrees.dirty(target) or worktrees.git(target, "rev-parse", "HEAD").stdout.decode().strip() != target_tip:
+            if worktrees.branch(target) != unit["targetBranch"] or worktrees.merge_pending(target) or worktrees.git(target, "rev-parse", "HEAD").stdout.decode().strip() != target_tip:
                 return {"status": "target-changed", "unit": unit}
-            worktrees.git(target, "merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", "--", unit["candidateCommit"])
+            overlap = target_overlap(target, target_tip, unit["candidateCommit"])
+            if overlap:
+                refuse_target_overlap(unit, target, overlap, save)
+            # Non-overlapping local files stay untouched; Git still refuses to overwrite any of them.
+            updated = worktrees.git(target, "merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", "--", unit["candidateCommit"], check=False)
+            if updated.returncode:
+                unit["error"] = updated.stderr.decode("utf-8", "replace")
+                save()
+                raise ContractError("task_target_dirty", "Target checkout refused the update; Work Unit retained: " + str(target) + ": " + unit["error"].strip())
+            unit.pop("targetOverlap", None)
             unit.update(phase="merged", mergeCommit=None if unit["noChanges"] else unit["candidateCommit"], targetResultCommit=unit["candidateCommit"], integratedAt=runtime.now())
             save()
     value["phase"] = "merged"

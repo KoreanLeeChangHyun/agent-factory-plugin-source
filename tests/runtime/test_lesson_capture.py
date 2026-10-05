@@ -2,6 +2,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 from unittest.mock import patch
 import subprocess
 
@@ -124,3 +125,42 @@ def test_replay_stops_after_bounded_attempts(tmp_path):
         capture.replay(tmp_path, state)
     assert run_cli.call_count == 1 + capture.REPLAY_ATTEMPTS
     assert len(capture.audit(state)) == 1
+
+
+def test_isolated_run_records_into_its_work_unit_and_sweeps_wait_for_the_unit(tmp_path):
+    project, unit = tmp_path / 'project', tmp_path / 'unit'
+    project.mkdir()
+    unit.mkdir()
+    runs = tmp_path / 'agents/a1/runs'
+    workspace = {'id': 'w1', 'mode': 'code', 'repositories': [{'repositoryRoot': str(project), 'path': str(unit)}]}
+    isolated = {'statePath': str(runs / 'r5/state.json'), 'runId': 'r5', 'agentId': 'a1', 'taskWorkspace': workspace}
+    writer = {'statePath': str(runs / 'r6/state.json'), 'runId': 'r6', 'agentId': 'a1'}
+    for state in (isolated, writer):
+        Path(state['statePath']).parent.mkdir(parents=True)
+        Path(state['statePath']).write_text(json.dumps(state))
+    assert capture.record_root(project, {'taskWorkspace': {'mode': 'shared'}}) == project
+    nested = {'mode': 'code', 'repositories': [{'repositoryRoot': str(project / 'plugin'), 'path': str(unit)}]}
+    assert capture.record_root(project, {'taskWorkspace': nested}) == project
+    event = {'type': 'item.completed', 'item': {'type': 'command_execution', 'id': 'item5', 'exit_code': 1}}
+    saved = capture.observe(project, isolated, event)
+    assert saved['saved']
+    assert not (project / 'docs').exists()  # The source checkout the task merges into stays clean.
+    assert (unit / saved['path']).is_file()
+    assert capture.recorded_paths([isolated, writer], 'w1') == {saved['path']}
+    assert capture.recorded_paths([isolated], 'another') == set()
+    failure = subprocess.CompletedProcess([], 1, '', 'failure')
+    with patch.object(capture.subprocess, 'run', return_value=failure):
+        capture.observe(project, isolated, {**event, 'item': {**event['item'], 'id': 'item6'}})
+        capture.observe(project, isolated, {**event, 'item': {**event['item'], 'id': 'item7'}})
+    capture.replay(project, isolated)
+    assert capture.audit(isolated) == []
+    assert len(list((unit / 'docs/lessons-learned').glob('*.json'))) == 3
+    with patch.object(capture.subprocess, 'run', return_value=failure):
+        capture.observe(project, isolated, {**event, 'item': {**event['item'], 'id': 'item8'}})
+    # Another run's sweep leaves the Unit's capture pending while the Unit exists.
+    assert capture.apply_pending(project, writer) == 0
+    assert not (project / 'docs').exists()
+    assert len(capture.audit(isolated)) == 1
+    shutil.rmtree(unit)  # The merged Unit was cleaned up.
+    assert capture.apply_pending(project, writer) == 1
+    assert len(list((project / 'docs/lessons-learned').glob('*.json'))) == 1

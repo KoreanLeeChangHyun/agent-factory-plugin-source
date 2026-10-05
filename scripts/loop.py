@@ -1069,7 +1069,7 @@ def finish_workflow_task(state, path, runtime, reason):
             outcome = workspaces.integrate(agent_exec, state, work, receipt, lambda: save_loop_state(path, state))
         except agent_exec.ContractError as error:
             if isolation and error.code in PRESERVED_INTEGRATION_ERRORS:
-                return preserve_integration(state, path, error.code, error.message)
+                return preserve_integration(state, path, error.code, error.message, getattr(error, "files", None))
             raise
         if outcome["status"] == "target-changed":
             state["integrationRetries"] = state.get("integrationRetries", 0) + 1

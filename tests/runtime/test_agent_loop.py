@@ -2230,19 +2230,62 @@ class AgentLoopContractTests(unittest.TestCase):
         self.isolated_checked_work(revised)
         self.assert_preserved(self.reconcile(revised), task_id, path, "task_conflict_revision_limit")
 
-    def test_work_isolation_dirty_target_preserves_branch_without_merging(self):
+    def test_work_isolation_dirty_target_preserves_branch_when_the_merge_would_change_its_files(self):
+        from execution import worktrees
+        started = self.isolated_brief_start(self.isolated_repository())
+        task_id = next(iter(started["taskWorkspaces"]))
+        path = Path(started["taskWorkspaces"][task_id]["path"])
+        (path / "file.txt").write_text("isolated result")
+        (self.root / "file.txt").write_text("Human work in progress")
+        before = worktrees.git(self.root, "rev-parse", "HEAD").stdout
+        self.isolated_checked_work(started)
+        preserved = self.reconcile(started)
+        self.assert_preserved(preserved, task_id, path, "task_target_dirty")
+        self.assertEqual(preserved["terminalReason"]["files"], ["file.txt"])
+        self.assertIn("file.txt", preserved["terminalReason"]["message"])
+        self.assertEqual(worktrees.git(self.root, "rev-parse", "HEAD").stdout, before)
+        self.assertEqual((self.root / "file.txt").read_text(), "Human work in progress")
+
+    def test_work_isolation_merges_past_unrelated_uncommitted_target_files(self):
         from execution import worktrees
         started = self.isolated_brief_start(self.isolated_repository())
         task_id = next(iter(started["taskWorkspaces"]))
         path = Path(started["taskWorkspaces"][task_id]["path"])
         (path / "file.txt").write_text("isolated result")
         (self.root / "unrelated.txt").write_text("Human work in progress")
-        before = worktrees.git(self.root, "rev-parse", "HEAD").stdout
+        (self.root / ".gitignore").write_text("*.md\n*.json\n# Human edit in progress\n")
         self.isolated_checked_work(started)
-        preserved = self.reconcile(started)
-        self.assert_preserved(preserved, task_id, path, "task_target_dirty")
-        self.assertEqual(worktrees.git(self.root, "rev-parse", "HEAD").stdout, before)
+        complete = self.reconcile(started)
+        self.assertEqual(complete["status"], "completed")
+        self.assertEqual(complete["terminalReason"]["code"], "work-completed")
+        self.assertEqual(worktrees.git(self.root, "show", "HEAD:file.txt").stdout.decode(), "isolated result")
+        self.assertEqual((self.root / "file.txt").read_text(), "isolated result")
         self.assertEqual((self.root / "unrelated.txt").read_text(), "Human work in progress")
+        self.assertIn("# Human edit in progress", (self.root / ".gitignore").read_text())
+        self.assertEqual(sorted(worktrees.git(self.root, "status", "--porcelain").stdout.decode().splitlines()),
+                         [" M .gitignore", "?? unrelated.txt"])
+        self.assertTrue(complete["taskWorkspaces"][task_id]["repositories"][0]["cleaned"])
+
+    def test_work_isolation_commits_runtime_lessons_with_the_task(self):
+        from execution import worktrees
+        plan = self.isolated_repository()
+        (self.root / ".gitignore").write_text("*.md\n*.json\n!docs/lessons-learned/*.json\n")
+        worktrees.git(self.root, "commit", "-qam", "Track lessons")
+        started = self.isolated_brief_start(plan)
+        task_id = next(iter(started["taskWorkspaces"]))
+        path = Path(started["taskWorkspaces"][task_id]["path"])
+        (path / "file.txt").write_text("isolated result")
+        run = self.isolated_checked_work(started)
+        event = {"type": "item.completed", "item": {"type": "command_execution", "id": "command-1", "exit_code": 1}}
+        saved = self.agent_exec.lesson_capture.observe(self.root, run, event)
+        self.assertTrue(saved["saved"])
+        self.assertTrue((path / saved["path"]).is_file())
+        self.assertFalse((self.root / "docs").exists())  # The target checkout stays clean.
+        complete = self.reconcile(started)
+        self.assertEqual(complete["status"], "completed")
+        self.assertEqual(worktrees.git(self.root, "status", "--porcelain").stdout, b"")
+        self.assertIn(saved["path"], worktrees.git(self.root, "ls-files").stdout.decode().splitlines())
+        self.assertTrue(complete["taskWorkspaces"][task_id]["repositories"][0]["cleaned"])
 
     def test_work_isolation_follows_the_captured_main_selection(self):
         parent = self.root / "parent-state.json"

@@ -359,9 +359,13 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(worktrees.checked_path(session), self.path)
         self.assertEqual(session["sessionId"], "same-thread")
         self.assertEqual(session["executionPolicy"]["sandboxPolicy"]["writable_roots"], [str(self.path)])
-        with self.assertRaisesRegex(runtime.ContractError, "Target checkout"):
+        (self.path / "file.txt").write_text("task result\n")
+        # The merge would change file.txt, which the target holds uncommitted.
+        with self.assertRaisesRegex(runtime.ContractError, r"Target checkout.*\(file\.txt\)"):
             self.integrate()
+        self.assertEqual(self.unit["targetOverlap"], ["file.txt"])
         self.assertEqual(self.git("status", "--porcelain"), before)
+        self.assertEqual((self.root / "file.txt").read_text(), "private source")
 
     def test_ordinary_merge_receipt_history_and_duplicate_completion(self):
         self.setup_task()
