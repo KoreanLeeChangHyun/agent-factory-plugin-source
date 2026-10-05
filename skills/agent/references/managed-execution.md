@@ -153,6 +153,10 @@
   - `environment`: the host or policy must change first. Stop and report the cause.
   - `human`: pass the decision to the Human. Anything else is `unknown`.
   - The one `workLight` to `work` retry applies only to `contract` or no class.
+- `task_repository_invalid` and `parent_session_invalid` are environment/binding failures,
+  not Work failures. Preserve the accepted loop, results and parent identity. Do not
+  switch `--project-root`, strip the managed parent environment or repeatedly assign a
+  stronger worker. A different project requires its own correctly bound Main request.
 - Work sub-agents are limited per provider; see
   [enforcement](execution-modes.md#captured-routes).
 - Status reads retry a transient control-plane failure three times with backoff. A dispatch

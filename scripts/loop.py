@@ -40,6 +40,9 @@ STATUS_READ_BACKOFF_SECONDS = 0.5
 TRANSIENT_READ_ERRORS = {"child_runtime_failure", "runtime_failure"}
 # How often the driver asks exec to reconcile a child whose worker may have died.
 STALE_CHECK_SECONDS = 30.0
+# One bounded wait budget per task, retained across driver restarts/reconcile.
+INTEGRATION_WAIT_ATTEMPTS = 150
+INTEGRATION_WAIT_ERRORS = {"task_target_busy", "task_workspace_busy", "lock_busy"}
 # Human-invoked commands that return a stopped loop to `active`.
 RESUMING_COMMANDS = {"recover-receipt", "extend-revisions"}
 # Commands after which an active loop must have a driver; one is launched only when none holds the driver lock.
@@ -61,6 +64,7 @@ FAILURE_CLASSES = {
         "child_runtime_failure", "runtime_failure", "driver_error", "driver_launch_failed",
         "heartbeat_timeout", "event_read_failed", "codex_exit_timeout", "worker_failure",
         "started_run_not_replayable", "run_start_unknown",
+        "task_target_busy", "task_workspace_busy", "lock_busy", "task_target_changed",
     },
     "provider": {
         "native_backend_error", "codex_failed", "event_invalid", "turn_timeout", "start_timeout",
@@ -69,6 +73,9 @@ FAILURE_CLASSES = {
     "environment": {
         "sandbox_unavailable", "execution_preflight_failed", "execution_policy_mismatch",
         "provider_not_found", "codex_start_failed", "worktree_binding_changed",
+        "task_repository_invalid", "task_repository_overlap", "parent_session_invalid",
+        "parent_conversation_reset", "task_workspace_binding", "task_workspace_missing",
+        "task_target_busy_timeout", "task_workspace_busy_timeout", "lock_busy_timeout",
     },
     "human": {"needs-human-decision", "revision_limit_reached", "cancelled"},
 }
@@ -352,8 +359,6 @@ def public_state(state: dict[str, Any], child: dict[str, Any] | None = None) -> 
                 and task.get(role + "RunId") == child.get("runId")
                 and task.get(role + "AgentId") == child.get("agentId")):
             task[role + "Status"] = observed_task_status(child)
-            if state.get("phase") == "integrating" and role == "work":
-                task["workStatus"] = "running"
     return {
         "schemaVersion": SCHEMA_VERSION,
         "kind": "work-verification-loop",
@@ -378,6 +383,7 @@ def public_state(state: dict[str, Any], child: dict[str, Any] | None = None) -> 
         "humanSkip": state.get("humanSkip"),
         "pendingDispatch": state.get("pendingDispatch"),
         "controlPlaneError": state.get("controlPlaneError"),
+        "integrationWait": copy.deepcopy(state.get("integrationWait")),
         "failureClass": failure_class(state.get("controlPlaneError")),
         "receiptRecovery": state.get("receiptRecovery"),
         "revisionCount": state.get("revisionCount", 0),
@@ -1084,16 +1090,37 @@ def finish_workflow_task(state, path, runtime, reason):
         isolation = state["execution"].get("workIsolation") is True
         work = runtime.status(assigned_agent(state, "work"), state["latestWorkRunId"])
         receipt = agent_exec.validate_receipt(root, work, agent_id=work["agentId"], run_id=work["runId"])
+        if state.get("workflow") and work.get("status") == "completed":
+            state["workflow"]["tasks"][state["workflow"]["index"]]["workStatus"] = "completed"
         try:
             outcome = workspaces.integrate(agent_exec, state, work, receipt, lambda: save_loop_state(path, state))
         except agent_exec.ContractError as error:
+            if error.code in INTEGRATION_WAIT_ERRORS:
+                owners = getattr(error, "owners", [])
+                verified_wait = bool(owners) and all(owner["evidence"] == "live" for owner in owners)
+                attempts = state.get("integrationWaitAttempts", 0) + (0 if verified_wait else 1)
+                state["integrationWaitAttempts"] = attempts
+                state["integrationWait"] = {"code": error.code, "message": error.message,
+                                            "attempts": attempts, "limit": INTEGRATION_WAIT_ATTEMPTS,
+                                            "verifiedLive": verified_wait, "owners": owners}
+                if attempts >= INTEGRATION_WAIT_ATTEMPTS:
+                    if isolation:
+                        return preserve_integration(state, path, error.code + "_timeout", error.message)
+                    state.update(status="runtime-error", controlPlaneError={"code": error.code + "_timeout", "message": error.message})
+                else:
+                    state.update(status="active", controlPlaneError=None, updatedAt=now())
+                save_loop_state(path, state)
+                return public_state(state)
             if isolation and error.code in PRESERVED_INTEGRATION_ERRORS:
                 return preserve_integration(state, path, error.code, error.message, getattr(error, "files", None))
             raise
+        state.pop("integrationWait", None)
+        # Reconcile of a historical busy stop returns to the same completed Work.
+        state.update(status="active", controlPlaneError=None)
         if outcome["status"] == "target-changed":
             state["integrationRetries"] = state.get("integrationRetries", 0) + 1
-            limit = state["execution"].get("maxRevisions", DEFAULT_MAX_REVISIONS)
-            if limit and state["integrationRetries"] > limit:
+            limit = state["execution"].get("maxRevisions") or DEFAULT_MAX_REVISIONS
+            if state["integrationRetries"] > limit:
                 if isolation:
                     return preserve_integration(state, path, "task_target_changed", "Target kept changing during checks")
                 raise agent_exec.ContractError("task_target_changed", "Target kept changing during checks; Work Units preserved for a decision")
@@ -1157,6 +1184,8 @@ def finish_workflow_task(state, path, runtime, reason):
                          status="active", terminalReason=None)
             state.pop("lastIntegrationConflict", None)
             state.pop("integrationRetries", None)
+            state.pop("integrationWait", None)
+            state.pop("integrationWaitAttempts", None)
             dispatch(state, path, runtime, role="work", request_file=Path(next_task["requestPath"]))
             return public_state(state, state["currentChild"])
     state.update(status="completed", phase="ended", currentChild=None,
@@ -1468,7 +1497,8 @@ def drive_loop(args):
                     if state.get("workflow"):
                         task = state["workflow"]["tasks"][state["workflow"]["index"]]
                         role = (state.get("pendingDispatch") or state.get("currentChild") or {}).get("role", "work")
-                        task["verificationStatus" if role == "verification" else "workStatus"] = "blocked"
+                        if state.get("phase") != "integrating":
+                            task["verificationStatus" if role == "verification" else "workStatus"] = "blocked"
                     save_loop_state(path, state)
                 return public_state(state)
             if result["status"] != "active":

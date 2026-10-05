@@ -2066,6 +2066,10 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertEqual(classify({"code": "child_runtime_failure"}), "transient")
         self.assertEqual(classify({"code": "native_backend_error"}), "provider")
         self.assertEqual(classify({"code": "sandbox_unavailable"}), "environment")
+        for code in ("task_repository_invalid", "parent_session_invalid", "task_workspace_binding", "task_target_busy_timeout"):
+            self.assertEqual(classify({"code": code}), "environment")
+        for code in ("task_target_busy", "task_workspace_busy", "lock_busy"):
+            self.assertEqual(classify({"code": code}), "transient")
         self.assertEqual(classify({"code": "revision_limit_reached"}), "human")
         self.assertEqual(classify({"code": "something_new"}), "unknown")
         codes = [code for values in self.agent_loop.FAILURE_CLASSES.values() for code in values]
@@ -2117,6 +2121,195 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertEqual((self.root / "file.txt").read_text(), "result")
         self.assertEqual(len(self.runtime.dispatches), 1)
         self.assertEqual(complete["taskWorkspaces"]["task-one"]["verification"], "not requested")
+
+    def target_owner(self, agent="other-worker", status="running", cwd=None):
+        owner = {"agentId": agent, "runId": "run-owner", "role": "work", "status": status,
+                 "workingDirectory": str(cwd or self.root)}
+        path = self.agent_exec.state_file(self.root, agent, owner["runId"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.agent_exec.atomic_write_json(path, owner)
+        return owner, path
+
+    def test_busy_target_driver_waits_then_integrates_without_redispatch(self):
+        started, _ = self.code_workspace_start()
+        path = Path(started["taskWorkspaces"]["task-one"]["path"])
+        (path / "file.txt").write_text("result")
+        self.checked_code_work(started)
+        owner, owner_path = self.target_owner(cwd=self.root / "subdirectory")
+        waiting = self.reconcile(started)
+        self.assertEqual((waiting["status"], waiting["phase"]), ("active", "integrating"))
+        self.assertEqual(waiting["workflow"]["tasks"][0]["workStatus"], "completed")
+        self.assertEqual(waiting["integrationWait"]["owners"][0]["runId"], owner["runId"])
+        self.assertEqual((self.root / "file.txt").read_text(), "base\n")
+        def release(_seconds):
+            self.agent_exec.atomic_write_json(owner_path, {**owner, "status": "completed"})
+        complete = self.drive(waiting, release)
+        self.assertEqual(complete["status"], "completed")
+        self.assertEqual((self.root / "file.txt").read_text(), "result")
+        self.assertIsNone(complete["integrationWait"])
+        self.assertEqual(len(self.runtime.dispatches), 1)
+
+    def test_historical_busy_stop_resumes_same_completed_work(self):
+        started, _ = self.code_workspace_start()
+        path = Path(started["taskWorkspaces"]["task-one"]["path"])
+        (path / "file.txt").write_text("result")
+        self.checked_code_work(started)
+        state_path = Path(started["statePath"])
+        state = self.agent_exec.safe_read_json(state_path)
+        state.update(status="runtime-error", phase="integrating", controlPlaneError={"code": "task_target_busy", "message": "old busy"})
+        self.agent_exec.atomic_write_json(state_path, state)
+        complete = self.reconcile(started)
+        self.assertEqual(complete["status"], "completed")
+        self.assertIsNone(complete["controlPlaneError"])
+        self.assertEqual(len(self.runtime.dispatches), 1)
+
+    def test_integration_lock_contention_is_nonblocking_and_resumable(self):
+        from execution import worktrees
+        started, _ = self.code_workspace_start()
+        path = Path(started["taskWorkspaces"]["task-one"]["path"])
+        (path / "file.txt").write_text("result")
+        self.checked_code_work(started)
+        common = Path(worktrees.git(self.root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.decode().strip())
+        with self.agent_exec.file_lock(common / ".agent-factory-integration.lock"):
+            waiting = self.reconcile(started)
+            again = self.reconcile(waiting)
+        self.assertEqual(waiting["integrationWait"]["code"], "lock_busy")
+        self.assertEqual(again["integrationWait"]["attempts"], 2)
+        complete = self.reconcile(again)
+        self.assertEqual(complete["status"], "completed")
+        self.assertEqual(len(self.runtime.dispatches), 1)
+
+    def test_only_exact_accepted_main_is_exempt_from_target_busy(self):
+        started, _ = self.code_workspace_start()
+        path = Path(started["taskWorkspaces"]["task-one"]["path"])
+        (path / "file.txt").write_text("result")
+        work = self.checked_code_work(started)
+        parent, parent_path = self.target_owner("main-parent")
+        parent["role"] = "main"
+        self.agent_exec.atomic_write_json(parent_path, parent)
+        parent_bytes = parent_path.read_bytes()
+        work.update(parentAgentId=parent["agentId"], parentRunId=parent["runId"])
+        self.agent_exec.atomic_write_json(Path(work["statePath"]), work)
+        state_path = Path(started["statePath"])
+        state = self.agent_exec.safe_read_json(state_path)
+        state["parentStatePath"] = str(parent_path)
+        self.agent_exec.atomic_write_json(state_path, state)
+        other, other_path = self.target_owner("main-unrelated")
+        other["role"] = "main"
+        self.agent_exec.atomic_write_json(other_path, other)
+        waiting = self.reconcile(started)
+        self.assertEqual([o["agentId"] for o in waiting["integrationWait"]["owners"]], [other["agentId"]])
+        self.agent_exec.atomic_write_json(other_path, {**other, "status": "completed"})
+        complete = self.reconcile(waiting)
+        self.assertEqual(complete["status"], "completed")
+        self.assertEqual(parent_path.read_bytes(), parent_bytes)
+
+    def test_run_owner_requires_positive_empty_evidence(self):
+        from tasks import workspaces
+        owner = {"agentId": "old-worker", "status": "running", "workerIdentity": {"pid": 1}, "codexIdentity": {"pid": 2}}
+        with mock.patch.object(self.agent_exec, "load_session", return_value={}), \
+                mock.patch.object(self.agent_exec, "heartbeat_stale", return_value=True), \
+                mock.patch.object(self.agent_exec, "process_identity_status", return_value="dead") as identity:
+            self.assertFalse(workspaces.run_owns_checkout(self.agent_exec, owner, self.root))
+            for status in ("match", "mismatch", "unknown"):
+                identity.return_value = status
+                self.assertTrue(workspaces.run_owns_checkout(self.agent_exec, owner, self.root))
+            identity.return_value = "dead"
+            for status in ("accepted", "queued"):
+                self.assertTrue(workspaces.run_owns_checkout(self.agent_exec, {**owner, "status": status}, self.root))
+            with mock.patch.object(self.agent_exec, "heartbeat_stale", return_value=False):
+                self.assertTrue(workspaces.run_owns_checkout(self.agent_exec, owner, self.root))
+            self.assertTrue(workspaces.run_owns_checkout(self.agent_exec, {"agentId": "old-worker", "status": "running"}, self.root))
+            contained = {**owner, "containment": {"kind": "test"}}
+            with mock.patch.object(self.agent_exec, "validate_state_containment_fields"), \
+                    mock.patch.object(self.agent_exec, "_validate_state_containment", return_value={}), \
+                    mock.patch.object(self.agent_exec, "containment_is_empty", return_value=True) as empty:
+                self.assertFalse(workspaces.run_owns_checkout(self.agent_exec, contained, self.root))
+                empty.return_value = False
+                self.assertTrue(workspaces.run_owns_checkout(self.agent_exec, contained, self.root))
+                empty.side_effect = self.agent_exec.ContractError("containment_identity_mismatch", "unknown")
+                self.assertTrue(workspaces.run_owns_checkout(self.agent_exec, contained, self.root))
+
+    def test_busy_wait_limit_preserves_isolated_result_and_receipt(self):
+        started = self.isolated_brief_start(self.isolated_repository())
+        task_id = next(iter(started["taskWorkspaces"]))
+        path = Path(started["taskWorkspaces"][task_id]["path"])
+        (path / "file.txt").write_text("result")
+        work = self.isolated_checked_work(started)
+        receipt = Path(work["receiptPath"]).read_bytes()
+        self.target_owner()
+        with mock.patch.object(self.agent_loop, "INTEGRATION_WAIT_ATTEMPTS", 2):
+            waiting = self.reconcile(started)
+            preserved = self.reconcile(waiting)
+        self.assert_preserved(preserved, task_id, path, "task_target_busy_timeout")
+        self.assertEqual(Path(work["receiptPath"]).read_bytes(), receipt)
+        self.assertEqual((path / "file.txt").read_text(), "result")
+        self.assertEqual((self.root / "file.txt").read_text(), "base\n")
+        self.assertEqual(len(self.runtime.dispatches), 1)
+
+    def test_verified_live_owner_wait_does_not_exhaust_uncertain_budget(self):
+        started, _ = self.code_workspace_start()
+        path = Path(started["taskWorkspaces"]["task-one"]["path"])
+        (path / "file.txt").write_text("result")
+        self.checked_code_work(started)
+        owner, owner_path = self.target_owner()
+        owner["workerIdentity"] = {"pid": 1}
+        self.agent_exec.atomic_write_json(owner_path, owner)
+        with mock.patch.object(self.agent_loop, "INTEGRATION_WAIT_ATTEMPTS", 1), \
+                mock.patch.object(self.agent_exec, "process_identity_status", return_value="match"):
+            for _ in range(3):
+                waiting = self.reconcile(started)
+                self.assertEqual(waiting["status"], "active")
+                self.assertTrue(waiting["integrationWait"]["verifiedLive"])
+                self.assertEqual(waiting["integrationWait"]["attempts"], 0)
+        self.agent_exec.atomic_write_json(owner_path, {**owner, "status": "completed"})
+        self.assertEqual(self.reconcile(waiting)["status"], "completed")
+
+    def test_stale_dead_target_owner_is_ignored_without_rewriting_its_run(self):
+        started, _ = self.code_workspace_start()
+        path = Path(started["taskWorkspaces"]["task-one"]["path"])
+        (path / "file.txt").write_text("result")
+        self.checked_code_work(started)
+        owner, owner_path = self.target_owner()
+        owner["workerIdentity"] = {"pid": 1}
+        self.agent_exec.atomic_write_json(owner_path, owner)
+        before = owner_path.read_bytes()
+        with mock.patch.object(self.agent_exec, "load_session", return_value={}), \
+                mock.patch.object(self.agent_exec, "heartbeat_stale", return_value=True), \
+                mock.patch.object(self.agent_exec, "process_identity_status", return_value="dead"):
+            complete = self.reconcile(started)
+        self.assertEqual(complete["status"], "completed")
+        self.assertEqual(owner_path.read_bytes(), before)
+
+    def test_nonisolated_busy_timeout_stops_with_work_evidence_preserved(self):
+        started, _ = self.code_workspace_start()
+        path = Path(started["taskWorkspaces"]["task-one"]["path"])
+        (path / "file.txt").write_text("result")
+        work = self.checked_code_work(started)
+        self.target_owner(cwd=path)
+        with mock.patch.object(self.agent_loop, "INTEGRATION_WAIT_ATTEMPTS", 1):
+            stopped = self.reconcile(started)
+        self.assertEqual((stopped["status"], stopped["phase"]), ("runtime-error", "integrating"))
+        self.assertEqual(stopped["controlPlaneError"]["code"], "task_workspace_busy_timeout")
+        self.assertEqual(stopped["workflow"]["tasks"][0]["workStatus"], "completed")
+        self.assertTrue(Path(work["receiptPath"]).exists())
+        self.assertTrue(path.exists())
+        self.assertEqual(len(self.runtime.dispatches), 1)
+
+    def test_target_changes_remain_bounded_when_revision_limit_is_zero(self):
+        from tasks import workspaces
+        started, _ = self.code_workspace_start()
+        self.checked_code_work(started)
+        state_path = Path(started["statePath"])
+        state = self.agent_exec.safe_read_json(state_path)
+        state["execution"].update(workIsolation=True, maxRevisions=0)
+        self.agent_exec.atomic_write_json(state_path, state)
+        with mock.patch.object(workspaces, "integrate", return_value={"status": "target-changed"}):
+            for _ in range(self.agent_loop.DEFAULT_MAX_REVISIONS):
+                self.assertEqual(self.reconcile(started)["status"], "active")
+            stopped = self.reconcile(started)
+        self.assertEqual(stopped["terminalReason"]["cause"], "task_target_changed")
+        self.assertEqual(len(self.runtime.dispatches), 1)
 
     def test_code_conflict_revision_reuses_session_and_unclear_resolution_stops(self):
         from execution import worktrees
