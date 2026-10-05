@@ -454,6 +454,21 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertIn("unpreserved", self.unit["cleanupPending"])
         self.assertFalse(self.unit.get("cleaned", False))
 
+    def test_cleanup_lock_busy_keeps_successful_merge_and_defers_removal(self):
+        self.setup_task()
+        (self.path / "file.txt").write_text("result")
+        with mock.patch.object(self.ws, "cleanup"):
+            self.assertEqual(self.integrate()["status"], "complete")
+        common = Path(self.git("rev-parse", "--path-format=absolute", "--git-common-dir"))
+        with runtime.file_lock(common / ".agent-factory-integration.lock"):
+            self.ws.cleanup(runtime, self.state, self.value, self.save)
+        self.assertEqual(self.unit["phase"], "merged")
+        self.assertEqual(self.unit["cleanupPending"], "integration lock busy")
+        self.assertEqual((self.root / "file.txt").read_text(), "result")
+        self.assertTrue(self.path.exists())
+        self.ws.cleanup(runtime, self.state, self.value, self.save)
+        self.assertTrue(self.unit["cleaned"])
+
     def test_selection_branch_collision_detached_and_non_git(self):
         from tasks import workspaces
         for value in ({"mode": "code"}, {"mode": "shared", "repositories": [{}]}, {"mode": "unknown"}):
@@ -511,13 +526,13 @@ class TaskWorkspaceTests(unittest.TestCase):
         with mock.patch.object(self.ws, "check", side_effect=advance):
             self.assertEqual(self.integrate()["status"], "target-changed")
         self.assertTrue(self.path.exists())
-        active = {"status": "running", "workingDirectory": str(self.path)}
-        with mock.patch.object(runtime, "iter_run_states", side_effect=lambda root: iter([active])):
+        active = {"agentId": "work-task", "runId": "run-active", "status": "running", "workingDirectory": str(self.path)}
+        with mock.patch.object(runtime, "iter_run_states", side_effect=lambda root, **kwargs: iter([active])):
             with self.assertRaisesRegex(runtime.ContractError, "active run"):
                 self.integrate()
         with mock.patch.object(self.ws, "cleanup"):
             self.integrate()
-        with mock.patch.object(runtime, "iter_run_states", side_effect=lambda root: iter([active])):
+        with mock.patch.object(runtime, "iter_run_states", side_effect=lambda root, **kwargs: iter([active])):
             self.ws.cleanup(runtime, self.state, self.value, self.save)
         self.assertEqual((self.root / "new-target").read_text(), "new target")
         self.assertTrue(self.path.exists())
