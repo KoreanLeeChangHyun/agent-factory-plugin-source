@@ -25,8 +25,8 @@ def test_capture_nonzero_and_ignore_success(tmp_path):
     assert 'DO_NOT_SAVE' not in text
     assert len(json.loads(text)['occurrences']) == 1
     assert capture.audit(state) == []
-    event['item']['exit_code'] = 0
-    assert capture.observe(tmp_path, state, event, 1) is None
+    success = {'type': 'item.completed', 'item': {'type': 'command_execution', 'id': 'other', 'exit_code': 0, 'command': 'ls'}}
+    assert capture.observe(tmp_path, state, success, 1) is None
 
 
 def test_pending_on_storage_failure(tmp_path):
@@ -52,7 +52,9 @@ def test_replay_and_unidentified_errors(tmp_path):
     assert len(capture.audit(state)) == 2
     capture.replay(tmp_path, state)
     assert capture.audit(state) == []
-    assert len(list((tmp_path / 'docs/lessons-learned').glob('*.json'))) == 2
+    records = list((tmp_path / 'docs/lessons-learned').glob('*.json'))
+    assert len(records) == 1  # Both occurrences share the tool-error signature.
+    assert len(json.loads(records[0].read_text())['occurrences']) == 2
 
 
 def test_read_only_never_writes_project(tmp_path):
@@ -154,7 +156,8 @@ def test_isolated_run_records_into_its_work_unit_and_sweeps_wait_for_the_unit(tm
         capture.observe(project, isolated, {**event, 'item': {**event['item'], 'id': 'item7'}})
     capture.replay(project, isolated)
     assert capture.audit(isolated) == []
-    assert len(list((unit / 'docs/lessons-learned').glob('*.json'))) == 3
+    records = list((unit / 'docs/lessons-learned').glob('*.json'))
+    assert len(records) == 1 and len(json.loads(records[0].read_text())['occurrences']) == 3
     with patch.object(capture.subprocess, 'run', return_value=failure):
         capture.observe(project, isolated, {**event, 'item': {**event['item'], 'id': 'item8'}})
     # Another run's sweep leaves the Unit's capture pending while the Unit exists.
@@ -164,3 +167,120 @@ def test_isolated_run_records_into_its_work_unit_and_sweeps_wait_for_the_unit(tm
     shutil.rmtree(unit)  # The merged Unit was cleaned up.
     assert capture.apply_pending(project, writer) == 1
     assert len(list((project / 'docs/lessons-learned').glob('*.json'))) == 1
+
+
+def failed(identifier, command, exit_code=1, output='boom'):
+    return {'type': 'item.completed', 'item': {'type': 'command_execution', 'id': identifier, 'command': command,
+                                               'exit_code': exit_code, 'aggregated_output': output}}
+
+
+def test_same_signature_accumulates_in_one_record_across_runs(tmp_path):
+    lessons = tmp_path / 'docs/lessons-learned'
+    for run in ('r1', 'r2', 'r3'):
+        (tmp_path / run).mkdir()
+        state = {'statePath': str(tmp_path / run / 'state.json'), 'runId': run, 'agentId': 'work-a',
+                 'provider': 'codex', 'role': 'work'}
+        for item, command in (('i1', "/usr/bin/zsh -lc 'uv run pytest -q tests/a.py'"),
+                              ('i2', "/usr/bin/zsh -lc 'python3 -m pytest tests/b.py -k secret_TOKEN'")):
+            assert capture.observe(tmp_path, state, failed(item, command), 0)['saved']
+    records = list(lessons.glob('*.json'))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text())
+    assert record['id'] == capture.signature_id({'provider': 'codex', 'role': 'work', 'kind': 'test', 'code': 'command-exit-1'})
+    assert record['title'] == 'command-exit-1 (test, codex work)'
+    assert len(record['occurrences']) == 6 and record['status'] == 'unresolved'
+    assert 'secret_TOKEN' not in records[0].read_text() and 'pytest' not in records[0].read_text()
+    state['role'] = 'main'
+    capture.observe(tmp_path, state, failed('i3', "zsh -lc 'pytest'"), 0)
+    capture.observe(tmp_path, state, failed('i4', "zsh -lc 'pytest'", exit_code=2), 0)
+    assert len(list(lessons.glob('*.json'))) == 3  # Role and exit code split signatures.
+
+
+def test_command_kinds():
+    kinds = {
+        "/usr/bin/zsh -lc 'node tests/browser/chat-rendering.cjs --task-flow-only'": 'test',
+        "/usr/bin/zsh -lc 'npm test'": 'test',
+        "bash -lc 'python3 /p/scripts/lessons.py --project-root /w record --input x.json'": 'lessons-cli',
+        "/usr/bin/zsh -lc 'uv run ruff check .'": 'build',
+        "/usr/bin/zsh -lc 'cd x && rg -n foo src'": 'search',
+        "/usr/bin/zsh -lc 'git -C extension diff --check'": 'git',
+        "/usr/bin/zsh -lc \"python3 - <<'PY'\nprint(1)\nPY\"": 'script',
+        "/usr/bin/zsh -lc 'sed -n 1,5p a.py; cat b.py'": 'read',
+        "/usr/bin/zsh -lc 'FOO=1 mkdir -p out'": 'other',
+        "cd /w; ls; grep -rIl x . 2>/dev/null | head -20": 'read',
+    }
+    assert {command: capture.command_kind(command) for command in kinds} == kinds
+
+
+def test_grep_and_rg_without_matches_are_not_recorded(tmp_path):
+    run = tmp_path / 'run'
+    run.mkdir()
+    state = {'statePath': str(run / 'state.json'), 'runId': 'r1', 'agentId': 'a1', 'provider': 'codex', 'role': 'work'}
+    assert capture.observe(tmp_path, state, failed('i1', "/usr/bin/zsh -lc 'rg -n missing src'", output=''), 0) is None
+    assert capture.observe(tmp_path, state, failed('i2', "zsh -lc 'cd src && grep -r missing .'", output='\n'), 0) is None
+    claude = failed('i3', 'grep -r missing .', output=json.dumps('Exit code 1'))
+    assert capture.observe(tmp_path, {**state, 'provider': 'claude'}, claude, 0) is None
+    assert not (tmp_path / 'docs').exists() and not (run / 'lesson-capture').exists()
+    # Output, a different exit code or a later pipeline command make it an ordinary failure.
+    assert capture.observe(tmp_path, state, failed('i4', "zsh -lc 'rg -n x src'", output='rg: src: No such file'), 0)['saved']
+    assert capture.observe(tmp_path, state, failed('i5', "zsh -lc 'rg -n x src'", exit_code=2, output=''), 0)['saved']
+    assert capture.observe(tmp_path, state, failed('i6', "zsh -lc 'rg -n x src | wc -l'", output=''), 0)['saved']
+
+
+def test_later_success_of_the_same_command_marks_recovered(tmp_path):
+    run = tmp_path / 'run'
+    run.mkdir()
+    state = {'statePath': str(run / 'state.json'), 'runId': 'r1', 'agentId': 'a1', 'provider': 'codex', 'role': 'work'}
+    red = "/usr/bin/zsh -lc 'uv run pytest -q tests/test_new.py'"
+    capture.observe(tmp_path, state, failed('i1', red), 0)
+    capture.observe(tmp_path, state, failed('i2', "zsh -lc 'pytest tests/other.py'"), 0)
+    green = {'type': 'item.completed', 'item': {'type': 'command_execution', 'id': 'i3', 'command': red, 'exit_code': 0}}
+    assert capture.observe(tmp_path, state, green, 0)['saved']
+    occurrences = json.loads(next((tmp_path / 'docs/lessons-learned').glob('*.json')).read_text())['occurrences']
+    assert [o.get('recovered') for o in occurrences] == [True, None]
+    assert occurrences[0]['recoveredBy'] == 'i3' and 'recoveredAt' in occurrences[0]
+    assert capture.observe(tmp_path, state, {**green, 'item': {**green['item'], 'id': 'i4'}}, 0) is None
+    assert capture.audit(state) == []
+    # Another run's success does not recover this run's failure.
+    other = tmp_path / 'other'
+    other.mkdir()
+    assert capture.observe(tmp_path, {**state, 'statePath': str(other / 'state.json'), 'runId': 'r2'},
+                           {**green, 'item': {**green['item'], 'command': "zsh -lc 'pytest tests/other.py'"}}, 0) is None
+
+
+def test_recovery_of_a_read_only_run_stays_pending(tmp_path):
+    run = tmp_path / 'run'
+    run.mkdir()
+    state = {'statePath': str(run / 'state.json'), 'runId': 'r1', 'agentId': 'a1',
+             'executionPolicy': {'sandboxPolicy': {'type': 'read-only'}}}
+    capture.observe(tmp_path, state, failed('i1', 'make'), 0)
+    capture.observe(tmp_path, state, {'type': 'item.completed', 'item': {'type': 'command_execution', 'id': 'i2',
+                                                                         'command': 'make', 'exit_code': 0}}, 0)
+    pending = json.loads(Path(capture.audit(state)[0]).read_text())
+    assert pending['recovered'] is True and not (tmp_path / 'docs').exists()
+
+
+def test_claude_and_antigravity_command_failures_share_the_signature_scheme(tmp_path):
+    run = tmp_path / 'run'
+    run.mkdir()
+    base = {'statePath': str(run / 'state.json'), 'runId': 'r1', 'agentId': 'a1', 'role': 'work'}
+    claude = {'type': 'item.completed', 'item': {'id': 't1', 'type': 'command_execution', 'command': 'pytest -q',
+                                                 'status': 'failed', 'error': 'Exit code 1', 'exit_code': 1,
+                                                 'aggregated_output': json.dumps('Exit code 1\nFAILED')}}
+    unknown = {'type': 'item.completed', 'item': {'id': 't2', 'type': 'command_execution', 'command': 'ls /missing',
+                                                  'status': 'failed', 'error': 'Permission denied'}}
+    antigravity = {'type': 'item.completed', 'item': {'id': 's:1', 'type': 'command_execution', 'command': 'touch b.txt',
+                                                      'status': 'failed', 'error': 'denied', 'aggregated_output': ''}}
+    assert capture.classify(claude, {**base, 'provider': 'claude'})['code'] == 'command-exit-1'
+    assert capture.classify(unknown, {**base, 'provider': 'claude'}) == {
+        'provider': 'claude', 'role': 'work', 'kind': 'read', 'code': 'command-failed'}
+    assert capture.classify(antigravity, {**base, 'provider': 'antigravity'})['code'] == 'command-failed'
+    for event, provider in ((claude, 'claude'), (unknown, 'claude'), (antigravity, 'antigravity')):
+        assert capture.observe(tmp_path, {**base, 'provider': provider}, event, 0)['saved']
+    titles = sorted(json.loads(p.read_text())['title'] for p in (tmp_path / 'docs/lessons-learned').glob('*.json'))
+    assert titles == ['command-exit-1 (test, claude work)', 'command-failed (other, antigravity work)',
+                      'command-failed (read, claude work)']
+    # A completed command without an exit code (how both report success) recovers the failure.
+    done = {'type': 'item.completed', 'item': {'id': 't3', 'type': 'command_execution', 'command': 'pytest -q',
+                                               'status': 'completed'}}
+    assert capture.observe(tmp_path, {**base, 'provider': 'claude'}, done, 0)['saved']

@@ -154,3 +154,14 @@ def test_submodule_root_without_workspace_lessons_is_allowed(tmp_path):
     (tmp_path / 'extension').mkdir()
     seed(tmp_path / 'extension')
     assert (tmp_path / 'extension/docs/lessons-learned/demo.json').is_file()
+
+
+def test_record_marks_a_known_occurrence_recovered_once(tmp_path):
+    value = seed(tmp_path)
+    lessons.operate(tmp_path, 'record', {**value, 'recovered': True, 'recoveredBy': 'item-9'})
+    occurrence = lessons.find(tmp_path, 'demo')['occurrences'][0]
+    assert (occurrence['recovered'], occurrence['recoveredBy']) == (True, 'item-9')
+    stamp = occurrence['recoveredAt']
+    lessons.operate(tmp_path, 'record', {**value, 'recovered': True, 'recoveredBy': 'item-10'})
+    again = lessons.find(tmp_path, 'demo')['occurrences']
+    assert len(again) == 1 and (again[0]['recoveredBy'], again[0]['recoveredAt']) == ('item-9', stamp)

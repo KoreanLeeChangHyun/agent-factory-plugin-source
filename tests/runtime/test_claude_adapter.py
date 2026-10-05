@@ -13,6 +13,7 @@ from contextlib import redirect_stdout
 
 from native_fixtures import runtime
 from adapters import provider_for, claude
+from execution import lessons as lesson_capture
 from execution.prompts import PromptParts
 from execution.usage import UsageAccumulator
 
@@ -469,6 +470,14 @@ class ClaudeAdapterCompletenessTests(unittest.TestCase):
             {"type": "tool_result", "tool_use_id": "b", "content": "Exit code 2\nnpm ERR! test failed", "is_error": True}]}})
         self.assertEqual((done[0]["item"]["status"], done[0]["item"]["exit_code"]), ("failed", 2))
         self.assertEqual(done[0]["item"]["error"], "Exit code 2\nnpm ERR! test failed")
+        state = {"provider": "claude", "role": "work"}
+        self.assertEqual(lesson_capture.classify(done[0], state),
+                         {"provider": "claude", "role": "work", "kind": "test", "code": "command-exit-2"})
+        events.translate({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "c", "name": "Bash", "input": {"command": "sleep 900"}}]}})
+        timeout = events.translate({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "c", "content": "Command timed out", "is_error": True}]}})
+        self.assertEqual(lesson_capture.classify(timeout[0], state)["code"], "command-failed")
 
     def test_thinking_becomes_a_reasoning_item_once(self):
         events = self.events()
