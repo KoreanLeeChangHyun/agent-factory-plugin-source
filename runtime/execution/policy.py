@@ -5,9 +5,8 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import stat
-import subprocess
+import subprocess  # noqa: F401 - tests patch subprocess through this module
 
 from storage.files import AGENT_ID
 

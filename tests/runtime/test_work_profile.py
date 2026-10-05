@@ -1,4 +1,4 @@
-import runtime_test_home
+import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
 import hashlib
 import json
 import os

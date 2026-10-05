@@ -1,5 +1,5 @@
 """Antigravity (agy) provider selection, launch arguments and recorded stream translation."""
-import runtime_test_home
+import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
 import json
 import tempfile
 import unittest

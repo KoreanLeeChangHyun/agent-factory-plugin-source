@@ -1,5 +1,5 @@
 """Claude Goal: /goal setup before the request, recorded outcome and runtime controls."""
-import runtime_test_home  # Isolate all runtime subprocesses from the real home.
+import runtime_test_home  # Isolate all runtime subprocesses from the real home.  # noqa: F401 - imported for its side effect: isolates the runtime home
 
 import io
 import json
@@ -180,7 +180,7 @@ class ClaudeGoalControlTests(unittest.TestCase):
                 runtime.atomic_write_json(path, {"agentId": "main-c", "role": "main", "goal": goal, "goalMode": True})
                 stopped = []
                 services, emitted, _ = self.services(root, [{"runId": "run-1", "status": "running"}],
-                                                     lambda agent, run: stopped.append((agent, run)))
+                                                     lambda agent, run: stopped.append((agent, run)))  # noqa: B023 - the closure is only called within this iteration
                 session = runtime.safe_read_json(path)
                 args = SimpleNamespace(agent="main-c", action=action)
                 self.assertEqual(control.goal_command(services, args, root, session), 0)

@@ -267,11 +267,11 @@ class AgentLoopContractTests(unittest.TestCase):
                 saved = self.agent_exec.safe_read_json(Path(started["statePath"]))
                 child = saved["currentChild"]
                 def cancel(arguments):
-                    stopped = self.agent_exec.safe_read_json(Path(started["statePath"]))
+                    stopped = self.agent_exec.safe_read_json(Path(started["statePath"]))  # noqa: B023 - the closure is only called within this iteration
                     self.assertEqual(stopped["status"], "cancelled")
                     self.assertTrue(stopped["stopPending"])
-                    self.assertEqual(arguments, ["cancel", "--agent", child["agentId"], "--run-id", child["runId"]])
-                    self.runtime.runs[(child["agentId"], child["runId"])]["status"] = "cancelled"
+                    self.assertEqual(arguments, ["cancel", "--agent", child["agentId"], "--run-id", child["runId"]])  # noqa: B023 - the closure is only called within this iteration
+                    self.runtime.runs[(child["agentId"], child["runId"])]["status"] = "cancelled"  # noqa: B023 - the closure is only called within this iteration
                     return {"kind": "ack"}
                 with mock.patch.object(self.runtime, "call", create=True, side_effect=cancel) as command:
                     result = self.stop_task(started)
@@ -667,7 +667,7 @@ class AgentLoopContractTests(unittest.TestCase):
         self.tasks.write_text(json.dumps(document))
         original = self.tasks.read_bytes()
         started = self.start(['--task-mode', 'work'])
-        for task, content in zip(started['workflow']['tasks'], (first_content, second_content)):
+        for task, content in zip(started['workflow']['tasks'], (first_content, second_content), strict=False):
             snapshot = Path(task['requestPath']).read_bytes()
             self.assertEqual(snapshot, content)
             self.assertEqual(task['requestHash'], hashlib.sha256(snapshot).hexdigest())
@@ -826,7 +826,7 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertEqual(len(set(run_ids)), 6)
         self.assertEqual(len(session_ids), 1)
         self.assertEqual(self.tasks.read_bytes(), original_list)
-        for task, content in zip(document['tasks'], contents):
+        for task, content in zip(document['tasks'], contents, strict=False):
             self.assertEqual(Path(task['requestFile']).read_bytes(), content)
         self.assertEqual([task['workRunId'] for task in snapshot['workflow']['tasks']], run_ids)
         self.assertEqual(snapshot['status'], 'completed')

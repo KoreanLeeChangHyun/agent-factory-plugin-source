@@ -113,8 +113,8 @@ def require_clean_tracking_repo(cwd: Path, expected_remote: str | None) -> str:
         raise fail(f"{cwd} must be on branch main.")
     try:
         upstream = git(cwd, "rev-parse", "--abbrev-ref", "@{upstream}")
-    except SystemExit:
-        raise fail(f"{cwd} main must track origin/main.")
+    except SystemExit as error:
+        raise fail(f"{cwd} main must track origin/main.") from error
     if upstream != "origin/main":
         raise fail(f"{cwd} main tracks {upstream}, expected origin/main.")
     for marker in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"):

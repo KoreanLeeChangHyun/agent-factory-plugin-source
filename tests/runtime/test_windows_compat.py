@@ -1,5 +1,5 @@
 """Mocked Windows contracts; they do not prove native Windows execution."""
-import runtime_test_home
+import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
 
 import ctypes
 import importlib.util

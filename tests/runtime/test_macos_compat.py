@@ -1,5 +1,5 @@
 """Mocked Darwin contracts plus an opt-in-by-host native lifecycle regression."""
-import runtime_test_home
+import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
 
 import ctypes
 import errno

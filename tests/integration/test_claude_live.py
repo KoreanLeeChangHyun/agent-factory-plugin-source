@@ -2,7 +2,7 @@
 
 AF_TEST_CLAUDE_LIVE=1 PYTHONPATH=tests/support:tests/integration python3 -m unittest test_claude_live
 """
-import runtime_test_home
+import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
 import json
 import os
 from pathlib import Path

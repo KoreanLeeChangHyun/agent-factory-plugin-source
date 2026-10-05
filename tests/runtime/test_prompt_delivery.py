@@ -1,5 +1,5 @@
 """Instruction delivery contracts; no model or live session is needed."""
-import runtime_test_home
+import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
 import io
 import json
 import os
@@ -189,7 +189,7 @@ class PromptDeliveryTests(unittest.TestCase):
                     self.parts()
         for contents in (b"", b"\xff"):
             with mock.patch.object(process_transport, "safe_read_bytes", side_effect=
-                                   lambda path, limit: contents if path.name == "communication.md" else b"Valid role"):
+                                   lambda path, limit: contents if path.name == "communication.md" else b"Valid role"):  # noqa: B023 - the closure is only called within this iteration
                 with self.assertRaises(runtime.ContractError) as error:
                     self.parts()
                 self.assertEqual(error.exception.code, "communication_invalid")
@@ -291,8 +291,8 @@ class PromptDeliveryTests(unittest.TestCase):
                 original = rpc.call
                 def call(method, params, timeout=15):
                     if method == "thread/inject_items":
-                        raise native.RpcError(method, {"code": code, "message": "unavailable"})
-                    return original(method, params, timeout)
+                        raise native.RpcError(method, {"code": code, "message": "unavailable"})  # noqa: B023 - the closure is only called within this iteration
+                    return original(method, params, timeout)  # noqa: B023 - the closure is only called within this iteration
                 rpc.call = call
                 parts = self.parts()
                 if code == -32601:

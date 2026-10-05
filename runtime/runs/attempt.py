@@ -218,7 +218,7 @@ def run_codex_attempt(
     active_session: str | None = None
     final_messages: list[str] = []
     publication_failed = False
-    started_at = time.monotonic()
+    started_at = time.monotonic()  # noqa: F841 - unused, but the clock read stays: tests sequence time.monotonic calls
     # Legacy session timeout fields must not terminate valid ongoing work.
     start_deadline = float("inf")
     turn_deadline = float("inf")
@@ -316,25 +316,25 @@ def run_codex_attempt(
                     and type(event.get("contextWindowTokens")) is int):
                 context_usage = {"usedTokens": event["usedTokens"], "contextWindowTokens": event["contextWindowTokens"]}
                 runtime.update_json(state_path, state_path.parent / ".state.lock",
-                            lambda value: value.update({"contextUsage": {**(value.get("contextUsage") or {}), **context_usage}}))
+                            lambda value: value.update({"contextUsage": {**(value.get("contextUsage") or {}), **context_usage}}))  # noqa: B023 - update_json calls the lambda before the next iteration
             if event.get("type") == "provider.rate_limits":
                 limits = {key: event[key] for key in ("fiveHourUsedPercent", "weeklyUsedPercent",
                                                         "fiveHourResetsAt", "weeklyResetsAt")
                           if type(event.get(key)) in (int, float)}
                 if limits:
                     runtime.update_json(state_path, state_path.parent / ".state.lock",
-                                lambda value: value.update({"contextUsage": {**(value.get("contextUsage") or {}), **limits}}))
+                                lambda value: value.update({"contextUsage": {**(value.get("contextUsage") or {}), **limits}}))  # noqa: B023 - update_json calls the lambda before the next iteration
             if (event.get("type") == "plan.progress" and type(event.get("total")) is int and type(event.get("completed")) is int
                     and 0 < event["total"] <= 200 and 0 <= event["completed"] <= event["total"]):
                 progress = {"completed": event["completed"], "total": event["total"]}
                 runtime.update_json(state_path, state_path.parent / ".state.lock",
-                            lambda value: value.update({"planProgress": progress}))
+                            lambda value: value.update({"planProgress": progress}))  # noqa: B023 - update_json calls the lambda before the next iteration
             if event.get("type") == "native.commentary":
                 # The agent's latest own words, one line, so a status list can say what it is doing.
                 line = first_line(event.get("text"))
                 if line:
                     runtime.update_json(state_path, state_path.parent / ".state.lock",
-                                lambda value: value.update({"activity": line}))
+                                lambda value: value.update({"activity": line}))  # noqa: B023 - update_json calls the lambda before the next iteration
             if event.get("type") == "goal.error":
                 runtime.record_goal_uncertainty(state_path, str(event.get("message", "Native Goal state unconfirmed")))
             if event.get("type") == "thread.started":
@@ -362,7 +362,7 @@ def run_codex_attempt(
                     state_path.parent / ".state.lock",
                     lambda value: value.update(
                         {
-                            "status": "running", "sessionId": observed,
+                            "status": "running", "sessionId": observed,  # noqa: B023 - update_json calls the lambda before the next iteration
                             "startedAt": runtime.now(), "startDisposition": "started",
                         }
                     ),
@@ -371,7 +371,7 @@ def run_codex_attempt(
                 saved = {key: session[key] for key in ("model", "reasoningEffort", "fast", "goalMode") if key in session}
                 saved.update(runtime.adapters.for_session(session).persisted_fields(session))
                 saved["sessionId"] = observed
-                runtime.update_json(session_path, session_path.parent / ".session-state.lock", lambda value: value.update(saved))
+                runtime.update_json(session_path, session_path.parent / ".session-state.lock", lambda value: value.update(saved))  # noqa: B023 - update_json calls the lambda before the next iteration
             publication_status = runtime.result_publication_failure(event, state["resultPath"])
             if publication_status is not None:
                 publication_failed = publication_status
@@ -431,14 +431,13 @@ def run_codex_attempt(
         or result_info.st_size == 0
     ):
         raise runtime.AttemptFailure("result_file_invalid", "Agent result path is unsafe", True)
-    validated_receipt = None
     if terminal["status"] == "completed" and state.get("role") in {"work", "verification"}:
         try:
             if runtime.structured_receipt(state):
                 # Contract 2: the runtime writes the receipt from the Agent's own judgment fields.
                 runtime.publish_structured_receipt(
                     project_root, state, terminal, agent_id=expected_agent_id, run_id=expected_run_id)
-            validated_receipt = runtime.validate_receipt(
+            runtime.validate_receipt(
                 project_root, state, agent_id=expected_agent_id, run_id=expected_run_id)
         except runtime.ContractError as error:
             raise runtime.AttemptFailure(error.code, error.message, True) from error
@@ -578,11 +577,11 @@ def worker(runtime, args: argparse.Namespace) -> int:
                         state_path.parent / ".state.lock",
                         lambda value: value.update(
                             {
-                                "attempt": attempt,
+                                "attempt": attempt,  # noqa: B023 - update_json calls the lambda before the next iteration
                                 "codexPid": None,
                                 "codexIdentity": None,
                                 "status": "queued",
-                                "startDisposition": disposition,
+                                "startDisposition": disposition,  # noqa: B023 - update_json calls the lambda before the next iteration
                             }
                         ),
                     )

@@ -1,5 +1,5 @@
 """Provider identity, permission fidelity and stream/result protocol regressions."""
-import runtime_test_home
+import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
 import base64
 import io
 import json
@@ -524,7 +524,7 @@ class ClaudeAdapterCompletenessTests(unittest.TestCase):
                  ("unknown", 0, False), ("", 1, False))
         for version, code, expected in cases:
             def run(argv, **_kwargs):
-                return mock.Mock(returncode=code, stdout=version) if argv[-1] == "--version" else mock.Mock(returncode=0, stdout=help_text)
+                return mock.Mock(returncode=code, stdout=version) if argv[-1] == "--version" else mock.Mock(returncode=0, stdout=help_text)  # noqa: B023 - the closure is only called within this iteration
             with self.subTest(version=version), mock.patch.object(claude.capabilities.subprocess, "run", side_effect=run):
                 capabilities = claude.inspect_capabilities("claude", refresh=True)
                 self.assertTrue(capabilities["submit"]["model"])

@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import home_fixtures
+import home_fixtures  # noqa: F401 - imported for its side effect: isolates the runtime home
 from adapters.codex import policy as codex_policy
 from execution import policy
 

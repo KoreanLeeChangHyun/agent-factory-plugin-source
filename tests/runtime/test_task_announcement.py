@@ -1,4 +1,4 @@
-import runtime_test_home
+import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
 import copy
 import json
 import os
@@ -57,7 +57,7 @@ class TaskAnnouncementTests(unittest.TestCase):
         self.assertEqual(record['runtimeBinding'], self.state['runtimeBinding'])
         self.assertEqual(result['taskFlow'], self.announcement.task_flow(saved))
         self.assertEqual(len(result['taskFlow']['tasks']), 6)
-        for source, task, flow in zip(self.document['tasks'], saved['tasks'], result['taskFlow']['tasks']):
+        for source, task, flow in zip(self.document['tasks'], saved['tasks'], result['taskFlow']['tasks'], strict=False):
             for key in ('id', 'title', 'description', 'completionCriteria'):
                 self.assertEqual(source[key], task[key])
                 self.assertEqual(source[key], flow[key])

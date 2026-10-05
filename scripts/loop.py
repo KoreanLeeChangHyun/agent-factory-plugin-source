@@ -743,7 +743,7 @@ def start_loop_captured(args: argparse.Namespace) -> dict[str, Any]:
     with agent_exec.file_lock(directory / ".loop.lock"):
         pass
     workflow_tasks = []
-    for index, (task, content) in enumerate(zip(tasks, task_requests)):
+    for index, (task, content) in enumerate(zip(tasks, task_requests, strict=False)):
         request_path = directory / f"task-{index}.md"
         agent_exec.atomic_write(request_path, content)
         workflow_tasks.append({**task, "requestPath": str(request_path), "workStatus": "pending", "verificationStatus": "pending"})

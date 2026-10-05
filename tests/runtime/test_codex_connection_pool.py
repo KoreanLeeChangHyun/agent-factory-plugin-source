@@ -1,5 +1,5 @@
 """Retained connections keep exact sessions and clean up on owner/client loss."""
-import runtime_test_home
+import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
 import json
 import io
 from unittest import mock

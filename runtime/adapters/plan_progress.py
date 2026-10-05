@@ -18,7 +18,7 @@ def plan_progress(steps, *, text_keys=("activeForm", "content", "step")):
     if not all(isinstance(status, str) for status in statuses):
         return None
     event = {"type": "plan.progress", "completed": sum(status in COMPLETED for status in statuses), "total": len(steps)}
-    active = next((step for step, status in zip(steps, statuses) if status in ACTIVE), None)
+    active = next((step for step, status in zip(steps, statuses, strict=False) if status in ACTIVE), None)
     text = next((active.get(key) for key in text_keys if isinstance(active, dict) and isinstance(active.get(key), str)
                  and active.get(key).strip()), None)
     if text:

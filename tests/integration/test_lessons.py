@@ -1,6 +1,5 @@
 """Exercise persisted lesson lifecycle with real document synchronization."""
 import importlib.util
-import json
 from pathlib import Path
 import sys
 

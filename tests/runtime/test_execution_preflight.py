@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 from unittest import mock
 
-import home_fixtures
+import home_fixtures  # noqa: F401 - imported for its side effect: isolates the runtime home
 from execution import policy as execution_policy
 from adapters.codex import preflight
 

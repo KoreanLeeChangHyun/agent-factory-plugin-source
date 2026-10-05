@@ -1,0 +1,28 @@
+# Lint command, run from the checkout root (exits 0 on a clean tree):
+#   uv run --no-project --with "ruff>=0.16,<0.17" ruff check --no-cache
+# In an environment installed from requirements.txt: python -m ruff check --no-cache
+# Never run `ruff check --fix` or `ruff format` here: fixes would delete intentional
+# re-exports and side-effect imports. Review every edit by hand.
+
+# Lowest supported interpreter (the manual verification workflow tests 3.10 and 3.12).
+target-version = "py310"
+
+# Only the Python source trees are linted; skills/ and distribution/hosts/ hold documents
+# and host metadata, not code.
+include = [
+    "runtime/**/*.py",
+    "scripts/**/*.py",
+    "distribution/**/*.py",
+    "tests/**/*.py",
+]
+
+[lint]
+# Correctness only: pyflakes, syntax errors and bugbear. No stylistic rules, no formatter.
+select = ["F", "E9", "B"]
+
+[lint.per-file-ignores]
+# The script hosts the domain modules: it re-exports their names so `runtime.<name>` lookups
+# and test patches applied to this module resolve here (see AGENTS.md). Never delete them.
+"scripts/exec.py" = ["F401"]
+# Provider packages expose the common ProviderAdapter contract from their `__init__`.
+"runtime/adapters/*/__init__.py" = ["F401"]

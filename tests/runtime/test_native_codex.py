@@ -1,7 +1,7 @@
 """Focused native transport regressions; intended for independent Verification."""
 from __future__ import annotations
 
-import runtime_test_home  # Isolate all runtime subprocesses from the real home.
+import runtime_test_home  # Isolate all runtime subprocesses from the real home.  # noqa: F401 - imported for its side effect: isolates the runtime home
 
 import io
 import json

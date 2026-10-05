@@ -1,5 +1,5 @@
 """Policy persistence and launch boundaries, with isolated external processes."""
-import runtime_test_home
+import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
 import io
 import json
 import tempfile

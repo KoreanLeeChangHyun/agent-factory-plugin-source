@@ -1,5 +1,5 @@
 """Work Goal lifecycle and receipts, isolated from real providers and runtime data."""
-import runtime_test_home
+import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
 import io
 import json
 import tempfile

@@ -1,8 +1,8 @@
 """Codex sessions stream through app-server whenever the installed protocol can carry instructions."""
-import runtime_test_home
+import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
 import unittest
 from unittest import mock
-from native_fixtures import runtime
+from native_fixtures import runtime  # noqa: F401 - kept: importing the fixture loads the runtime script
 
 import adapters.codex as codex
 import storage.files

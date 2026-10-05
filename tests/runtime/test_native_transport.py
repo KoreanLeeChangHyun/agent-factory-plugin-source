@@ -119,12 +119,12 @@ class ActivationAndFramingRegressions(unittest.TestCase):
                     {'method': 'turn/completed', 'params': {'threadId': 'thread-exact', 'turn': {'id': 'last', 'status': status, 'error': {'message': 'native final failure'}}}},
                 ]
                 def delayed_setup(prompt):
-                    ready = setup(prompt)
-                    rpc.goal['status'] = 'complete'
-                    rpc.history = [{'id': 'first', 'status': 'completed'}, {'id': 'last', 'status': status}]
+                    ready = setup(prompt)  # noqa: B023 - the closure is only called within this iteration
+                    rpc.goal['status'] = 'complete'  # noqa: B023 - the closure is only called within this iteration
+                    rpc.history = [{'id': 'first', 'status': 'completed'}, {'id': 'last', 'status': status}]  # noqa: B023 - the closure is only called within this iteration
                     return ready
                 bridge.setup = delayed_setup
-                rpc.event = lambda: events.pop(0)
+                rpc.event = lambda: events.pop(0)  # noqa: B023 - the closure is only called within this iteration
                 with self.assertRaisesRegex(native.NativeError, status):
                     bridge.run('Main role and exact request')
                 emitted = [json.loads(line) for line in output.getvalue().splitlines()]

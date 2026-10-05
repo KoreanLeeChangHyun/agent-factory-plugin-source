@@ -1,19 +1,16 @@
 """Home isolation, relocation and migration regressions for Verification only."""
 from __future__ import annotations
 import runtime_test_home
-import hashlib
 import importlib.util
 import json
 import os
 import subprocess
 import sys
 import unittest
-import uuid
 from pathlib import Path
 from unittest import mock
 
 from home_fixtures import HomeRuntimeFixture, RUNTIME, paths, migration
-from adapters.codex import policy as permissions
 
 class HomeRuntimeTests(HomeRuntimeFixture, unittest.TestCase):
     def test_discovery_does_not_initialize_and_init_is_idempotent(self):

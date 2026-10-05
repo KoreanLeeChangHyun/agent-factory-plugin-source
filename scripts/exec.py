@@ -654,7 +654,7 @@ class Heartbeat:
                 "observedAt": now(),
             }
         atomic_write_json(self.path, value)
-        fact = "process_alive" if process_identity_status(value.get("codexIdentity")) == "match" else "unreachable"
+        fact = "process_alive" if process_identity_status(value.get("codexIdentity")) == "match" else "unreachable"  # noqa: F841 - unused, but the identity probe stays: removing a call is not a lint-only change
 
 
 def __getattr__(name):

@@ -80,7 +80,7 @@ def prepare(runtime, state, loop_path, save):
         identity = hashlib.sha256((str(root) + "\0" + state["loopId"] + "\0" + task["workflowId"] + "\0" + task["taskId"]).encode()).hexdigest()[:24]
         home = Path(runtime.runtime_paths.resolve(root)["runtimeRoot"]) / "worktrees" / ("task-" + identity)
         units = []
-        for index, repo in enumerate(config["repositories"]):
+        for repo in config["repositories"]:
             source = Path(repo["repositoryRoot"])
             suffix = hashlib.sha256(str(source).encode()).hexdigest()[:12]
             branch = "agent-factory/task-" + identity + "-" + suffix
