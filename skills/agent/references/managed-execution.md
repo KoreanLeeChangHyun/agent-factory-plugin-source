@@ -119,7 +119,7 @@
   follow [the Agent graph](../SKILL.md#roles-and-graph).
 - Completed runs publish validated `receipt.json` beside `result.md`.
 - Unsaved error captures never fail a run: its status reports them as `pendingLessons` and a
-  later writable run records them ([lifecycle CLI](../../document/references/lessons-learned.md#lifecycle-cli)).
+  later writable run records them ([runtime capture](../../document/references/lessons-learned.md#runtime-capture)).
 - Work receipts identify the request, project-root-relative changed paths and addressed
   finding IDs for revisions.
 - Each Work run captures its response contract at creation (`responseContract` in its status;

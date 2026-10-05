@@ -185,8 +185,12 @@ def operate(root, action, data):
                 'occurrences': [], 'applications': [], 'candidates': [], 'publications': []}
             if record['category'] != data['category'] or record['scope'] != data['scope']:
                 raise ValueError('Cannot merge different categories or scopes')
-            if not any(e['occurrenceId'] == data['occurrenceId'] for e in record['occurrences']):
+            known = next((e for e in record['occurrences'] if e['occurrenceId'] == data['occurrenceId']), None)
+            if known is None:
                 record['occurrences'].append({**data, 'recordedAt': stamp()})
+            elif data.get('recovered') is True and known.get('recovered') is not True:
+                # A later success in the same run marks the stored occurrence; nothing else changes.
+                known.update(recovered=True, recoveredBy=data.get('recoveredBy'), recoveredAt=stamp())
             return save(root, record)
         if action in ('retrieve', 'audit'):
             found = records(root)

@@ -10,6 +10,7 @@ from native_fixtures import runtime
 from adapters import provider_for, antigravity
 from adapters.antigravity import command, policy
 from adapters.antigravity.events import Events, split_answer
+from execution import lessons as lesson_capture
 from execution.prompts import PromptParts
 
 CONVERSATION = "c3e9eb44-b219-40bb-9d33-de43e12bccee"
@@ -368,6 +369,8 @@ class AntigravityEventTests(unittest.TestCase):
         failed = events[-1]["item"]
         self.assertEqual((failed["type"], failed["status"]), ("command_execution", "failed"))
         self.assertIn("denied permission", failed["error"])
+        self.assertEqual(lesson_capture.classify(events[-1], {"provider": "antigravity", "role": "work"}),
+                         {"provider": "antigravity", "role": "work", "kind": "other", "code": "command-failed"})
 
     def test_prose_before_the_result_object_stays_commentary(self):
         # Recorded from gpt-oss-120b-medium: prose and the result object in one response.

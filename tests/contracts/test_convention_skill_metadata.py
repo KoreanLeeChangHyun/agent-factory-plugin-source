@@ -272,7 +272,7 @@ class ConventionSkillMetadataTests(unittest.TestCase):
         self.assertEqual(
             {path.name for path in (ROOT / "scripts").glob("*.py")},
             {"exec.py", "loop.py", "lessons.py", "catalog_documents.py", "export_documents.py",
-             "migrate_document_paths.py", "search_documents.py", "sync_documents.py"},
+             "migrate_document_paths.py", "migrate_runtime_lessons.py", "search_documents.py", "sync_documents.py"},
         )
 
     def test_legacy_artifacts_are_excluded_and_runtime_state_is_ignored(self):
