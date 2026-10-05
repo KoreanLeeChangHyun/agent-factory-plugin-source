@@ -111,9 +111,12 @@ def test_replay_retries_a_transient_recording_failure(tmp_path):
         calls.append(args)
         return failure if len(calls) == 1 else real_run(*args, **kwargs)
 
-    with patch.object(capture.subprocess, 'run', side_effect=flaky), patch.object(capture.time, 'sleep') as sleep:
+    # Replace only this module's `time`: the real subprocess.run above polls the child with
+    # the global time.sleep, so patching that one counts a timing-dependent number of polls.
+    with patch.object(capture.subprocess, 'run', side_effect=flaky), patch.object(capture, 'time') as clock:
         capture.replay(tmp_path, state)
-    assert len(calls) == 2 and sleep.call_count == 1
+    assert len(calls) == 2
+    clock.sleep.assert_called_once_with(capture.REPLAY_BACKOFF_SECONDS)
     assert capture.audit(state) == []
 
 

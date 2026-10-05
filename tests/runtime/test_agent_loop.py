@@ -447,12 +447,12 @@ class AgentLoopContractTests(unittest.TestCase):
             "drive", "--project-root", str(self.root), "--work-agent", "work-agent",
             "--loop-id", "loop-test",
         ])
-        result = {"loopId": "loop-test", "statePath": str(self.root / "state.json")}
+        directory = self.agent_loop.loop_directory(self.root, "work-agent", "loop-test", create=True)
+        result = {"loopId": "loop-test", "statePath": str(directory / "state.json")}
         launched = mock.Mock(returncode=0, stderr="")
         with mock.patch.object(self.agent_loop.sys, "platform", "linux"), \
              mock.patch.object(self.agent_exec, "systemd_manager_usable", return_value=True), \
-             mock.patch.object(self.agent_exec, "create_systemd_environment_file",
-                               side_effect=lambda: (os.open(os.devnull, os.O_RDONLY), "/proc/mock/env")), \
+             mock.patch.dict(os.environ, {"AGENT_FACTORY_FIXTURE": 'quoted "value"'}), \
              mock.patch.object(self.agent_exec, "_systemd_command", return_value=launched) as command, \
              mock.patch.object(self.agent_loop.subprocess, "Popen") as popen:
             self.agent_loop.launch_driver(args, result)
@@ -463,6 +463,13 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertIn("--property=KillMode=control-group", options)
         self.assertIn(str(self.root), options)
         popen.assert_not_called()
+        # Restart=on-failure rereads EnvironmentFile after the launcher exits: it must outlive this process.
+        environment = directory / self.agent_loop.DRIVER_ENVIRONMENT_FILE
+        self.assertIn(f"--property=EnvironmentFile={environment}", options)
+        self.assertFalse(any("/proc/" in option for option in options))
+        self.assertIn(b'AGENT_FACTORY_FIXTURE="quoted \\"value\\""\n', environment.read_bytes())
+        if os.name == "posix":
+            self.assertEqual(environment.stat().st_mode & 0o777, 0o600)
 
     def test_linux_driver_fails_closed_without_user_service(self):
         args = self.agent_loop.build_parser().parse_args([
@@ -1472,6 +1479,67 @@ class AgentLoopContractTests(unittest.TestCase):
         state = self.reconcile({"loopId": persisted["loopId"]})
         self.assertEqual(self.runtime.dispatches[0]["dispatch_id"], dispatch_id)
         self.assertIsNone(state["pendingDispatch"])
+
+    def loop_main(self, command, loop_id, *extra):
+        with mock.patch.object(self.agent_loop, "emit") as emit:
+            self.assertEqual(self.agent_loop.main([
+                command, "--project-root", str(self.root), "--work-agent", "work-agent", "--loop-id", loop_id, *extra]), 0)
+        return emit.call_args.args[0]
+
+    def test_start_dispatch_failure_stops_the_loop_instead_of_leaving_it_driverless(self) -> None:
+        self.runtime.fail_before_call = True
+        with mock.patch.object(self.agent_loop, "launch_driver") as launch, mock.patch.object(self.agent_loop, "emit") as emit:
+            self.assertEqual(self.agent_loop.main([
+                "start", "--project-root", str(self.root), "--request-file", str(self.request),
+                "--task-list-file", str(self.tasks), "--task-id", "task-one", "--work-agent", "work-agent",
+                "--verification-agent", "verification-agent", "--codex", "/bin/true"]), 2)
+        launch.assert_not_called()
+        self.assertEqual(emit.call_args.args[0]["error"]["code"], "child_runtime_failure")
+        loops = next((self.agent_exec.agent_root(self.root) / "work-agent" / "loops").iterdir())
+        stopped = self.agent_exec.safe_read_json(loops / "state.json")
+        self.assertEqual((stopped["status"], stopped["phase"]), ("runtime-error", "control-plane-error"))
+        self.assertEqual(stopped["controlPlaneError"]["code"], "child_runtime_failure")
+        self.assertEqual(stopped["workflow"]["tasks"][0]["workStatus"], "blocked")
+        # The durable intent survives; an explicit reconcile completes it and gives the loop a driver.
+        self.assertIsNotNone(stopped["pendingDispatch"])
+        self.runtime.fail_before_call = False
+        with mock.patch.object(self.agent_loop, "launch_driver") as launch:
+            resumed = self.loop_main("reconcile", stopped["loopId"])
+        self.assertEqual(resumed["status"], "active")
+        self.assertEqual(self.runtime.dispatches[0]["dispatch_id"], stopped["pendingDispatch"]["dispatchId"])
+        launch.assert_called_once()
+
+    def test_reactivating_commands_relaunch_a_driver_only_when_none_runs(self) -> None:
+        started = self.start()
+        path = Path(started["statePath"])
+        with mock.patch.object(self.agent_loop, "launch_driver") as launch:
+            with self.agent_exec.file_lock(path.parent / ".driver.lock"):
+                self.assertEqual(self.loop_main("reconcile", started["loopId"])["status"], "active")
+            launch.assert_not_called()
+            self.assertEqual(self.loop_main("reconcile", started["loopId"])["status"], "active")
+            launch.assert_called_once()
+        stopped = self.agent_exec.safe_read_json(path)
+        stopped.update(status="runtime-error", phase="control-plane-error",
+                       controlPlaneError={"code": "child_runtime_failure", "message": "fixture"})
+        self.agent_exec.atomic_write_json(path, stopped)
+        with mock.patch.object(self.agent_loop, "launch_driver", side_effect=OSError("unit exists")) as launch:
+            skipped = self.loop_main("skip", started["loopId"], "--actor", "human",
+                                     "--authorization-reference", "test-request", "--decision-evidence", "Skip Verification")
+        launch.assert_called_once()
+        # A failed relaunch never stops the loop: an explicit reconcile still advances it.
+        self.assertEqual(skipped["status"], "active")
+        self.assertEqual(self.agent_exec.safe_read_json(path)["status"], "active")
+
+    def test_driver_removes_its_environment_file_when_the_loop_stops(self) -> None:
+        started = self.start()
+        path = Path(started["statePath"])
+        environment = path.parent / self.agent_loop.DRIVER_ENVIRONMENT_FILE
+        environment.write_text("NAME=value\n")
+        stopped = self.agent_exec.safe_read_json(path)
+        stopped.update(status="runtime-error")
+        self.agent_exec.atomic_write_json(path, stopped)
+        self.assertEqual(self.loop_main("drive", started["loopId"])["status"], "runtime-error")
+        self.assertFalse(environment.exists())
 
     def test_outside_graph_role_is_rejected(self) -> None:
         state = self.start()
@@ -2535,6 +2603,34 @@ class WorkspacePlanDispatchBindingTests(unittest.TestCase):
                     self.assertNotEqual(workspace["path"], str(self.root))
                     self.assertEqual(roots, [workspace["path"]])
                 self.assertEqual(run["executionPolicy"], run["dispatchTuple"]["executionPolicy"])
+
+    def test_retried_start_returns_the_running_loop_without_stopping_it(self):
+        agent, plan = self.plans()[1]
+        workspace_file = self.root / (agent + "-workspace.json")
+        workspace_file.write_text(json.dumps(plan))
+        arguments = ["start", "--project-root", str(self.root), "--request-file", str(self.brief), "--task-mode", "work",
+                     "--work-agent", agent, "--codex", "/bin/true", "--work-isolation", "--workspace-file", str(workspace_file)]
+        with mock.patch.object(self.agent_loop, "launch_driver") as launch, mock.patch.object(self.agent_loop, "emit") as emit:
+            self.assertEqual(self.agent_loop.main(arguments), 0)
+        first = emit.call_args.args[0]
+        launch.assert_called_once()
+        path = Path(first["statePath"])
+        runs = self.runs(agent)
+        # The running driver holds its lock; a retried start must not launch a second one.
+        with mock.patch.object(self.agent_loop, "launch_driver", side_effect=OSError("unit already exists")) as launch, \
+                mock.patch.object(self.agent_loop, "emit") as emit, \
+                self.agent_exec.file_lock(path.parent / ".driver.lock"):
+            self.assertEqual(self.agent_loop.main(arguments), 0)
+        launch.assert_not_called()
+        self.assertEqual((emit.call_args.args[0]["loopId"], emit.call_args.args[0]["status"]), (first["loopId"], "active"))
+        # Even when a relaunch is attempted and refused (same systemd unit name), the loop keeps running.
+        with mock.patch.object(self.agent_loop, "launch_driver", side_effect=OSError("unit already exists")) as launch, \
+                mock.patch.object(self.agent_loop, "emit") as emit:
+            self.assertEqual(self.agent_loop.main(arguments), 0)
+        launch.assert_called_once()
+        state = self.agent_exec.safe_read_json(path)
+        self.assertEqual((state["status"], state["controlPlaneError"]), ("active", None))
+        self.assertEqual(self.runs(agent), runs)
 
     def start_with_lost_acknowledgement(self, agent, plan):
         """Accept the run in exec, then lose the loop's binding as a crash before saving would."""

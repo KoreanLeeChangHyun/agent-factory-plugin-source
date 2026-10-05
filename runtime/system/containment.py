@@ -214,6 +214,16 @@ def create_systemd_environment_file(environment: dict[str, str] | None = None) -
     return descriptor, f"/proc/{os.getpid()}/fd/{descriptor}"
 
 
+def systemd_environment_content(environment: dict[str, str] | None = None) -> bytes:
+    """EnvironmentFile content for a unit systemd may restart after its launcher exits.
+
+    The memfd path from create_systemd_environment_file is readable only while the
+    launching process lives, so a restarting unit needs a private file instead.
+    """
+    values = dict(os.environ if environment is None else environment)
+    return b"".join(_systemd_environment_line(name, value) for name, value in sorted(values.items()))
+
+
 def systemd_unit_name(agent_id: str, run_id: str, attempt: int) -> str:
     material = f"{agent_id}\0{run_id}\0{attempt}".encode()
     return f"agent-factory-{hashlib.sha256(material).hexdigest()[:24]}.service"

@@ -467,8 +467,12 @@ def mark_terminal(
     *,
     attempt: int | None = None,
     start_disposition: str | None = None,
-) -> None:
+    active_only: bool = False,
+) -> bool:
+    """Write a terminal status; with active_only, a run that already ended keeps its own."""
     def change(value: dict[str, Any]) -> None:
+        if active_only and value.get("status") not in runtime.ACTIVE_STATES:
+            raise runtime.ContractError("run_terminal", "run is already terminal")
         value.update(
             {
                 "status": status,
@@ -484,7 +488,13 @@ def mark_terminal(
         if start_disposition is not None:
             value["startDisposition"] = start_disposition
 
-    runtime.update_json(state_path, state_path.parent / ".state.lock", change)
+    try:
+        runtime.update_json(state_path, state_path.parent / ".state.lock", change)
+    except runtime.ContractError as error:
+        if not active_only or error.code != "run_terminal":
+            raise
+        return False
+    return True
 
 
 def worker(runtime, args: argparse.Namespace) -> int:

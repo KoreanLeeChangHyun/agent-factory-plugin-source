@@ -129,7 +129,7 @@ def test_fallback_worker_binds_windows_job_containment(tmp_path):
     recorded = {}
 
     def update(_path, _lock, change):
-        state = {}
+        state = {'status': 'accepted'}
         change(state)
         recorded.update(state)
 

@@ -159,6 +159,12 @@
   is never replayed; its durable intent is completed by `reconcile`.
 - The driver periodically runs exec `reconcile` for a running child, so a run whose worker
   died becomes a recorded failure instead of an endless `running`.
+- A worker that cannot start fails its run (`worker_start_failed`). A stale run that never
+  launched a worker is resubmitted by exec `reconcile`, or cancelled when cancellation was
+  requested; `cancel` ends such a run immediately.
+- A loop whose first dispatch fails stops as `runtime-error`, keeping its dispatch intent for
+  `reconcile`. Commands that leave a loop `active` launch a driver only when none runs; a
+  repeated `start` returns the accepted loop unchanged.
 - `recover-receipt` is an explicit, allowlisted recovery for a loop stopped on a deterministic
   Work receipt missing, format or changed-path-contract failure:
   - Test-proof, core/capability-binding, and unsafe path failures are not recoverable.
