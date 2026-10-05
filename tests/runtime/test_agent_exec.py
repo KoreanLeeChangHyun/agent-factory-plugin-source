@@ -765,6 +765,157 @@ class AgentExecTests(unittest.TestCase):
             self.assertTrue(persisted["containment"]["weakerDescendantContainment"])
             release.assert_called_once_with(process, identity, 4)
 
+    def test_fallback_worker_start_failure_fails_run_and_frees_the_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(self.module, "emit") as emit:
+            root = Path(directory)
+            first = self.module.parse_args([
+                "submit", "--project-root", directory, "--agent", "main-agent",
+                "--role", "main", "--message", "first", "--codex", sys.executable,
+            ])
+            with mock.patch.object(self.module, "systemd_manager_usable", return_value=False), mock.patch.object(
+                self.module, "spawn_contained_process", side_effect=OSError("exec format error")
+            ):
+                with self.assertRaises(self.module.ContractError) as raised:
+                    self.module.submit(first, True)
+            self.assertEqual(raised.exception.code, "worker_start_failed")
+            [failed] = list(self.module.iter_run_states(root, "main-agent"))
+            self.assertEqual(failed["status"], "failed")
+            self.assertEqual(failed["error"]["code"], "worker_start_failed")
+            self.assertTrue(failed["unread"])
+            retry = self.module.parse_args([
+                "send", "--project-root", directory, "--agent", "main-agent",
+                "--message", "retry", "--codex", sys.executable,
+            ])
+            with mock.patch.object(self.module, "spawn_worker", return_value=123):
+                self.module.submit(retry, False)
+            self.assertEqual(emit.call_args.args[0]["status"], "accepted")
+            self.assertNotEqual(emit.call_args.args[0]["runId"], failed["runId"])
+
+    def test_fallback_launch_never_resurrects_a_run_that_ended_before_release(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = self._new_containment_state(root)
+            self.module.mark_terminal(Path(state["statePath"]), "cancelled")
+            process = mock.Mock(pid=88)
+            identity = {"pid": 88, "bootId": "f" * 36, "startTicks": 9}
+            with mock.patch.object(
+                self.module, "spawn_contained_process", return_value=(process, identity, 4)
+            ), mock.patch.object(self.module, "release_contained_process") as release, mock.patch.object(
+                self.module, "abort_contained_process"
+            ) as abort:
+                with self.assertRaises(self.module.ContractError) as raised:
+                    self.module._launch_fallback_worker(root, "work-agent", state["runId"], ["worker"])
+            self.assertEqual(raised.exception.code, "run_not_launchable")
+            release.assert_not_called()
+            abort.assert_called_once_with(process, identity, 4)
+            persisted = self.module.safe_read_json(Path(state["statePath"]))
+            self.assertEqual(persisted["status"], "cancelled")
+            self.assertIsNone(persisted["containment"])
+
+    def test_systemd_launch_ack_keeps_progress_the_worker_already_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = self._new_containment_state(root)
+            path = Path(state["statePath"])
+
+            def worker_started(_command):
+                # service-type=exec: the worker can begin its attempt before systemd-run returns.
+                self.module.update_json(path, path.parent / ".state.lock", lambda value: value.update(
+                    {"status": "running", "startDisposition": "started"}))
+                return mock.Mock(returncode=0)
+
+            descriptor = os.open(os.devnull, os.O_RDONLY)
+            with mock.patch.object(self.module, "_systemd_command", side_effect=worker_started), mock.patch.object(
+                self.module, "query_systemd_containment", return_value={"invocationId": "a" * 32, "mainPid": 77}
+            ):
+                self.assertEqual(self.module._launch_systemd_worker(
+                    root, "work-agent", state["runId"], ["worker"], (descriptor, "/proc/self/fd/0")), 77)
+            persisted = self.module.safe_read_json(path)
+            self.assertEqual(persisted["status"], "running")
+            self.assertEqual(persisted["containmentLaunchDisposition"], "launched")
+            self.assertEqual(persisted["containment"]["invocationId"], "a" * 32)
+
+    def test_terminal_write_can_require_the_run_to_be_active(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = self._new_containment_state(Path(directory))
+            path = Path(state["statePath"])
+            self.module.mark_terminal(path, "completed")
+            self.assertFalse(self.module.mark_terminal(path, "failed", {"code": "late", "message": "late"}, active_only=True))
+            persisted = self.module.safe_read_json(path)
+            self.assertEqual((persisted["status"], persisted["error"]), ("completed", None))
+
+    def _stale_never_launched_run(self, root: Path, **updates) -> dict:
+        state = self._new_containment_state(root)
+        self.module.atomic_write_json(
+            self.module.session_file(root, "work-agent"),
+            {"agentId": "work-agent", "role": "work", "sessionId": None,
+             "projectRoot": str(root), "heartbeatTimeout": 1},
+        )
+        heartbeat = self.module.safe_read_json(Path(state["heartbeatPath"]))
+        heartbeat["observedAt"] = "2000-01-01T00:00:00Z"
+        self.module.atomic_write_json(Path(state["heartbeatPath"]), heartbeat)
+        if updates:
+            persisted = self.module.safe_read_json(Path(state["statePath"]))
+            persisted.update(updates)
+            self.module.atomic_write_json(Path(state["statePath"]), persisted)
+        return state
+
+    def test_reconcile_resubmits_a_run_whose_worker_never_launched(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = self._stale_never_launched_run(root)
+            args = argparse.Namespace(project_root=root, agent="work-agent")
+            with mock.patch.object(self.module, "spawn_worker", return_value=91) as spawn, mock.patch.object(
+                self.module, "emit"
+            ) as emit:
+                self.module.command_reconcile(args)
+            spawn.assert_called_once_with(root, "work-agent", state["runId"])
+            self.assertEqual(emit.call_args.args[0]["runs"], [
+                {"agentId": "work-agent", "runId": state["runId"], "action": "resubmitted", "workerPid": 91}])
+
+    def test_reconcile_and_cancel_end_a_never_launched_run_as_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # Left by an earlier cancel that had no worker to finish it.
+            stuck = self._stale_never_launched_run(root, status="cancelling", cancelRequested=True)
+            with mock.patch.object(self.module, "spawn_worker") as spawn, mock.patch.object(self.module, "emit") as emit:
+                self.module.command_reconcile(argparse.Namespace(project_root=root, agent="work-agent"))
+            spawn.assert_not_called()
+            self.assertEqual(emit.call_args.args[0]["runs"][0]["action"], "cancelled")
+            self.assertEqual(self.module.safe_read_json(Path(stuck["statePath"]))["status"], "cancelled")
+
+            fresh = self._new_containment_state(root)
+            with mock.patch.object(self.module, "request_containment_stop") as stop, mock.patch.object(self.module, "emit"):
+                self.module.command_cancel(argparse.Namespace(project_root=root, agent="work-agent", run_id=fresh["runId"]))
+            stop.assert_not_called()
+            persisted = self.module.safe_read_json(Path(fresh["statePath"]))
+            self.assertEqual(persisted["status"], "cancelled")
+            self.assertTrue(persisted["cancelRequested"])
+
+    def test_submit_busy_check_rejects_a_damaged_run_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(self.module, "spawn_worker", return_value=123), mock.patch.object(self.module, "emit"):
+            root = Path(directory)
+            self.module.submit(self.module.parse_args([
+                "submit", "--project-root", directory, "--agent", "main-agent",
+                "--role", "main", "--message", "first", "--codex", sys.executable,
+            ]), True)
+            [first] = list(self.module.iter_run_states(root, "main-agent"))
+            self.module.mark_terminal(Path(first["statePath"]), "completed")
+            # A directory without state never accepted a run; it does not block the session.
+            self.module.run_directory(root, "main-agent", "run-empty", create=True)
+            follow_up = self.module.parse_args([
+                "send", "--project-root", directory, "--agent", "main-agent", "--message", "next",
+            ])
+            self.module.submit(follow_up, False)
+            [second] = [value for value in self.module.iter_run_states(root, "main-agent") if value["runId"] != first["runId"]]
+            self.module.mark_terminal(Path(second["statePath"]), "completed")
+            damaged = self.module.run_directory(root, "main-agent", "run-damaged", create=True) / "state.json"
+            damaged.write_text("{", encoding="utf-8")
+            with self.assertRaises(self.module.ContractError) as raised:
+                self.module.submit(follow_up, False)
+            self.assertEqual(raised.exception.code, "run_state_invalid")
+            self.assertEqual(len(list(self.module.iter_run_states(root, "main-agent"))), 2)
+
     def test_reconcile_queries_bound_containment_before_pid_and_fails_ambiguous_empty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

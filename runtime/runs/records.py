@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import hashlib
 import json
 import os
@@ -391,7 +390,10 @@ def iter_agent_directories(runtime, root: Path) -> Iterator[Path]:
             yield item
 
 
-def iter_run_states(runtime, root: Path, selected_agent: str | None = None) -> Iterator[dict[str, Any]]:
+def iter_run_states(
+    runtime, root: Path, selected_agent: str | None = None, *, strict: bool = False
+) -> Iterator[dict[str, Any]]:
+    """Yield readable run states; strict rejects an existing but unreadable state instead of skipping it."""
     for directory in runtime.iter_agent_directories(root):
         if selected_agent is not None and directory.name != selected_agent:
             continue
@@ -400,5 +402,13 @@ def iter_run_states(runtime, root: Path, selected_agent: str | None = None) -> I
             continue
         for item in sorted(runs.iterdir(), key=lambda path: path.name):
             if item.is_dir() and not item.is_symlink():
-                with contextlib.suppress(runtime.ContractError):
-                    yield runtime.safe_read_json(item / "state.json")
+                try:
+                    state = runtime.safe_read_json(item / "state.json")
+                except runtime.ContractError as error:
+                    # A run directory without state never accepted a run; a damaged one may still be active.
+                    if strict and error.code != "file_not_found":
+                        raise runtime.ContractError(
+                            "run_state_invalid", f"run state is unreadable; repair or remove it: {item / 'state.json'}"
+                        ) from error
+                    continue
+                yield state

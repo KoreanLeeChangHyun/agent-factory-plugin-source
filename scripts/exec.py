@@ -481,7 +481,7 @@ def submit(args: argparse.Namespace, new_agent: bool) -> int:
             )
         else:
             session = load_session(project_root, args.agent)
-        if any(value.get("status") in ACTIVE_STATES for value in iter_run_states(project_root, args.agent)):
+        if any(value.get("status") in ACTIVE_STATES for value in iter_run_states(project_root, args.agent, strict=True)):
             raise ContractError("session_busy", "An accepted or active run already owns this exact session")
         if parent is not None:
             session = worktrees.inherit(session, {"projectRoot": str(project_root), **load_session(project_root, parent["agentId"])})

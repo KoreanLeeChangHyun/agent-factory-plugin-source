@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import hashlib
 import json
@@ -41,6 +42,10 @@ TRANSIENT_READ_ERRORS = {"child_runtime_failure", "runtime_failure"}
 STALE_CHECK_SECONDS = 30.0
 # Human-invoked commands that return a stopped loop to `active`.
 RESUMING_COMMANDS = {"recover-receipt", "extend-revisions"}
+# Commands after which an active loop must have a driver; one is launched only when none holds the driver lock.
+DRIVER_ENSURING_COMMANDS = RESUMING_COMMANDS | {"reconcile", "skip"}
+# Private systemd EnvironmentFile kept beside the loop so Restart=on-failure can reread it.
+DRIVER_ENVIRONMENT_FILE = "driver.env"
 # What a stopped loop means for its caller. `contract`: the Agent's output broke its contract; a
 # repair turn or a stronger profile can fix it. `transient`: the control plane failed; inspect and
 # reconcile, the work itself is not at fault. `provider`: the model backend failed. `environment`:
@@ -666,6 +671,8 @@ def start_loop(args: argparse.Namespace) -> dict[str, Any]:
             if (previous.get("workspaceAcceptanceKey") != args.workspace_acceptance_key or previous["execution"]["taskMode"] != args.task_mode or
                     previous.get("verificationAgentId") != args.verification_agent):
                 raise agent_exec.ContractError("task_workspace_acceptance_collision", "This task was already accepted with different workspace or route bindings")
+            # A retried start returns the accepted loop; it must not launch a second driver for it.
+            args.accepted_existing_loop = True
             return public_state(previous)
         return start_loop_captured(args)
 
@@ -835,7 +842,19 @@ def start_loop_captured(args: argparse.Namespace) -> dict[str, Any]:
         "updatedAt": created,
     }
     save_loop_state(path, state)
-    dispatch(state, path, AgentRuntime(root, state["parentStatePath"]), role="work", request_file=original)
+    try:
+        dispatch(state, path, AgentRuntime(root, state["parentStatePath"]), role="work", request_file=original)
+    except (agent_exec.ContractError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        # No driver exists yet: stop explicitly so the loop never stays active without one.
+        # A recorded dispatch intent stays for `reconcile`, which never retries it blindly.
+        with agent_exec.file_lock(directory / ".loop.lock"):
+            state = agent_exec.safe_read_json(path)
+            if state["status"] == "active":
+                state["workflow"]["tasks"][state["workflow"]["index"]]["workStatus"] = "blocked"
+                state.update(status="runtime-error", phase="control-plane-error", updatedAt=now(), controlPlaneError={
+                    "code": getattr(error, "code", "driver_error"), "message": str(error)})
+                save_loop_state(path, state)
+        raise
     return public_state(state, state["currentChild"])
 
 
@@ -1460,6 +1479,29 @@ def drive_loop(args):
             time.sleep(2)
 
 
+def driver_running(state_path: Path) -> bool:
+    """A live driver holds `.driver.lock` for its whole run."""
+    try:
+        with agent_exec.file_lock(state_path.parent / ".driver.lock", blocking=False):
+            return False
+    except agent_exec.ContractError as error:
+        if error.code == "lock_busy":
+            return True
+        raise
+
+
+def ensure_driver(args, result) -> None:
+    """Best effort: give an active loop a driver when none runs; never change the loop itself."""
+    if result.get("status") != "active":
+        return
+    try:
+        if not driver_running(Path(result["statePath"])):
+            launch_driver(args, result)
+    except (agent_exec.ContractError, OSError) as error:
+        # Without a driver the loop still advances through an explicit reconcile.
+        print(f"Loop driver was not relaunched for {result.get('loopId')}: {error}", file=sys.stderr)
+
+
 def launch_driver(args, result):
     arguments = [sys.executable, str(Path(__file__).resolve()), "drive", "--project-root", str(args.project_root),
                  "--work-agent", args.work_agent, "--loop-id", result["loopId"]]
@@ -1474,21 +1516,20 @@ def launch_driver(args, result):
         if not agent_exec.systemd_manager_usable():
             raise OSError("The user systemd manager is required for a durable loop driver")
         try:
-            environment_fd, environment_path = agent_exec.create_systemd_environment_file()
+            # systemd rereads EnvironmentFile on every restart, after this launcher has exited.
+            environment_path = log_path.parent / DRIVER_ENVIRONMENT_FILE
+            agent_exec.atomic_write(environment_path, agent_exec.process_containment.systemd_environment_content())
             unit_name = "agent-factory-loop-" + hashlib.sha256(result["loopId"].encode()).hexdigest()[:24] + ".service"
-            try:
-                launched = agent_exec._systemd_command((
-                    "systemd-run", "--user", f"--unit={unit_name}",
-                    "--collect", "--service-type=exec",
-                    "--property=KillMode=control-group",
-                    "--property=Restart=on-failure", "--property=RestartSec=2s",
-                    f"--property=EnvironmentFile={environment_path}",
-                    f"--property=StandardOutput=append:{log_path}",
-                    f"--property=StandardError=append:{log_path}",
-                    f"--working-directory={args.project_root}", "--", *arguments,
-                ))
-            finally:
-                os.close(environment_fd)
+            launched = agent_exec._systemd_command((
+                "systemd-run", "--user", f"--unit={unit_name}",
+                "--collect", "--service-type=exec",
+                "--property=KillMode=control-group",
+                "--property=Restart=on-failure", "--property=RestartSec=2s",
+                f"--property=EnvironmentFile={environment_path}",
+                f"--property=StandardOutput=append:{log_path}",
+                f"--property=StandardError=append:{log_path}",
+                f"--working-directory={args.project_root}", "--", *arguments,
+            ))
         except agent_exec.ContractError as error:
             raise OSError(str(error)) from error
         if launched.returncode != 0:
@@ -1574,14 +1615,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         agent_exec.runtime_paths.resolve(args.project_root, home=args.runtime_home, project_id=args.project_id)
         handlers = {"start": start_loop, "status": status_loop, "reconcile": reconcile_loop, "recover-receipt": recover_receipt, "skip": skip_loop, "drive": drive_loop, "close": close_loop, "stop-task": stop_task, "refresh-progress": refresh_progress, "extend-revisions": extend_revisions}
         result = handlers[args.command](args)
-        if args.command in RESUMING_COMMANDS and result.get("status") == "active":
-            # The driver left when the loop stopped. A duplicate is harmless (.driver.lock), and
-            # without one the resumed loop still advances through reconcile, so never fail here.
-            try:
-                launch_driver(args, result)
-            except OSError as error:
-                print(f"Loop driver was not relaunched for {result.get('loopId')}: {error}", file=sys.stderr)
-        if args.command == "start" and result.get("status") == "active":
+        if args.command == "drive":
+            # The loop is no longer active, so systemd will not restart this driver.
+            with contextlib.suppress(OSError):
+                (Path(result["statePath"]).parent / DRIVER_ENVIRONMENT_FILE).unlink()
+        if args.command in DRIVER_ENSURING_COMMANDS or (args.command == "start" and getattr(args, "accepted_existing_loop", False)):
+            # The driver left when the loop stopped, or a retried start found the accepted loop:
+            # launch one only when none runs, and never stop the loop because of it.
+            ensure_driver(args, result)
+        elif args.command == "start" and result.get("status") == "active":
             try:
                 launch_driver(args, result)
             except OSError as error:

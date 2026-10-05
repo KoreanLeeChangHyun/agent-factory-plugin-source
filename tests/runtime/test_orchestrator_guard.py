@@ -20,7 +20,7 @@ SCRIPT = f"python3 {PLUGIN}/scripts/loop.py start --task-mode work"
 class GuardDecisionTests(unittest.TestCase):
     def setUp(self):
         self.run_directory = tempfile.mkdtemp()
-        self.config = {"pluginRoot": PLUGIN, "writeRoot": self.run_directory}
+        self.config = {"pluginRoots": [PLUGIN], "writeRoot": self.run_directory}
 
     def decide(self, event, armed=True, config=None):
         environment = {guard.ENV: json.dumps(config or self.config)} if armed else {}
@@ -47,15 +47,76 @@ class GuardDecisionTests(unittest.TestCase):
                         "python3 other.py", "FOO=1 cat a", "npm install", "git branch -D main", "git diff --output=x"):
             self.assertFalse(self.bash(command), command)
 
-    def test_scripts_of_any_installed_plugin_copy(self):
+    def test_reported_bypasses_are_denied(self):
+        # Code review run-20261005T113416561608Z-46bbdf1f: each of these wrote or executed through an allowed command.
+        for command in ("command rm -rf src", "command -v git; rm x",
+                        "sed -n '1e touch pwned' f", "sed 's/a/b/w out.txt' f", "sed -e 's/a/b/e' f",
+                        "sed -n -e 'p' -e '1w out' f", "sed --expression='1e id' f", "sed 'w out' f",
+                        "sed '1r /etc/passwd' f", "sed -f script.sed f", "sed 's/[/]/x/w out' f",
+                        "git grep --open-files-in-pager=touch x", "git grep -O touch x", "git grep -lOtouch x",
+                        "git grep --open=touch x",
+                        "sort -o out.txt f", "sort f -o out.txt", "sort --output=out f", "sort --out=out f",
+                        "sort --compress-program=sh f", "sort --comp=sh f", "sort -T /tmp f",
+                        "find . -fprint0 out", "find . -fprint out", "find . -fprintf out %p", "find . -fls out",
+                        "find . -exec rm {} ;", "find . -execdir id ;", "find . -ok rm {} ;", "find . -delete",
+                        "rg --pre bash x", "rg --pre=bash x", "rg --hostname-bin=id x"):
+            self.assertFalse(self.bash(command), command)
+
+    def test_same_class_bypasses_in_other_commands_are_denied(self):
+        for command in ("uniq in.txt out.txt", "tree -o out", "tree -R -H . -o out", "file -C -m magic",
+                        "git branch --set-upstream-to=origin/main", "git branch --set-up=x", "git branch new",
+                        "git branch --delete x", "git log --o=x", "git -c core.pager=sh log",
+                        "/usr/bin/git status", "./cat x", "python3 -c 1", "bash -c 'cat a' | tee x"):
+            self.assertFalse(self.bash(command), command)
+
+    def test_shell_expansions_that_hide_options_are_denied(self):
+        # Each turns into `--pre=bash` (or hides it) in the shell while the guard would read another word.
+        for command in ("rg a#b --pre=bash f", "rg x # --pre=bash", "rg x ${HOME:+--pre=bash}", "rg x \"${X}\"",
+                        "rg x $'\\x2d-pre=bash'", "rg x *", "rg x {--pre=bash,f}", "rg x --pr[e]=bash",
+                        "rg x {=''},--pre=bash}", "rg --pr\\\ne=bash x", "cat a\nrm b", "cat 'unclosed"):
+            self.assertFalse(self.bash(command), command)
+
+    def test_read_only_forms_stay_allowed(self):
+        for command in ("sed 's/a/b/g' f", "sed -n '/foo/,/bar/p' f", "sed -n -e '1p' -e '$p' f",
+                        "sed -E 's/(a)[0-9]+/\\1/;s|x|y|2' f", "sed -n '5,10{p;}' f", "sed -n '\\|a|Ip' f",
+                        "sed -n '/^[[:alpha:]_]/p' f", "sed '0,/x/d' f", "sed -n '$=' f", "sed 'y/abc/xyz/' f",
+                        "sort -rn -k2,2 f", "sort -t: -k1 f | uniq -c", "sort -u f", "uniq -c f",
+                        "find . -name '*.py' -type f -maxdepth 2", "find . -mtime -1 -print", "find . ! -path './.git/*'",
+                        "git branch", "git branch -vv", "git branch -a", "git branch --show-current",
+                        "git branch --list 'feat*'", "git diff --stat HEAD~1", "git diff --name-only -- a",
+                        "git grep -n -o foo", "git log --format=%h -- a", "git log HEAD@{1} -1", "git show HEAD:a.py",
+                        "git blame -L 1,5 a.py", "git rev-parse --show-toplevel", "git ls-files -o",
+                        "command -v git", "tree -L 2 -I node_modules", "file -b --mime-type a", "rg -n 'TODO' runtime",
+                        "rg -g '*.py' -l foo", "ls ./*.py", "ls runtime/*.py", "jq '.a' f.json", "wc -l f", "echo a#b",
+                        "printf '%s\\n' a", "grep -rn foo .", "cat ~/x", "date +%F", f"python3 {PLUGIN}/scripts/exec.py status"):
+            self.assertTrue(self.bash(command), command)
+
+    def test_plugin_scripts_only_from_the_armed_roots(self):
         with tempfile.TemporaryDirectory() as copy:
+            # A directory shaped like a plugin (as Main could make in its run directory) is not a plugin root.
             (Path(copy) / "skills" / "agent").mkdir(parents=True)
             (Path(copy) / "skills" / "agent" / "SKILL.md").write_text("x")
             (Path(copy) / "scripts").mkdir()
             (Path(copy) / "scripts" / "exec.py").write_text("x")
+            self.assertFalse(self.bash(f"python3 {copy}/scripts/exec.py submit"))
+            self.config = {**self.config, "pluginRoots": [PLUGIN, copy]}
             self.assertTrue(self.bash(f"python3 {copy}/scripts/exec.py submit"))
             self.assertFalse(self.bash(f"python3 {copy}/other/exec.py"))
+            self.assertFalse(self.bash(f"python3 {copy}/scripts/../skills/x.py"))
         self.assertFalse(self.bash("python3 /tmp/scripts/evil.py"))
+
+    def test_arming_fixes_this_copy_and_codex_installed_copies(self):
+        with tempfile.TemporaryDirectory() as codex_home:
+            installed = Path(codex_home) / "plugins" / "cache" / "market" / "agent-factory" / "1.0.0"
+            (installed / "skills" / "agent").mkdir(parents=True)
+            (installed / "skills" / "agent" / "SKILL.md").write_text("x")
+            (installed / "scripts").mkdir()
+            (installed / "scripts" / "exec.py").write_text("x")
+            (Path(codex_home) / "plugins" / "cache" / "market" / "agent-factory" / "partial").mkdir()
+            with mock.patch.dict(os.environ, {"CODEX_HOME": codex_home}):
+                config = json.loads(guard.environment({"statePath": f"{self.run_directory}/state.json"})[guard.ENV])
+        self.assertEqual(config, {"pluginRoots": [os.path.realpath(PLUGIN), os.path.realpath(installed)],
+                                  "writeRoot": self.run_directory})
 
     def test_codex_patches_only_inside_run_directory(self):
         inside = f"*** Begin Patch\n*** Add File: {self.run_directory}/task.md\n+x\n*** End Patch"
