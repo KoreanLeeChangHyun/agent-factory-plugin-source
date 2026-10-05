@@ -22,6 +22,19 @@ distributions are generated from it and must not be edited directly.
 | `distribution/skill_budget.py` | Reports and enforces Skill document token budgets (`--check`) |
 | `tests/` | Test suite for the source tree and generated layouts |
 
+## How distributions are produced
+
+```mermaid
+flowchart LR
+  accTitle: Plugin distribution flow
+  accDescr: The shared payload of skills, runtime and scripts is combined with each host's templates by port.py to generate the Codex, Claude Code and Antigravity plugin repositories.
+  P["Shared payload<br/>skills · runtime · scripts"] --> G["distribution/port.py"]
+  T["distribution/hosts/&lt;host&gt;/<br/>manifests and README templates"] --> G
+  G --> X["Codex plugin"]
+  G --> Y["Claude Code plugin"]
+  G --> Z["Antigravity plugin"]
+```
+
 ## Generate host distributions
 
 ```sh

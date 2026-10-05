@@ -93,7 +93,9 @@ metadata:
 
 ### 5.2. Theme and knowledge
 
-- `references/theme.md`: interface themes, browser documents and SVG icons.
+- `references/theme.md`: mandatory design/theme consistency, stable tab geometry,
+  visual acceptance checks, browser documents and SVG icons. Read before any UI
+  creation or modification, including layout-only changes.
 - `references/diagrams.md`: ERD, behavior and sequence diagrams.
 - `references/interview.md`: Main's Human elicitation.
 
