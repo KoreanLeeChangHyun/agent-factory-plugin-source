@@ -182,8 +182,20 @@ def record_root(project_root, state):
         source = Path(unit['repositoryRoot'])
         if root.is_relative_to(source):
             return Path(unit['path']) / root.relative_to(source)
+        if source == root / 'docs' and Path(unit['path']).name == 'docs':
+            return Path(unit['path']).parent
     return root
 
+
+
+def document_workspace_available(project_root, state):
+    workspace = state.get('taskWorkspace')
+    if not isinstance(workspace, dict) or workspace.get('mode') != 'code':
+        return True
+    return any(isinstance(unit, dict) and unit.get('repositoryRoot') and unit.get('path') and
+               (Path(project_root).is_relative_to(Path(unit['repositoryRoot'])) or
+                (Path(unit['repositoryRoot']) == Path(project_root) / 'docs' and Path(unit['path']).name == 'docs'))
+               for unit in workspace.get('repositories') or [])
 
 def recorded_paths(states, workspace_id):
     """Project-relative lesson files the runtime recorded into one code Work Unit."""
@@ -212,7 +224,9 @@ def pending_count(state):
 
 def record(project_root, state, pending):
     """Record one capture input and store its receipt; returns the observe() result."""
-    result = subprocess.run([sys.executable, str(SCRIPT), '--project-root', str(record_root(project_root, state)),
+    if not document_workspace_available(project_root, state):
+        return {'saved': False, 'pending': str(pending), 'reason': 'document-workspace-unavailable'}
+    result = subprocess.run([sys.executable, str(SCRIPT), '--project-root', str(project_root), '--documents-root', str(record_root(project_root, state)),
                              'record', '--input', str(pending)], capture_output=True, text=True, timeout=20)
     occurrence = json.loads(pending.read_text(encoding='utf-8'))['occurrenceId']
     receipt = pending.with_suffix('.receipt')
@@ -293,7 +307,7 @@ def replay(project_root, state):
     Recording is idempotent per occurrence, so a failed write (lock contention, a slow
     disk, a concurrent writer) is retried a bounded number of times before it is reported.
     """
-    if read_only(state):
+    if read_only(state) or not document_workspace_available(project_root, state):
         return
     root = record_root(project_root, state)
     for attempt in range(REPLAY_ATTEMPTS):
@@ -304,7 +318,7 @@ def replay(project_root, state):
             time.sleep(REPLAY_BACKOFF_SECONDS * attempt)
         for pending in remaining:
             try:
-                result = subprocess.run([sys.executable, str(SCRIPT), '--project-root', str(root),
+                result = subprocess.run([sys.executable, str(SCRIPT), '--project-root', str(project_root), '--documents-root', str(root),
                                          'record', '--input', str(pending)], capture_output=True, text=True, timeout=20)
             except subprocess.TimeoutExpired:
                 continue
@@ -327,7 +341,7 @@ def apply_pending(project_root, state, *, clock=time.monotonic):
     integration commit. Every capture the sweep records has a unique runtime name that no task
     branch contains, so it never overlaps a merge and cannot block integration."""
     run_directory = Path(state['statePath']).parent
-    if read_only(state) or run_directory.parent.name != 'runs':
+    if read_only(state) or not document_workspace_available(project_root, state) or run_directory.parent.name != 'runs':
         return 0
     deadline = clock() + APPLY_BUDGET_SECONDS
     applied = 0
@@ -337,7 +351,9 @@ def apply_pending(project_root, state, *, clock=time.monotonic):
         except (OSError, ValueError):
             owner = {}
         owned = record_root(project_root, owner) if isinstance(owner, dict) else Path(project_root)
-        if owned != Path(project_root) and owned.exists():
+        workspace = owner.get('taskWorkspace', {}) if isinstance(owner, dict) else {}
+        if (owned != Path(project_root) and owned.exists()) or (workspace.get('mode') == 'code' and
+                any(Path(unit['path']).exists() for unit in workspace.get('repositories', []) if unit.get('path'))):
             continue
         for pending in sorted(path for path in directory.glob('*.json') if CAPTURE_NAME.fullmatch(path.name)):
             if applied >= APPLY_LIMIT or clock() >= deadline:

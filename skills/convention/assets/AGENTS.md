@@ -34,7 +34,7 @@
 - Use `<project-root>/docs/artifact/` for standalone generated outputs outside Document
   packages, following Convention's Artifacts contract. No `SKILL.md` wrapper is required.
 - Keep canonical Refined and Human-requested Specification (Skill document) packages below `docs/refined/`
-  and `docs/skills/`, using `<category>[-<domain>]-<name>/SKILL.md` in the Human's language plus optional `assets/`
+  and `docs/skills/`, following Document's type-specific routing in the Human's language plus optional `assets/`
   under the Documents contract.
 - Optional `.codex/skills/`, `.claude/skills/` and `.agents/skills/` Specification/Skill exposure derives from that same source, never a
   separate editable original.

@@ -31,19 +31,28 @@
 
 ## 2. Package and metadata
 
-- Apply the shared [Document requirements](../SKILL.md) for language, authority and
-  source fidelity. JSON records do not use Markdown headings or YAML front matter.
-- Store each record at `docs/lessons-learned/<id>.json` in the affected project.
-  Do not generate a companion `SKILL.md`, package directory or `assets/` wrapper.
-- Use `error` for errors and `judgment` for Human/AI judgment differences.
-- JSON contains `schemaVersion`, `id`, `category`, `title`, `language`, `scope`,
-  `status`, `occurrences`, `applications`, `candidates` and `publications`.
-  Preserve actual provenance in occurrence sources and candidate sources.
-  The directory identifies the document type; the catalog derives `name` from `id`.
-- Catalog and search discover these records. They are not activated as Skills,
-  exported to `.codex/skills/`, `.claude/skills/` or `.agents/skills/` or treated as accepted Specifications.
-- Keep one canonical record for the same incident or known recurring cause. Link it
-  from Progress or task results rather than copying its contents there.
+- Apply the shared [Document requirements](../SKILL.md) for user language, authority and
+  source fidelity. Error and judgment difference are distinct categories, not maturity levels.
+- Store error Markdown under `docs/lessons-learned/errors/` and judgment Markdown under
+  `docs/lessons-learned/judgment-differences/`, with readable names and stable ID suffixes.
+- Runtime `storage/paths.py` resolves machine metadata at
+  `<project-runtime>/lessons-learned/<id>.json`; respect `AGENT_FACTORY_HOME`, project identity
+  and relocation. Never hardcode a home or put this metadata in the checkout.
+- Markdown is the sole editable prose source, including causes, solutions, judgments,
+  reflection, rule text and historical evidence. Field blocks use stable HTML anchors
+  and Markdown quotes; edit their text while retaining anchors and quote prefixes.
+- Generated labels support Korean and English; other languages retain supplied prose and
+  language-neutral field identifiers. Never translate preserved source text implicitly.
+- JSON schema 2 keeps identities, categories, scopes, states, timestamps, execution links,
+  document paths and text locators. It contains no second copy of narrative content.
+  Front matter and displayed state are CLI-managed projections; change state through the lifecycle.
+- Occurrences, resolutions, applications, candidates, evaluations, publications and
+  retirements retain their original order, IDs and actual sources. The CLI joins body and
+  metadata on demand; unknown causes and unresolved outcomes stay unknown/unresolved.
+- Catalog and search discover these records. They never activate them as Skills or export
+  them to hosts. `runtime` is a capture scope, not a document category or user folder.
+- Keep one record for the same incident or known recurring cause. Separate error and
+  judgment records may link to each other; judgment difference alone is not an error.
 
 <a id="record-content"></a>
 
@@ -111,17 +120,21 @@
 - Use `<plugin-root>/scripts/lessons.py --project-root <root> <action> --input <json-file>` for
   structured records, rule candidates and application evidence. Keep input files in
   the run directory; redact secrets before submitting Human/AI text.
-- The JSON file is the sole editable source for occurrences, resolutions, candidates,
-  evaluations, publications and applications. Catalog and ordinary Document search read
-  it directly; this CLI's `retrieve` additionally filters scope and reports metrics.
-- Legacy packages remain readable. Before updating them, explicitly migrate with a
-  backup, preserve the JSON content and repair references. Reject duplicate identities
+- JSON input is a command payload, not an editable document copy. The CLI writes prose
+  to Markdown and machine fields to runtime metadata. `retrieve` joins them, includes
+  independent body notes in matching, filters exact scope and reports application metrics.
+- Add `--documents-root <physical-workspace-containing-docs>` for an isolated document
+  worktree while keeping `--project-root <original-project>` as runtime identity. Neither
+  path is inferred from the other; host publication acts on the physical workspace.
+- Legacy JSON and packages remain readable. Before updating them, explicitly migrate with a
+  backup using the [layout migration contract](host-sync.md#document-layout-migration), preserving content and references. Reject duplicate identities
   or filename collisions instead of silently picking one copy.
 
 | Action | Input and behavior |
 |---|---|
 | `record` | `id` (optional stable incident ID), `category`, `title`, `language`, `occurrenceId`, `source`, `scope`; errors require `symptom`, `cause`, `solution`, `verification`; judgments require `humanJudgment`, `humanReason`, `aiJudgment`, `aiReason`, `difference`, `reflection`, `outcome`. |
-| `resolve` | `id`, `cause`, `solution`, `verification`, `evidence`; appends a resolution without erasing occurrences. |
+| `recover` | `id`; completes an interrupted two-file write only if body and metadata still match its recorded old/new states. Independent edits require manual reconciliation. |
+| `resolve` | Errors: `id`, `cause`, `solution`, `verification`, `evidence`. Judgments: `id`, `outcome`, `reflection`, `evidence`. Appends the category-specific resolution without erasing occurrences. |
 | `retrieve` | `query`, exact `scope`; returns matching records including rule status and evidence. |
 | `audit` | `occurrenceIds`; returns observed occurrences not yet recorded. |
 | `candidate` | `id`, `ruleName` beginning with `rule-`, complete Human-language Specification `ruleText`, `trigger`, `exceptions`, exact `scope`, actual Human `authority` reference; optional `lessonIds` collect related same-scope records. Returns the candidate hash. |
@@ -129,8 +142,10 @@
 | `publish` | `id`; requires passing original and separate held-out cases, writes the owned rule and runs Document synchronization. Existing unowned or independently edited rules require manual integration. |
 | `sync` | `id`; retry synchronization after resolving its reported conflict. |
 | `apply` | `id`, `runId`, `outcome` (`success`, `recurrence`, `correction`, `unused`), `evidence`; records the applied rule version. |
-| `retire` | `id`, `reason`; preserves prior rule text in the lesson and synchronizes an explicit inactive rule. |
+| `retire` | `id`, `reason`; other languages than Korean/English also require complete selected-language `inactiveRuleText`. Preserves prior rule text in the lesson and synchronizes an explicit inactive rule. |
 
+- Optional `context`, `followUp` and `futureApplication` preserve supplied narrative.
+  `relatedIds` links distinct records of the same event; it never merges their categories.
 - IDs and occurrences are idempotent: submitting the same occurrence again does not
   duplicate it. Reuse the incident ID only for the same category and scope; use a new
   occurrence ID for every recurrence. Resubmitting a known occurrence with `recovered: true`
@@ -156,14 +171,17 @@
   no output found nothing; it is not captured.
 - Each capture is an occurrence of one record per signature: provider, role, command kind
   (`test`, `search`, `build`, `lessons-cli`, `git`, `script`, `read`, `other`; `tool` or
-  `runtime` otherwise) and exit code. The record is `docs/lessons-learned/runtime-<signature hash>.json`
-  with scope `runtime`; it counts recurrences and carries no diagnosis. Occurrences keep
+  `runtime` otherwise) and exit code. The stable record ID is `runtime-<signature hash>`
+  with scope `runtime`, stored through the body/metadata contract above; it counts recurrences and carries no diagnosis. Occurrences keep
   the signature and point to the run; raw commands and outputs are never stored.
 - When the same command later succeeds in the same run, its earlier occurrences are marked
   `recovered`. Recovery is not a confirmed cause.
 - The Agent resolves or promotes only a cause it has established: record it in its own
   error record in the task scope, citing the occurrence `source`. Resolve a signature
   record only when that cause explains the signature itself, not one occurrence.
+- An isolated code run captures into its document-owning Work Unit while retaining the
+  original project runtime identity. If no unit contains that document workspace, keep
+  the capture pending; never write the original checkout to compensate.
 - A pending capture never fails or delays a run; the run's public state counts it as
   `pendingLessons`. Providers that do not emit a failure event still require Agent recording
   and occurrence auditing before handoff.

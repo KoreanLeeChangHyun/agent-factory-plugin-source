@@ -5,6 +5,12 @@ from pathlib import Path
 import shutil
 from unittest.mock import patch
 import subprocess
+import runtime_test_home  # noqa: F401
+from storage import lessons as body_store
+
+
+def read_record(path, root=None):
+    return body_store.read(root or path.parents[3], path, path.parents[3])
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('lesson_capture_test_module', ROOT / 'runtime/execution/lessons.py')
@@ -19,11 +25,11 @@ def test_capture_nonzero_and_ignore_success(tmp_path):
     event = {'type': 'item.completed', 'item': {'type': 'command_execution', 'id': 'item1', 'exit_code': 1, 'command': 'secret=DO_NOT_SAVE'}}
     assert capture.observe(tmp_path, state, event, 1)['saved']
     assert capture.observe(tmp_path, state, event, 1)['saved']
-    records = list((tmp_path / 'docs/lessons-learned').glob('*.json'))
+    records = list((tmp_path / 'docs/lessons-learned').glob('errors/*.md'))
     assert len(records) == 1
     text = records[0].read_text()
     assert 'DO_NOT_SAVE' not in text
-    assert len(json.loads(text)['occurrences']) == 1
+    assert len(read_record(records[0])['occurrences']) == 1
     assert capture.audit(state) == []
     success = {'type': 'item.completed', 'item': {'type': 'command_execution', 'id': 'other', 'exit_code': 0, 'command': 'ls'}}
     assert capture.observe(tmp_path, state, success, 1) is None
@@ -52,9 +58,9 @@ def test_replay_and_unidentified_errors(tmp_path):
     assert len(capture.audit(state)) == 2
     capture.replay(tmp_path, state)
     assert capture.audit(state) == []
-    records = list((tmp_path / 'docs/lessons-learned').glob('*.json'))
+    records = list((tmp_path / 'docs/lessons-learned').glob('errors/*.md'))
     assert len(records) == 1  # Both occurrences share the tool-error signature.
-    assert len(json.loads(records[0].read_text())['occurrences']) == 2
+    assert len(read_record(records[0])['occurrences']) == 2
 
 
 def test_read_only_never_writes_project(tmp_path):
@@ -159,17 +165,18 @@ def test_isolated_run_records_into_its_work_unit_and_sweeps_wait_for_the_unit(tm
         capture.observe(project, isolated, {**event, 'item': {**event['item'], 'id': 'item7'}})
     capture.replay(project, isolated)
     assert capture.audit(isolated) == []
-    records = list((unit / 'docs/lessons-learned').glob('*.json'))
-    assert len(records) == 1 and len(json.loads(records[0].read_text())['occurrences']) == 3
+    records = list((unit / 'docs/lessons-learned').glob('errors/*.md'))
+    assert len(records) == 1 and len(read_record(records[0], project)['occurrences']) == 3
     with patch.object(capture.subprocess, 'run', return_value=failure):
         capture.observe(project, isolated, {**event, 'item': {**event['item'], 'id': 'item8'}})
     # Another run's sweep leaves the Unit's capture pending while the Unit exists.
     assert capture.apply_pending(project, writer) == 0
     assert not (project / 'docs').exists()
     assert len(capture.audit(isolated)) == 1
+    shutil.copytree(unit / 'docs', project / 'docs')
     shutil.rmtree(unit)  # The merged Unit was cleaned up.
     assert capture.apply_pending(project, writer) == 1
-    assert len(list((project / 'docs/lessons-learned').glob('*.json'))) == 1
+    assert len(list((project / 'docs/lessons-learned').glob('errors/*.md'))) == 1
 
 
 def failed(identifier, command, exit_code=1, output='boom'):
@@ -186,9 +193,9 @@ def test_same_signature_accumulates_in_one_record_across_runs(tmp_path):
         for item, command in (('i1', "/usr/bin/zsh -lc 'uv run pytest -q tests/a.py'"),
                               ('i2', "/usr/bin/zsh -lc 'python3 -m pytest tests/b.py -k secret_TOKEN'")):
             assert capture.observe(tmp_path, state, failed(item, command), 0)['saved']
-    records = list(lessons.glob('*.json'))
+    records = list(lessons.glob('errors/*.md'))
     assert len(records) == 1
-    record = json.loads(records[0].read_text())
+    record = read_record(records[0])
     assert record['id'] == capture.signature_id({'provider': 'codex', 'role': 'work', 'kind': 'test', 'code': 'command-exit-1'})
     assert record['title'] == 'command-exit-1 (test, codex work)'
     assert len(record['occurrences']) == 6 and record['status'] == 'unresolved'
@@ -196,7 +203,7 @@ def test_same_signature_accumulates_in_one_record_across_runs(tmp_path):
     state['role'] = 'main'
     capture.observe(tmp_path, state, failed('i3', "zsh -lc 'pytest'"), 0)
     capture.observe(tmp_path, state, failed('i4', "zsh -lc 'pytest'", exit_code=2), 0)
-    assert len(list(lessons.glob('*.json'))) == 3  # Role and exit code split signatures.
+    assert len(list(lessons.glob('errors/*.md'))) == 3  # Role and exit code split signatures.
 
 
 def test_command_kinds():
@@ -239,7 +246,7 @@ def test_later_success_of_the_same_command_marks_recovered(tmp_path):
     capture.observe(tmp_path, state, failed('i2', "zsh -lc 'pytest tests/other.py'"), 0)
     green = {'type': 'item.completed', 'item': {'type': 'command_execution', 'id': 'i3', 'command': red, 'exit_code': 0}}
     assert capture.observe(tmp_path, state, green, 0)['saved']
-    occurrences = json.loads(next((tmp_path / 'docs/lessons-learned').glob('*.json')).read_text())['occurrences']
+    occurrences = read_record(next((tmp_path / 'docs/lessons-learned').glob('errors/*.md')))['occurrences']
     assert [o.get('recovered') for o in occurrences] == [True, None]
     assert occurrences[0]['recoveredBy'] == 'i3' and 'recoveredAt' in occurrences[0]
     assert capture.observe(tmp_path, state, {**green, 'item': {**green['item'], 'id': 'i4'}}, 0) is None
@@ -280,10 +287,46 @@ def test_claude_and_antigravity_command_failures_share_the_signature_scheme(tmp_
     assert capture.classify(antigravity, {**base, 'provider': 'antigravity'})['code'] == 'command-failed'
     for event, provider in ((claude, 'claude'), (unknown, 'claude'), (antigravity, 'antigravity')):
         assert capture.observe(tmp_path, {**base, 'provider': provider}, event, 0)['saved']
-    titles = sorted(json.loads(p.read_text())['title'] for p in (tmp_path / 'docs/lessons-learned').glob('*.json'))
+    titles = sorted(read_record(p)['title'] for p in (tmp_path / 'docs/lessons-learned').glob('errors/*.md'))
     assert titles == ['command-exit-1 (test, claude work)', 'command-failed (other, antigravity work)',
                       'command-failed (read, claude work)']
     # A completed command without an exit code (how both report success) recovers the failure.
     done = {'type': 'item.completed', 'item': {'id': 't3', 'type': 'command_execution', 'command': 'pytest -q',
                                                'status': 'completed'}}
     assert capture.observe(tmp_path, {**base, 'provider': 'claude'}, done, 0)['saved']
+
+
+def test_code_unit_without_document_owner_keeps_capture_pending(tmp_path):
+    project, unit = tmp_path / 'project', tmp_path / 'plugin-unit'
+    project.mkdir()
+    unit.mkdir()
+    run = tmp_path / 'run'
+    run.mkdir()
+    state = dict(statePath=str(run / 'state.json'), runId='r-unbound-docs', agentId='work-a',
+                 taskWorkspace={'mode': 'code', 'repositories': [{'repositoryRoot': str(project / 'plugin'), 'path': str(unit)}]})
+    saved = capture.observe(project, state, failed('i1', 'pytest'), 0)
+    assert saved['saved'] is False and saved['reason'] == 'document-workspace-unavailable'
+    capture.replay(project, state)
+    assert len(capture.audit(state)) == 1
+    assert not (project / 'docs').exists() and not (unit / 'docs').exists()
+
+
+def test_document_repository_unit_uses_project_identity_and_physical_docs(tmp_path):
+    from storage import paths
+    project, workspace = tmp_path / 'project', tmp_path / 'workspace'
+    (project / 'docs').mkdir(parents=True)
+    (workspace / 'docs').mkdir(parents=True)
+    run = tmp_path / 'run'
+    run.mkdir()
+    state = dict(statePath=str(run / 'state.json'), runId='r-docs', agentId='work-a', language='ko',
+                 taskWorkspace={'id': 'docs-unit', 'mode': 'code',
+                                'repositories': [{'repositoryRoot': str(project / 'docs'), 'path': str(workspace / 'docs')}]})
+    assert capture.record_root(project, state) == workspace
+    saved = capture.observe(project, state, failed('i1', 'pytest'), 0)
+    assert saved['saved'] is True
+    body = workspace / saved['path']
+    assert body.is_file() and read_record(body, project)['language'] == 'ko'
+    assert list((project / 'docs').iterdir()) == []
+    assert capture.recorded_paths([state], 'docs-unit') == {saved['path']}
+    assert Path(saved['metadataPath']).parent == Path(paths.resolve(project)['runtimeRoot']) / 'lessons-learned'
+    assert paths.resolve(workspace)['registered'] is False

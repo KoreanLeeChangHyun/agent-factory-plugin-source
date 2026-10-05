@@ -29,4 +29,4 @@ metadata:
 | [`export_documents.py`](references/usage/export_documents.md) | One-time host export | [Export](../document/references/host-sync.md#explicit-codex-export) |
 | [`catalog_documents.py`](references/usage/catalog_documents.md) | Live Document catalog | [Document](../document/SKILL.md) |
 | [`search_documents.py`](references/usage/search_documents.md) | Search that catalog | [Document](../document/SKILL.md) |
-| [`migrate_document_paths.py`](references/usage/migrate_document_paths.md) | Contract-listed document moves | [Document](../document/SKILL.md) |
+| [`migrate_document_paths.py`](references/usage/migrate_document_paths.md) | Document layout migration and contract-listed moves | [Document](../document/SKILL.md) |

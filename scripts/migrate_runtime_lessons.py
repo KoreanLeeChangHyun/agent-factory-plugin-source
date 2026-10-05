@@ -122,13 +122,16 @@ def plan(root, agents_root):
                 if record['id'] not in group['records']:
                     group['records'].append(record['id'])
                 group['occurrences'].append({**occurrence, 'legacyId': record['id'], 'recovered': recovered})
+    for record in lessons.records(root):
+        if any('signature' in occurrence for occurrence in record['occurrences']) and record['id'] not in keep['aggregate']:
+            keep['aggregate'].append(record['id'])
     return {'groups': groups, 'keep': keep, 'excluded': excluded, 'undetermined': undetermined}
 
 
 def summary(root, result, details):
     """Counts of the plan; call it before apply() so existing signature records are counted as found."""
     groups = result['groups']
-    existing = {name for name in groups if lessons.safe(root, f'docs/lessons-learned/{name}.json').exists()}
+    existing = {r['id'] for r in lessons.records(root)} & set(groups)
     output = {
         'mode': 'apply' if details.get('apply') else 'dry-run',
         'merge': {'signatures': len(groups), 'newSignatureRecords': len(set(groups) - existing),
@@ -155,9 +158,8 @@ def apply(root, result, backup):
     directory = lessons.safe(root, 'docs/lessons-learned')
     with lessons.locked(root):
         for name, group in result['groups'].items():
-            path = directory / f'{name}.json'
             title = capture.signature_title(group['signature'])
-            record = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {
+            record = lessons.find(root, name) if name in {r['id'] for r in lessons.records(root)} else {
                 'schemaVersion': 1, 'id': name, 'category': 'error', 'title': title, 'language': 'en',
                 'scope': 'runtime', 'status': 'unresolved', 'occurrences': [], 'applications': [],
                 'candidates': [], 'publications': []}
@@ -172,7 +174,7 @@ def apply(root, result, backup):
                     moved.update(recovered=True, recoveredBy=occurrence['recovered'])
                 record['occurrences'].append(moved)
             record['occurrences'].sort(key=lambda occurrence: occurrence.get('recordedAt', ''))
-            lessons.atomic(path, json.dumps(record, ensure_ascii=False, indent=2) + '\n')
+            lessons.save(root, record)
         sources = [directory / f'{legacy}.json' for group in result['groups'].values() for legacy in group['records']]
         for source in sources:
             shutil.copy2(source, backup / source.name)
