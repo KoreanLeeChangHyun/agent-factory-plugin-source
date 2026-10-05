@@ -218,7 +218,7 @@ def run_codex_attempt(
     active_session: str | None = None
     final_messages: list[str] = []
     publication_failed = False
-    started_at = time.monotonic()  # noqa: F841 - unused, but the clock read stays: tests sequence time.monotonic calls
+    time.monotonic()  # result unused, but the clock read stays: tests sequence time.monotonic calls
     # Legacy session timeout fields must not terminate valid ongoing work.
     start_deadline = float("inf")
     turn_deadline = float("inf")

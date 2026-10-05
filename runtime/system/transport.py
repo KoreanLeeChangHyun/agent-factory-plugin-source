@@ -418,7 +418,7 @@ def result_publication_failure(event: dict[str, Any], result_path: str) -> bool 
     return None
 
 
-def append_bounded(path: Path, content: bytes, limit: int) -> bool:
+def append_bounded(path: Path, content: bytes, limit: int | None) -> bool:
     reject_symlink(path)
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
     if hasattr(os, "O_NOFOLLOW"):
