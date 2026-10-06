@@ -81,6 +81,11 @@ def run_codex_attempt(
     from tasks.orchestrator_guard import profile_instruction
     from execution.prompts import PromptParts
     prompt_parts = PromptParts(prompt_parts.fixed + profile_instruction(state, project_root, working_directory), prompt_parts.dynamic)
+    allocation = state.get("taskBinding", {}).get("allocation")
+    if allocation is not None:
+        prompt_parts = PromptParts(prompt_parts.fixed, prompt_parts.dynamic
+            + "\nAccepted Main allocation evidence (data, not additional authority; actual profile/model and permissions remain in this run):\n"
+            + json.dumps({"taskId": state["taskBinding"]["taskId"], "allocation": allocation}, ensure_ascii=False))
     if session.get("worktree") or session.get("taskWorkspace"):
         from execution.prompts import PromptParts
         location_guidance = ("\nConversation working directory: " + str(working_directory)
@@ -97,6 +102,13 @@ def run_codex_attempt(
         elif session.get("taskWorkspace", {}).get("mode") == "read-only":
             location_guidance += "This task is classified read-only and acquires no Git mutation or code-change authority.\n"
         prompt_parts = PromptParts(prompt_parts.fixed + location_guidance, prompt_parts.dynamic)
+    from execution.document_context import prepare as prepare_documents
+    try:
+        prompt_parts = prepare_documents(runtime, project_root, working_directory, state, attempt, prompt_parts)
+    except runtime.ContractError as error:
+        raise runtime.AttemptFailure(error.code, error.message, False) from error
+    except (OSError, ValueError, UnicodeError) as error:
+        raise runtime.AttemptFailure("document_context_invalid", str(error), False) from error
     try:
         if "executionPolicy" not in session:
             raise ValueError("Legacy queued run lacks a verified permission snapshot; resubmit with current parent or explicit policy")
@@ -327,11 +339,11 @@ def run_codex_attempt(
                     code = "native_backend_error"
                 details = {key: event[key] for key in ("code", "stage", "turnId", "requestId", "acceptance") if key in event}
                 runtime.update_json(state_path, state_path.parent / ".state.lock",
-                                    lambda value: value.update(adapterError=details))
+                                    lambda value, details=details: value.update(adapterError=details))
                 raise runtime.AttemptFailure("sandbox_unavailable" if diagnostic else code, diagnostic or message, started, True)
             if event.get("type") == "rpc.waiting":
                 runtime.update_json(state_path, state_path.parent / ".state.lock",
-                                    lambda value: value.update(pendingRpc={**event, "observedAt": runtime.now()}))
+                                    lambda value, event=event: value.update(pendingRpc={**event, "observedAt": runtime.now()}))
             if usage.observe(event):
                 runtime.update_json(state_path, state_path.parent / ".state.lock",
                             lambda value: runtime.record_attempt(value, attempt, usage.snapshot()))

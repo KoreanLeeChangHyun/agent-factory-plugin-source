@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from native_fixtures import native_fixture, runtime
-from execution.usage import UsageAccumulator, record_attempt
+from execution.usage import UsageAccumulator, record_attempt, compare_orchestration
 
 
 def native_event(total, last, **extra):
@@ -19,6 +19,28 @@ def native_event(total, last, **extra):
 
 
 class TokenUsageTests(unittest.TestCase):
+    def test_comparison_keeps_subsets_retries_and_unknown_observations_separate(self):
+        states = {
+            'main.json': {'agentId': 'main', 'runId': 'one', 'role': 'main', 'attempt': 2,
+                          'tokenUsage': dict(inputTokens=100, outputTokens=20, cachedInputTokens=40, reasoningOutputTokens=10),
+                          'usageAttempts': {'1': {'inputTokens': 60}, '2': {'inputTokens': 40}}},
+            'work.json': {'agentId': 'worker', 'runId': 'one', 'role': 'work'}
+        }
+        arm = {'messages': ['한글😀'], 'runStatePaths': list(states), 'detailReads': [{'runId': 'one', 'reason': 'constraint'}]}
+        document = {'schemaVersion': 1, 'cases': [{'id': 'dependent', 'input': 'same', 'completionCriteria': 'same result',
+                    'before': arm, 'after': {**arm, 'messages': ['한글😀', 'more']}}]}
+        result = compare_orchestration(document, lambda path: states[str(path)])['cases'][0]
+        self.assertEqual(result['before']['reportedModelUsageByRole']['main']['inputTokens'], 100)
+        self.assertEqual(result['before']['reportedModelUsageByRole']['main']['outputTokens'], 20)
+        self.assertIsNone(result['before']['reportedModelUsageByRole']['work']['inputTokens'])
+        self.assertEqual(result['before']['runs'][0]['retryCount'], 1)
+        self.assertEqual(result['staticUtf8ByteDifference'], 4)
+        self.assertIsNone(result['modelTokenSavingsPercent'])
+        self.assertIsNone(result['after']['quality'])
+        arm['runStatePaths'].append('main.json')
+        with self.assertRaises(runtime.ContractError):
+            compare_orchestration(document, lambda path: states[str(path)])
+
     def test_resume_deduplicates_totals_and_counts_only_current_usage(self):
         usage = UsageAccumulator()
         self.assertTrue(usage.observe(native_event(1100, 100)))

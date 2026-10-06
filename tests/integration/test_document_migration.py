@@ -6,8 +6,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import shlex
 
 import pytest
+from tasks import orchestrator_guard as guard
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +43,189 @@ def setup(tmp_path):
         for relative in ("analyze-alpha/SKILL.md", "analyze-alpha/assets/data.csv", "analyze-beta/SKILL.md"):
             writer.writerow(["T3", "move", f"docs/processed/{relative}", f"docs/refined/{relative}"])
     return project, operations, tmp_path / "backup"
+
+
+def scribe_setup(tmp_path):
+    project, operations, _ = setup(tmp_path)
+    owned_operations = project / "docs/moves.csv"
+    operations.rename(owned_operations)
+    binary = "analyze-alpha/assets/image.bin"
+    (project / "docs/processed" / binary).write_bytes(b"\x00\xff\x80\r\nfixture")
+    with owned_operations.open("a", newline="") as target:
+        csv.writer(target).writerow(["T3", "move", f"docs/processed/{binary}", f"docs/refined/{binary}"])
+    run_directory = tmp_path / "runtime/agents/scribe/runs/run-1"
+    run_directory.mkdir(parents=True)
+    state = run_directory / "state.json"
+    state.write_text("{}")
+    config = {"role": "work", "profile": "scribe", "pluginRoots": [str(ROOT)],
+              "scripts": list(guard.PROFILE_SCRIPTS["scribe"]), "projectRoot": str(project),
+              "documentsRoot": str(project), "writeRoot": str(project / "docs"),
+              "captureStatePath": str(state), "runSource": str(run_directory)}
+    return project, owned_operations, run_directory / "document-backups/moves", config
+
+
+def scribe_call(project, operations, config, *arguments):
+    command = ["python3", str(MIGRATE), "--project-root", str(project),
+               "--operations", str(operations), *arguments]
+    plain = shlex.join(command)
+    allowed = guard.allowed_command(plain, config, str(project))
+    assert guard.codex_decision({"tool_name": "Bash", "tool_input": {"command": plain},
+                                 "cwd": str(project)}, config) == allowed
+    assert guard.agy_decision({"toolCall": {"name": "run_command", "args": {"CommandLine": plain}},
+                               "workspacePaths": [str(project)]}, config) == allowed
+    result = subprocess.run(command, env={**os.environ, guard.ENV: json.dumps(config)},
+                            capture_output=True, text=True)
+    return allowed, result
+
+
+@pytest.mark.parametrize("binding", ["current", "legacy", "isolated"])
+def test_scribe_guarded_backup_and_lossless_move(tmp_path, binding):
+    project, operations, backup, config = scribe_setup(tmp_path)
+    identity = project
+    if binding == "legacy":
+        config["runSource"] = None  # Historical Scribe runs still have their runtime-bound state path.
+    elif binding == "isolated":
+        identity = tmp_path / "identity"
+        identity.mkdir()
+        config["projectRoot"] = str(identity)
+
+    def call(*arguments):
+        return scribe_call(identity, operations, config, "--documents-root", str(project), *arguments)
+
+    allowed, preview = call()
+    assert allowed, "Scribe must reach the bounded Document migration CLI"
+    assert preview.returncode == 0, preview.stderr
+    entries = json.loads(preview.stdout)["operations"]
+    assert all(len(item["sourceSha256"]) == 64 and len(item["destinationSha256"]) == 64 for item in entries)
+    assert not backup.exists()
+    allowed, refused = call("--apply", "--backup-dir", str(backup))
+    assert allowed and refused.returncode == 1
+    assert "completed backup manifest" in refused.stderr
+    before = {(project / item["sourceRelative"]): (project / item["sourceRelative"]).read_bytes() for item in entries}
+    for mode in ("--backup", "--apply", "--apply"):
+        allowed, result = call(mode, "--backup-dir", str(backup))
+        assert allowed and result.returncode == 0, result.stderr
+    for source, content in before.items():
+        assert (backup / "files" / source.relative_to(project)).read_bytes() == content
+        assert not source.exists()
+    assert (project / "docs/refined/analyze-beta/SKILL.md").read_bytes() == before[project / "docs/processed/analyze-beta/SKILL.md"]
+    assert (project / "docs/refined/analyze-alpha/assets/data.csv").read_bytes() == before[project / "docs/processed/analyze-alpha/assets/data.csv"]
+    assert Path(config["captureStatePath"]).read_text() == "{}"
+    allowed, after = call("--backup-dir", str(backup))
+    assert allowed and json.loads(after.stdout)["summary"]["alreadyMoved"] == len(entries)
+    assert (project / "docs/refined/analyze-alpha/assets/image.bin").read_bytes() == b"\x00\xff\x80\r\nfixture"
+
+
+@pytest.mark.parametrize("violation", ["source-outside", "destination-outside", "parent-escape", "source-symlink",
+                                      "destination-symlink", "parent-symlink", "backup-symlink", "backup-other-run", "backup-control",
+                                      "backup-parent-escape", "operations-outside",
+                                      "operations-symlink", "wrong-project", "wrong-documents", "storage-layout",
+                                      "option-abbreviation", "read-only", "explorer", "overlap"])
+def test_scribe_migration_boundaries(tmp_path, violation):
+    project, operations, backup, config = scribe_setup(tmp_path)
+    rows = list(csv.DictReader(operations.open()))
+    outside = project / "src.txt"
+    outside.write_text("preserve outside")
+    arguments = ["--backup", "--backup-dir", str(backup)]
+    if violation == "source-outside":
+        rows[0]["path"] = "src.txt"
+    elif violation == "destination-outside":
+        rows[0]["destination"] = "output.txt"
+    elif violation == "parent-escape":
+        rows[0]["destination"] = "docs/../output.txt"
+    elif violation in ("source-symlink", "destination-symlink"):
+        key = "path" if violation == "source-symlink" else "destination"
+        link = project / "docs/link"
+        link.symlink_to(outside)
+        rows[0][key] = "docs/link"
+    elif violation == "backup-symlink":
+        backup.parent.mkdir()
+        backup.symlink_to(project / "docs", target_is_directory=True)
+    elif violation == "parent-symlink":
+        (project / "docs/escape").symlink_to(tmp_path, target_is_directory=True)
+        rows[0]["destination"] = "docs/escape/output.txt"
+    elif violation == "backup-other-run":
+        arguments[-1] = str(Path(config["runSource"]).parent / "run-other/document-backups/moves")
+    elif violation == "backup-control":
+        arguments[-1] = config["runSource"]
+    elif violation == "backup-parent-escape":
+        arguments[-1] = str(backup.parent / "../control")
+    elif violation == "operations-outside":
+        link = tmp_path / "external-operations.csv"
+    elif violation == "operations-symlink":
+        link = operations.with_name("linked.csv")
+        link.symlink_to(operations)
+    elif violation == "wrong-project":
+        config["projectRoot"] = str(tmp_path)
+    elif violation == "wrong-documents":
+        arguments += ["--documents-root", str(tmp_path)]
+    elif violation == "storage-layout":
+        arguments += ["--storage-layout"]
+    elif violation == "option-abbreviation":
+        arguments[0] = "--back"
+    elif violation == "read-only":
+        config["writeRoot"] = None
+    elif violation == "explorer":
+        config["profile"] = "explore"
+    elif violation == "overlap":
+        rows[0]["destination"] = rows[1]["path"]
+    with operations.open("w", newline="") as target:
+        writer = csv.DictWriter(target, fieldnames=["taskIds", "operation", "path", "destination"])
+        writer.writeheader()
+        writer.writerows(rows)
+    if violation == "operations-symlink":
+        operations = link
+    elif violation == "operations-outside":
+        operations.rename(link)
+        operations = link
+    allowed, result = scribe_call(project, operations, config, *arguments)
+    assert result.returncode != 0, (violation, result.stdout)
+    assert outside.read_text() == "preserve outside"
+    assert not (project / "output.txt").exists()
+    assert (project / "docs/processed/analyze-beta/SKILL.md").exists()
+    assert not (backup / "migration-manifest.json").exists()
+    if violation not in {"source-outside", "destination-outside", "parent-escape", "source-symlink", "destination-symlink", "parent-symlink", "overlap"}:
+        assert not allowed, violation
+
+
+@pytest.mark.parametrize("change", ["source", "backup", "manifest-symlink"])
+def test_scribe_changed_backup_or_source_preserves_documents(tmp_path, change):
+    project, operations, backup, config = scribe_setup(tmp_path)
+    allowed, result = scribe_call(project, operations, config, "--backup", "--backup-dir", str(backup))
+    assert allowed and result.returncode == 0, result.stderr
+    source = project / "docs/processed/analyze-beta/SKILL.md"
+    if change == "source":
+        source.write_text("concurrent edit")
+    elif change == "backup":
+        (backup / "files/docs/processed/analyze-beta/SKILL.md").write_text("changed backup")
+    else:
+        manifest = backup / "migration-manifest.json"
+        target = backup.parent / "manifest-copy.json"
+        manifest.rename(target)
+        manifest.symlink_to(target)
+    before = source.read_bytes()
+    _, refused = scribe_call(project, operations, config, "--apply", "--backup-dir", str(backup))
+    assert refused.returncode == 1
+    assert source.read_bytes() == before
+    assert not (project / "docs/refined").exists()
+
+
+@pytest.mark.parametrize("change", ["source", "destination"])
+def test_concurrent_edit_during_publish_does_not_retire_source(tmp_path, monkeypatch, change):
+    import migrate_document_paths as migration
+    project, operations, backup = setup(tmp_path)
+    plan = migration.build_plan(project, operations, "T3")
+    publish = migration.publish_new
+
+    def changed(destination, content, source, expected_sha256):
+        publish(destination, content, source, expected_sha256)
+        (source if change == "source" else destination).write_text("concurrent edit")
+
+    monkeypatch.setattr(migration, "publish_new", changed)
+    with pytest.raises(ValueError, match="changed before source retirement"):
+        migration.apply_plan(plan, project)
+    assert plan[0]["source"].is_file()
+    assert (plan[0]["source"] if change == "source" else plan[0]["destination"]).read_text() == "concurrent edit"
 
 
 def test_apply_requires_backup_then_moves_preserving_content(tmp_path):

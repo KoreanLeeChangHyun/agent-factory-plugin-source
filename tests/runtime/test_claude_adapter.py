@@ -132,7 +132,7 @@ class ClaudeAdapterTests(unittest.TestCase):
             self.assertTrue(any(tool.startswith("Bash(python3 ") and tool.endswith("/scripts/*)") for tool in allowed))
             self.assertNotIn("Edit", allowed)
             self.assertNotIn("Bash", allowed)
-            self.assertNotIn("WebSearch", allowed)
+            self.assertIn("WebSearch", allowed)
             for mode, role in (("direct", "main"), ("work", "work")):
                 other, _ = claude.cli_command(session, {**state, "role": role, "executionOptions": {"taskMode": mode}},
                                               PromptParts("fixed", "request"))
@@ -168,7 +168,7 @@ class ClaudeAdapterTests(unittest.TestCase):
             schema = directory / "schema.json"
             schema.write_text(json.dumps(runtime.response_schema_document(str(directory / "result.md"))))
             state = {"statePath": str(directory / "state.json"), "responseSchemaPath": str(schema), "role": "work",
-                     "executionOptions": {"taskMode": "work"}}
+                     "executionOptions": {"taskMode": "work"}, "roleBoundaryPolicy": 1}
             docs = os.path.realpath(Path(root) / "docs")
             for sandbox in ({"type": "danger-full-access"}, {"type": "workspace-write", "writable_roots": [root]}):
                 policy = runtime.execution_policy.normalize({"schemaVersion": 1, "sandboxPolicy": sandbox, "approvalPolicy": "never"})
@@ -185,7 +185,8 @@ class ClaudeAdapterTests(unittest.TestCase):
                     self.assertNotIn("Bash", allowed)
                     if profile == "explore":
                         self.assertTrue({"WebSearch", "WebFetch"} <= set(allowed))
-                        self.assertFalse(any(tool.startswith(("Edit", "Write")) for tool in allowed))
+                        edits = [tool for tool in allowed if tool.startswith(("Edit", "Write"))]
+                        self.assertEqual(set(edits), {f"Edit(/{directory}/**)", f"Write(/{directory}/**)"})
                     else:
                         self.assertEqual([tool for tool in allowed if tool.startswith(("Edit", "Write"))],
                                          [f"Edit(/{docs}/**)", f"Write(/{docs}/**)"])
@@ -222,7 +223,10 @@ class ClaudeAdapterTests(unittest.TestCase):
                 for role, mode in (("main", "direct"), ("main", "orchestrate"), ("verification", "verification")):
                     other, _ = claude.cli_command(session, {**state, "role": role, "executionOptions": {"taskMode": mode}},
                                                   PromptParts("fixed", "request"))
-                    self.assertNotIn("--settings", other)
+                    if mode == "orchestrate":
+                        self.assertIn("--settings", other)
+                    else:
+                        self.assertNotIn("--settings", other)
                     self.assertNotIn("--disallowedTools", other)
             self.assertEqual(set(modes), {"bypassPermissions", "acceptEdits", "dontAsk", "plan"})
 

@@ -479,3 +479,75 @@ def test_reference_symlink_cannot_escape_package(tmp_path):
     (package / 'references/detail.md').symlink_to(outside)
     result = run(SEARCH, tmp_path, '--query', 'private')
     assert result.returncode != 0
+
+
+def test_partial_search_paging_and_revision_bound_section_read(tmp_path):
+    from search_documents import read_document, search
+    import pytest
+    package = processed(tmp_path, body='필수 권한: 배포 금지. [Detail](references/detail.md)')
+    (package / 'references').mkdir()
+    detail = package / 'references/detail.md'
+    detail.write_text('# Detail\n\n<a id="retry"></a>\n\n## Retry 재시도\n\n'
+                      '- Gateway retry. 예외: 사용자 승인 필요.\n\n### Child\n\n- Preserve child.\n\n'
+                      '```md\n## Fake heading\n```\n\n## Other\n\n- unrelated\n', encoding='utf-8')
+    processed(tmp_path, name='second', body='Gateway only')
+    assert search(tmp_path, 'gateway absent')['count'] == 0
+    result = search(tmp_path, 'GATEWAY absent', match='any', limit=1)
+    assert (result['totalCount'], result['nextOffset']) == (2, 1)
+    page = search(tmp_path, 'GATEWAY absent', match='any', limit=1, offset=1)
+    assert page['count'] == 1 and page['nextOffset'] is None
+    assert page['results'][0]['name'] != result['results'][0]['name']
+    hit = search(tmp_path, '재시도 retry')['results'][0]
+    path = detail.relative_to(tmp_path).as_posix()
+    source = next(item for item in hit['sources'] if item['path'] == path)
+    assert any(item['anchor'] == 'retry' for item in source['sections'])
+    read = read_document(tmp_path, path, 'retry', hit['revision'])
+    assert 'Gateway retry' in read['text'] and 'Preserve child' in read['text']
+    assert 'Other' not in read['text'] and '배포 금지' in read['entryText']
+    assert read['sha256'] == source['sha256']
+    assert 'fake-heading' not in [s['anchor'] for s in read['sections']]
+    detail.write_text(detail.read_text().replace('Gateway retry', 'Gateway new retry'))
+    with pytest.raises(ValueError, match='Stale'):
+        read_document(tmp_path, path, 'retry', hit['revision'])
+    fresh = search(tmp_path, 'new retry')['results'][0]
+    assert fresh['revision'] != hit['revision']
+    assert 'new retry' in read_document(tmp_path, path, 'retry', fresh['revision'])['text']
+    entry = package / 'SKILL.md'
+    entry.write_text(entry.read_text().replace('배포 금지', '재시작 금지'))
+    with pytest.raises(ValueError, match='Stale'):
+        read_document(tmp_path, path, 'retry', fresh['revision'])
+    for invalid in ('../private.md', str(detail), 'private.md'):
+        with pytest.raises(ValueError):
+            read_document(tmp_path, invalid)
+    cli = run(SEARCH, tmp_path, '--read-path', path, '--anchor', 'retry')
+    assert cli.returncode == 0, cli.stderr
+    assert json.loads(cli.stdout)['partial'] is True
+
+
+def test_canonical_skill_read_and_dependency_changes(tmp_path):
+    import pytest
+    from search_documents import read_document
+    package = tmp_path / 'docs/skills/rule-demo'
+    package.mkdir(parents=True)
+    entry = package / 'SKILL.md'
+    entry.write_text('---\ndocument-type: specification\ncategory: rule\ndomain: null\n'
+                     'name: demo\nlanguage: ko\n---\n# 규칙\n\n- 금지와 예외. [Detail](references/detail.md)\n')
+    (package / 'references').mkdir()
+    detail = package / 'references/detail.md'
+    detail.write_text('# Detail\n\n## Topic\n\n- Current rule\n')
+    relative = detail.relative_to(tmp_path).as_posix()
+    read = read_document(tmp_path, relative, 'topic')
+    assert read['document']['documentType'] == 'specification'
+    assert read['document']['packagePath'] == 'docs/skills/rule-demo'
+    assert '금지와 예외' in read['entryText']
+    assert json.loads(run(CATALOG, tmp_path).stdout)['documents'] == []
+    # Linked asset bytes invalidate the complete package even when text is unchanged.
+    (package / 'assets').mkdir()
+    asset = package / 'assets/data.csv'
+    asset.write_text('a,b\n1,2\n')
+    with pytest.raises(ValueError, match='Stale'):
+        read_document(tmp_path, relative, 'topic', read['revision'])
+    detail.unlink()
+    detail.symlink_to(entry)
+    with pytest.raises(ValueError, match='Symlinks'):
+        read_document(tmp_path, relative)

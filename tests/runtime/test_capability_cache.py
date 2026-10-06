@@ -179,5 +179,70 @@ path.write_text(json.dumps(json.loads(path.read_text()) + ['config/read', 'threa
         self.assertEqual(self.count(), 1)
 
 
+class PrintCapabilityCacheTests(unittest.TestCase):
+    def test_print_provider_cache_identity_refresh_corruption_and_failure(self):
+        from adapters import claude, antigravity
+        from storage import paths
+        from tasks.modes import TASK_MODES
+        for provider in (claude, antigravity):
+            module = provider.capabilities
+            name = "claude" if provider is claude else "antigravity"
+            with self.subTest(provider=name), tempfile.TemporaryDirectory() as home:
+                identity = {"path": name, "configDir": "first"}
+                flags = {"model": True, "reasoning": True, "fast": False, "goal": True, "plan": True,
+                         "instructionDelivery": True, "images": name == "claude", "worktrees": True,
+                         "automaticRequestHash": True, "taskModes": list(TASK_MODES)}
+                success = {"diagnostic": None, "backend": name + "-print", "schemaVersion": "0.1.0",
+                           "kind": "execution-capabilities", "submit": flags, "send": dict(flags)}
+                with mock.patch.object(module, "_identity", return_value=identity), \
+                        mock.patch.object(module, "_probe", return_value=success) as probe:
+                    first = module.inspect_capabilities(name, runtime_home=home)
+                    self.assertEqual(module.inspect_capabilities(name, runtime_home=home), first)
+                    self.assertEqual(probe.call_count, 1)
+                    module.inspect_capabilities(name, runtime_home=home, refresh=True)
+                    self.assertEqual(probe.call_count, 2)
+                    identity["configDir"] = "second"
+                    module.inspect_capabilities(name, runtime_home=home)
+                    self.assertEqual(probe.call_count, 3)
+                    cache = Path(home) / "cache/native-capabilities" / (name + ".json")
+                    for created in (0, 10**20, 10**400):
+                        cached = paths.read(cache)
+                        cached["created"] = created
+                        paths.write(cache, cached)
+                        count = probe.call_count
+                        self.assertEqual(module.inspect_capabilities(name, runtime_home=home), success)
+                        self.assertEqual(probe.call_count, count + 1)
+                    paths.write(cache, [])
+                    count = probe.call_count
+                    module.inspect_capabilities(name, runtime_home=home)
+                    self.assertEqual(probe.call_count, count + 1)
+                    for capabilities in (None, [], {}, {**success, "diagnostic": "unavailable"},
+                                         {**success, "backend": "wrong-provider"},
+                                         {**success, "submit": {**flags, "model": 1}},
+                                         {**success, "send": {**flags, "plan": 1}},
+                                         {**success, "submit": {**flags, "fast": True}, "send": {**flags, "fast": True}},
+                                         {**success, "send": {**flags, "plan": False}}):
+                        cached = paths.read(cache)
+                        cached["capabilities"] = capabilities
+                        paths.write(cache, cached)
+                        count = probe.call_count
+                        self.assertEqual(module.inspect_capabilities(name, runtime_home=home), success)
+                        self.assertEqual(probe.call_count, count + 1)
+                    # Unsuccessful refresh must not poison the stored successful observation.
+                    probe.return_value = {"diagnostic": "unavailable"}
+                    module.inspect_capabilities(name, runtime_home=home, refresh=True)
+                    count = probe.call_count
+                    self.assertEqual(module.inspect_capabilities(name, runtime_home=home), success)
+                    self.assertEqual(probe.call_count, count)
+                    with mock.patch.object(paths, "write", side_effect=PermissionError("read-only")):
+                        self.assertEqual(module.inspect_capabilities(name, runtime_home=home, refresh=True),
+                                         {"diagnostic": "unavailable"})
+                    probe.return_value = success
+                    with mock.patch.object(module, "_identity", side_effect=[dict(identity), {**identity, "size": 999}]), \
+                            mock.patch.object(paths, "write") as write:
+                        self.assertEqual(module.inspect_capabilities(name, runtime_home=home, refresh=True), success)
+                        write.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

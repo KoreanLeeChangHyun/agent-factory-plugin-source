@@ -70,6 +70,8 @@ class FakeRuntime:
         }
         if values["execution"].get("taskBinding"):
             dispatch_tuple["taskBinding"] = values["execution"]["taskBinding"]
+            if "documentContext" in values["execution"]["taskBinding"]:
+                dispatch_tuple.setdefault("executionOptions", {})["documentContext"] = values["execution"]["taskBinding"]["documentContext"]
         if "executionPolicy" in values["execution"]:
             dispatch_tuple["executionPolicy"] = values["execution"]["executionPolicy"]
         permission = values["execution"].get("agentPermissions", {}).get(values["role"])
@@ -209,6 +211,36 @@ class AgentLoopContractTests(unittest.TestCase):
         self.runtime_patch.start()
         self.addCleanup(self.runtime_patch.stop)
 
+    def test_allocation_survives_brief_capture_revision_and_resume(self):
+        from test_task_binding import TaskBindingTests
+        allocation = TaskBindingTests.allocation()
+        allocation_path = self.root / "allocation.json"
+        allocation_path.write_text(json.dumps(allocation))
+        args = self.agent_loop.build_parser().parse_args([
+            "start", "--project-root", str(self.root), "--request-file", str(self.request),
+            "--work-agent", "work-agent", "--verification-agent", "verification-agent",
+            "--task-mode", "work-verification", "--allocation-file", str(allocation_path),
+            "--receipt-recovery", "manual", "--max-revisions", "1", "--codex", "/bin/true"])
+        started = self.agent_loop.start_loop(args)
+        binding = self.agent_exec.safe_read_json(Path(started["statePath"]))["execution"]["taskBinding"]
+        self.assertEqual(binding["allocation"], allocation)
+        allocation_path.write_text("{}")  # Revisions must use the accepted runtime snapshot.
+        self.runtime.complete_work("work-agent", started["latestWorkRunId"])
+        verifying = self.reconcile(started)
+        self.runtime.complete_verification("verification-agent", verifying["latestVerificationRunId"], "fail")
+        revised = self.reconcile(verifying)
+        self.assertEqual(self.agent_exec.safe_read_json(Path(revised["statePath"]))["execution"]["taskBinding"], binding)
+        self.runtime.complete_work("work-agent", revised["latestWorkRunId"], ["finding-1"])
+        verifying = self.reconcile(revised)
+        self.runtime.complete_verification("verification-agent", verifying["latestVerificationRunId"], "fail")
+        stopped = self.reconcile(verifying)
+        resumed = self.extend_revisions(stopped)
+        stored = self.agent_exec.safe_read_json(Path(resumed["statePath"]))
+        self.assertEqual(stored["execution"]["taskBinding"], binding)
+        for dispatch in self.runtime.dispatches:
+            captured = self.agent_exec.safe_read_json(Path(dispatch["execution"]["taskListPath"]))
+            self.assertEqual(captured["tasks"][0]["allocation"], allocation)
+
     def start(self, extra: list[str] | None = None):
         arguments = [
             "start", "--project-root", str(self.root), "--request-file", str(self.request),
@@ -313,6 +345,18 @@ class AgentLoopContractTests(unittest.TestCase):
         with mock.patch.object(self.runtime, "call", create=True, return_value={"kind": "ack"}) as cancel:
             self.assertFalse(self.stop_task(started)["stopPending"])
             cancel.assert_called_once()
+
+    def test_document_requirements_survive_durable_dispatch_reconciliation(self):
+        document = json.loads(self.tasks.read_text())
+        requirements = {"query": "needle", "scope": "plugin", "allowPartial": True}
+        document["tasks"][0]["documentContext"] = requirements
+        self.tasks.write_text(json.dumps(document))
+        started = self.start(["--task-mode", "work"])
+        self.assertEqual(started["status"], "active")
+        state = json.loads(Path(started["statePath"]).read_text())
+        self.assertEqual(state["execution"]["taskBinding"]["documentContext"], requirements)
+        run = next(iter(self.runtime.runs.values()))
+        self.assertEqual(run["dispatchTuple"]["executionOptions"]["documentContext"], requirements)
 
     def test_orchestrator_brief_starts_without_a_task_list(self):
         self.request.write_text("Create hello.txt with one line\n\nScope: no commits\nDone: file exists\n", encoding="utf-8")

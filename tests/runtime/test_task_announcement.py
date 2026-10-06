@@ -73,6 +73,23 @@ class TaskAnnouncementTests(unittest.TestCase):
         self.assertEqual(binding['completionCriteria'], result['taskFlow']['tasks'][0]['completionCriteria'])
         self.assertEqual(self.source.read_bytes(), original)
 
+    def test_allocation_is_announced_and_cannot_be_changed_or_removed(self):
+        from test_task_binding import TaskBindingTests
+        self.document['tasks'][0]['allocation'] = TaskBindingTests.allocation()
+        self.source.write_text(json.dumps(self.document))
+        prepared = self.prepare()
+        accepted = self.runtime.safe_read_json(Path(prepared['taskListFile']))
+        self.check_submission(accepted)
+        for remove in (False, True):
+            altered = copy.deepcopy(accepted)
+            if remove:
+                altered['tasks'][0].pop('allocation')
+            else:
+                altered['tasks'][0]['allocation']['unitReason'] = 'changed'
+            with self.subTest(remove=remove), self.assertRaises(self.runtime.ContractError) as error:
+                self.check_submission(altered)
+            self.assertEqual(error.exception.code, 'task_announcement_metadata_mismatch')
+
     def test_retry_reuses_snapshot_and_changed_request_cannot_replace_it(self):
         result = self.prepare()
         original = Path(result['announcementPath']).read_bytes()

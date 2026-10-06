@@ -471,6 +471,14 @@ class AntigravityCapabilityTests(unittest.TestCase):
             self.assertEqual(levels, {"gemini-3.8-flash": ["high", "low"], "gemini-3.1-pro": ["high", "low"]})
             self.assertEqual(capabilities.effort_levels("agy", runtime_home=home), levels)
             self.assertEqual(run.call_count, 1)  # The listing is cached briefly.
+            from storage import paths
+            cache = Path(home) / "cache/native-capabilities/antigravity-models.json"
+            for created in (10**400, -(10**400)):
+                cached = paths.read(cache)
+                cached["created"] = created
+                paths.write(cache, cached)
+                self.assertEqual(capabilities.effort_levels("agy", runtime_home=home), levels)
+            self.assertEqual(run.call_count, 3)
         with mock.patch.object(capabilities.subprocess, "run", side_effect=OSError("missing")):
             self.assertEqual(capabilities.effort_levels("agy", runtime_home=None), {})
 

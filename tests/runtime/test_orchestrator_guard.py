@@ -116,7 +116,7 @@ class GuardDecisionTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"CODEX_HOME": codex_home}):
                 config = json.loads(guard.environment({"statePath": f"{self.run_directory}/state.json"})[guard.ENV])
         self.assertEqual(config, {"pluginRoots": [os.path.realpath(PLUGIN), os.path.realpath(installed)],
-                                  "writeRoot": self.run_directory})
+                                  "writeRoot": self.run_directory, "captureStatePath": f"{self.run_directory}/state.json", "roleBoundaryPolicy": None})
 
     def test_codex_patches_only_inside_run_directory(self):
         inside = f"*** Begin Patch\n*** Add File: {self.run_directory}/task.md\n+x\n*** End Patch"
@@ -132,7 +132,7 @@ class GuardDecisionTests(unittest.TestCase):
         self.assertFalse(self.decide(call("write_to_file", TargetFile="/tmp/project/a.py")))
         self.assertFalse(self.decide(call("run_command", CommandLine="touch a", Cwd="/tmp")))
         self.assertFalse(self.decide(call("generate_image", Prompt="x")))
-        self.assertFalse(self.decide(call("search_web", query="x")))
+        self.assertTrue(self.decide(call("search_web", query="x")))
 
     def test_unarmed_guard_allows_everything(self):
         self.assertTrue(self.decide({"tool_name": "Bash", "tool_input": {"command": "rm -rf x"}}, armed=False))
@@ -226,6 +226,18 @@ class ProfileDecisionTests(unittest.TestCase):
         self.assertFalse(self.agy(self.scribe, "write_to_file", TargetFile="/tmp/project/a.py"))
         self.assertFalse(self.agy(self.scribe, "search_web", query="x"))
         self.assertFalse(self.agy(self.scribe, "read_url_content", Url="https://example.com"))
+        for command in ("python3 -c 'print(1)'", "sha256sum --check /tmp/input", "git hash-object -w /tmp/input",
+                        "cp /tmp/input /tmp/output", "mv /tmp/input /tmp/output",
+                        f"python3 {PLUGIN}/scripts/migrate_document_paths.py --help | cat"):
+            self.assertFalse(self.codex(self.scribe, "Bash", command=command), command)
+            self.assertFalse(self.agy(self.scribe, "run_command", CommandLine=command), command)
+        self.assertTrue(self.codex(self.scribe, "Bash", command=f"python3 {PLUGIN}/scripts/migrate_document_paths.py --help"))
+        with tempfile.TemporaryDirectory() as other:
+            script = Path(other) / "scripts/migrate_document_paths.py"
+            script.parent.mkdir()
+            script.write_text("print('older unrestricted copy')")
+            config = {**self.scribe, "pluginRoots": [PLUGIN, other]}
+            self.assertFalse(self.codex(config, "Bash", command=f"python3 {script} --help"))
 
     def test_profiles_never_start_sub_agents_and_name_their_rule(self):
         for config in (self.explore, self.scribe):
@@ -271,6 +283,109 @@ class ProfileDecisionTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as worktree:
                 self.assertEqual(guard.scribe_root({"projectRoot": project, "workingDirectory": worktree}),
                                  os.path.realpath(worktree))
+
+    def test_explorer_assignment_applies_to_all_native_file_tools_and_rejects_escape(self):
+        with tempfile.TemporaryDirectory() as project:
+            root = Path(project)
+            package = root / "docs/refined/research/assigned"
+            package.mkdir(parents=True)
+            target = package / "SKILL.md"
+            state = {"role": "work", "workProfile": "explore", "roleBoundaryPolicy": 1,
+                     "statePath": str(root / "own-run/state.json"),
+                     "taskBinding": {"documentPaths": [str(target.relative_to(root))]}}
+            config = json.loads(guard.profile_environment(state, {"projectRoot": project})[guard.ENV])
+            for event in (
+                {"tool_name": "apply_patch", "tool_input": {"command": self.patch(target)}},
+                {"tool_name": "Write", "tool_input": {"file_path": str(target)}},
+                {"toolCall": {"name": "write_to_file", "args": {"TargetFile": str(target)}}},
+            ):
+                self.assertTrue(self.decide(event, config=config), event)
+            # Emulate the permitted native write, then prove denials leave it untouched.
+            target.write_text("assigned evidence")
+            for path in (root / "src/a.py", package / "other.md", package / "../other/SKILL.md",
+                         root / "docs/skills/rule-owned/SKILL.md"):
+                for tool in ("Write", "Edit"):
+                    self.assertFalse(self.codex(config, tool, file_path=str(path)))
+                self.assertFalse(self.agy(config, "write_to_file", TargetFile=str(path)))
+            for operation in ("*** Delete File: ", "*** Move to: "):
+                self.assertFalse(self.codex(config, "apply_patch", command=operation + str(target)))
+            target.unlink()
+            external = root / "source.py"
+            external.write_text("preserved")
+            target.symlink_to(external)
+            self.assertFalse(self.codex(config, "Write", file_path=str(target)))
+            self.assertFalse(self.agy(config, "replace_file_content", TargetFile=str(target)))
+            self.assertEqual(external.read_text(), "preserved")
+            with self.assertRaises(ValueError):
+                guard.profile_environment(state, {"projectRoot": project})
+
+    def test_explorer_binds_existing_file_operations_and_does_not_widen_permissions(self):
+        with tempfile.TemporaryDirectory() as project:
+            path = "docs/refined/analysis/assigned/SKILL.md"
+            state = {"role": "work", "workProfile": "explore", "roleBoundaryPolicy": 1,
+                     "taskBinding": {"documentPaths": ["docs/refined/research/other/SKILL.md"],
+                                     "requiredFileOperations": [{"operation": "modify", "path": path}]}}
+            session = {"projectRoot": project}
+            self.assertEqual(guard.explorer_paths(state, session), [str(Path(project) / path)])
+            self.assertEqual(guard.explorer_paths({**state, "roleBoundaryPolicy": None}, session), [])
+            for sandbox in ({"type": "read-only"}, {"type": "workspace-write", "writable_roots": ["/elsewhere"]}):
+                self.assertEqual(guard.explorer_paths({**state, "executionPolicy": {"sandboxPolicy": sandbox}}, session), [])
+            for invalid in ("docs/skills/rule-accepted/SKILL.md", "docs/refined/research/x/code.py",
+                            "docs/refined/research/x/../../../../src/a.md", "docs/progress/x/contract-v1.md"):
+                with self.assertRaises(ValueError):
+                    guard.document_paths([invalid])
+
+    def test_explorer_records_only_own_occurrence_never_rule_actions(self):
+        config = {**self.explore, "runSource": "/tmp/own-run", "projectRoot": "/tmp/project",
+                  "documentsRoot": "/tmp/project"}
+        payload = {"source": "/tmp/own-run", "occurrenceId": "own-error", "category": "error"}
+        def command(action, data):
+            return f"python3 {PLUGIN}/scripts/lessons.py {action} --project-root /tmp/project --input-json '{json.dumps(data)}'"
+        self.assertTrue(self.codex(config, "Bash", command=command("record", payload)))
+        self.assertFalse(self.codex(config, "Bash", command=command("record", {**payload, "source": "/tmp/other-run"})))
+        self.assertFalse(self.codex({**config, "canRecord": False}, "Bash", command=command("record", payload)))
+        for action in ("candidate", "publish", "sync", "retire", "apply", "resolve"):
+            self.assertFalse(self.codex(config, "Bash", command=command(action, payload)))
+        with tempfile.TemporaryDirectory() as metadata:
+            config = {**config, "lessonMetadataRoot": metadata}
+            stored = {"id": "own-error", "category": "error", "occurrences": [{"source": config["runSource"]}]}
+            path = Path(metadata) / "own-error.json"
+            path.write_text(json.dumps(stored))
+            own = {**payload, "id": "own-error"}
+            self.assertTrue(self.codex(config, "Bash", command=command("resolve", own)))
+            stored["occurrences"].append({"source": "/tmp/other-run"})
+            path.write_text(json.dumps(stored))
+            self.assertFalse(self.codex(config, "Bash", command=command("resolve", own)))
+
+    def test_existing_active_task_bindings_reserve_document_ownership(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            agents = root / "runtime/agents"
+            other = agents / "other/runs/run-other/state.json"
+            other.parent.mkdir(parents=True)
+            path = "docs/refined/research/assigned/SKILL.md"
+            stored = {"role": "work", "status": "running", "workingDirectory": str(root),
+                      "taskBinding": {"documentPaths": [path]}}
+            other.write_text(json.dumps(stored))
+            state = {"runtimeBinding": {"agentsRoot": str(agents)}}
+            with self.assertRaises(ValueError):
+                guard.ensure_document_owner([str(root / path)], state)
+            stored["status"] = "completed"
+            other.write_text(json.dumps(stored))
+            guard.ensure_document_owner([str(root / path)], state)
+            stored.update(status="running", workProfile="scribe", taskBinding={})
+            other.write_text(json.dumps(stored))
+            with self.assertRaises(ValueError):
+                guard.ensure_document_owner([str(root / path)], state)
+
+    def test_claude_native_permissions_expose_only_the_assigned_file(self):
+        from adapters.claude.policy import profile_arguments
+        path = "/tmp/project/docs/refined/research/assigned/SKILL.md"
+        command = profile_arguments(Path(PLUGIN), "explore", None, [path], "/tmp/own-run")
+        allowed = command[command.index("--allowedTools") + 1].split(",")
+        self.assertIn(f"Write(/{path})", allowed)
+        self.assertNotIn("Write(//tmp/project/docs/**)", allowed)
+        self.assertNotIn("Write", allowed)
 
 
 class ProviderWiringTests(unittest.TestCase):
@@ -320,11 +435,11 @@ class ProviderWiringTests(unittest.TestCase):
             (Path(project) / "docs").mkdir()
             session = {"role": "work", "projectRoot": project}
             for profile in ("explore", "scribe"):
-                state = {**self.work_state, "workProfile": profile}
+                state = {**self.work_state, "workProfile": profile, "roleBoundaryPolicy": 1}
                 self.assertEqual(guard.work_profile(state, session), profile)
                 arming = json.loads(codex_policy.guard_environment(state, session)[guard.ENV])
                 self.assertEqual((arming["role"], arming["profile"]), ("work", profile))
-                self.assertEqual(arming["writeRoot"], os.path.realpath(Path(project) / "docs") if profile == "scribe" else None)
+                self.assertEqual(arming["writeRoot"], os.path.realpath(Path(project) / "docs") if profile == "scribe" else "/tmp/agents/main/runs/run-1")
                 command, _ = codex_policy.app_server({**session, "codex": "codex"}, state)
                 self.assertIn(profile, codex_policy.guard_signature(state, session))
                 self.assertEqual(command[-1], codex_policy.guard_hook_toml())  # One hook definition for every rule set.

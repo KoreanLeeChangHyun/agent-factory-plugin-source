@@ -262,6 +262,35 @@ def test_storage_check_is_read_only_and_reports_markdown_support(tmp_path, monke
     assert before == {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
 
 
+def test_explicit_topic_discovery_preserves_lesson_scope_and_status(tmp_path):
+    from search_documents import search, read_document
+    value = seed(tmp_path)
+    lessons.operate(tmp_path, 'record', {**value, 'id': 'other-scope', 'scope': 'project-b',
+                    'occurrenceId': 'other-run', 'symptom': 'Gateway 재시도'})
+    query = dict(query='gateway absent', scope='project-a')
+    assert lessons.operate(tmp_path, 'retrieve', query)['count'] == 0
+    assert lessons.operate(tmp_path, 'retrieve', {**query, 'match': 'any'})['count'] == 0
+    discovered = lessons.operate(tmp_path, 'retrieve', {**query, 'match': 'any', 'scopeMode': 'discover'})
+    assert discovered['count'] == 1 and discovered['discoveryOnly'] is True
+    record = discovered['records'][0]
+    assert (record['scope'], record['status'], record['publications']) == ('project-b', 'unresolved', [])
+    assert lessons.operate(tmp_path, 'retrieve', dict(query='재시도', scope='project-b'))['count'] == 1
+    with pytest.raises(ValueError, match='scope mismatch'):
+        lessons.operate(tmp_path, 'candidate', dict(id='other-scope', ruleName='rule-demo', ruleText='x',
+                        trigger='x', exceptions='x', scope='project-a', authority='x'))
+    with pytest.raises(ValueError, match='active'):
+        lessons.operate(tmp_path, 'apply', dict(id='other-scope', runId='r', outcome='success', evidence='x'))
+    with pytest.raises(ValueError, match='Expected match'):
+        lessons.operate(tmp_path, 'retrieve', {**query, 'scopeMode': 'related'})
+    hit = search(tmp_path, 'Gateway', scope='project-b')['results'][0]
+    lessons.operate(tmp_path, 'resolve', dict(id='other-scope', cause='known', solution='fixed',
+                    verification='checked', evidence='test'))
+    with pytest.raises(ValueError, match='Stale'):
+        read_document(tmp_path, hit['contentPath'], revision=hit['revision'])
+    fresh = search(tmp_path, 'Gateway', scope='project-b')['results'][0]
+    assert fresh['revision'] != hit['revision'] and fresh['status'] == 'resolved'
+
+
 @pytest.mark.parametrize('broken', ['unknown-directory', 'missing-metadata', 'invalid-body'])
 def test_storage_failures_have_actionable_nonretryable_cli_diagnostics(tmp_path, broken):
     import json

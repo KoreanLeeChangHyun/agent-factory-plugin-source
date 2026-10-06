@@ -52,6 +52,28 @@ class JsonStringFieldTests(unittest.TestCase):
         now[0] = 0.2
         self.assertEqual(buffer.add("final", "b", "Y"), [{"type": "native.delta", "stream": "final", "id": "b", "text": "XY"}])
 
+    def test_only_top_level_field_is_previewed(self):
+        documents = [
+            {"nested": {"resultText": "wrong"}, "resultText": "right"},
+            {"nested": [{"resultText": None}], "resultText": "right"},
+            {"note": '"resultText":"wrong"', "resultText": "right"},
+            {"resultTextExtra": "wrong", "resultText": "right"},
+            {"number": -12.5e+30, "flag": True, "nothing": None, "resultText": "right"},
+        ]
+        for value in documents:
+            document = json.dumps(value)
+            for size in (1, 3, len(document)):
+                with self.subTest(document=document, size=size):
+                    field = JsonStringField()
+                    self.assertEqual("".join(field.feed(document[i:i + size])
+                                             for i in range(0, len(document), size)), "right")
+        self.assertEqual(JsonStringField().feed('{"nested":{"resultText":"wrong"}}'), "")
+        self.assertEqual(JsonStringField().feed('[{"resultText":"wrong"}]'), "")
+        document = '{"result\\u0054ext":"right"}'
+        self.assertEqual(JsonStringField().feed(document), "right")
+        field = JsonStringField()
+        self.assertEqual("".join(field.feed(c) for c in document), "right")
+
 
 class ClaudeStreamingTests(unittest.TestCase):
     def start(self, **options):
@@ -132,6 +154,10 @@ class CodexStreamingTests(unittest.TestCase):
                 *({"method": "item/agentMessage/delta", "params": {**thread, "itemId": "c-1", "delta": commentary[i:i + 3]}}
                   for i in range(0, len(commentary), 3)),
                 {"method": "item/completed", "params": {**thread, "item": {"id": "c-1", "type": "agentMessage", "phase": "commentary", "text": commentary}}},
+                {"method": "item/started", "params": {**thread, "item": {"id": "c-2", "type": "agentMessage", "phase": "commentary", "text": ""}}},
+                *({"method": "item/agentMessage/delta", "params": {**thread, "itemId": "c-2", "delta": piece}}
+                  for piece in ("  {", "설정", "} 확인 중입니다.")),
+                {"method": "item/completed", "params": {**thread, "item": {"id": "c-2", "type": "agentMessage", "phase": "commentary", "text": "  {설정} 확인 중입니다."}}},
                 {"method": "item/started", "params": {**thread, "item": {"id": "final-1", "type": "agentMessage", "text": ""}}},
                 *({"method": "item/agentMessage/delta", "params": {**thread, "itemId": "final-1", "delta": final[i:i + 4]}}
                   for i in range(0, len(final), 4)),
@@ -139,13 +165,16 @@ class CodexStreamingTests(unittest.TestCase):
             ]
             bridge.run("Main role")
             events = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertEqual(deltas(events, "commentary"), "Checking files")
+        self.assertEqual(deltas(events, "commentary"), "Checking files  {설정} 확인 중입니다.")
         self.assertEqual(deltas(events, "final"), "Native answer")
         self.assertNotIn("ignored", json.dumps(events))
         kinds = [event["type"] for event in events]
         self.assertLess(max(i for i, event in enumerate(events) if event.get("stream") == "commentary"),
                         max(i for i, event in enumerate(events) if event["type"] == "native.commentary"))
         self.assertIn({"type": "native.commentary", "text": "Checking files"}, events)
+        self.assertLess(next(i for i, event in enumerate(events) if event.get("id") == "c-2" and event.get("text", "").strip()),
+                        next(i for i, event in enumerate(events) if event.get("type") == "native.commentary"
+                             and event.get("text") == "  {설정} 확인 중입니다."))
         self.assertIn("item.completed", kinds)
 
     def test_plan_updates_of_this_turn_report_step_progress(self):
@@ -170,6 +199,23 @@ class CodexStreamingTests(unittest.TestCase):
         self.assertEqual(stream.feed("update"), "update")
         self.assertEqual(commentary_text({"text": "  Plain update"}), "  Plain update")
         self.assertEqual(commentary_text({"text": '{"other":"value"}'}), '{"other":"value"}')
+
+    def test_brace_prefixed_commentary_streams_when_disambiguated(self):
+        from adapters.codex.events import agent_message_stream, commentary_text
+
+        for document in ('  {설정} 확인 중입니다.', '{not JSON}', '{"other":"value"}',
+                         '{}', '{"resultText":null}', '{"설정"} 확인 중입니다.',
+                         '{"설정": 확인 중입니다.}'):
+            for size in (1, 3, len(document)):
+                with self.subTest(document=document, size=size):
+                    _, stream = agent_message_stream({"phase": "commentary"})
+                    self.assertEqual("".join(stream.feed(document[i:i + size])
+                                             for i in range(0, len(document), size)), document)
+                    self.assertEqual(stream.feed(" more"), " more")
+                    self.assertEqual(commentary_text({"text": document}), document)
+        _, stream = agent_message_stream({"phase": "commentary"})
+        document = '{"nested":{"resultText":"wrong"},"resultText":"right"}'
+        self.assertEqual("".join(stream.feed(c) for c in document), "right")
 
 
 if __name__ == "__main__":

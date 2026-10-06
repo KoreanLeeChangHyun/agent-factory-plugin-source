@@ -62,7 +62,7 @@ class ConventionSkillMetadataTests(unittest.TestCase):
     def test_convention_reference_inventory_includes_nested_routes(self) -> None:
         convention = SKILLS / "convention"
         entry = (convention / "SKILL.md").read_text(encoding="utf-8")
-        routes = set(re.findall(r"`references/([^`]+\.md)`", entry))
+        routes = set(re.findall(r"`references/([^`#]+\.md)(?:#[^`]+)?`", entry))
         declared = set(routes)
         for route in routes:
             content = (convention / "references" / route).read_text(encoding="utf-8")
@@ -275,7 +275,7 @@ class ConventionSkillMetadataTests(unittest.TestCase):
                 self.assertEqual(list((SKILLS / name).rglob("*.py")), [])
         self.assertEqual(
             {path.name for path in (ROOT / "scripts").glob("*.py")},
-            {"exec.py", "loop.py", "lessons.py", "catalog_documents.py", "export_documents.py",
+            {"exec.py", "loop.py", "commit.py", "coordination.py", "lessons.py", "catalog_documents.py", "export_documents.py",
              "migrate_document_paths.py", "migrate_runtime_lessons.py", "search_documents.py", "sync_documents.py"},
         )
 
@@ -319,4 +319,3 @@ class ToolCatalogTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(ROOT / "distribution" / "skill_budget.py"), "--check"],
                                 capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
-
