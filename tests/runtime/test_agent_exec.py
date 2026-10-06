@@ -1295,6 +1295,33 @@ class AgentExecTests(unittest.TestCase):
                 self.assertEqual(saved["attempt"], 0)
         self.assertTrue(terminal_seen)
 
+    def test_worker_stop_wins_over_preflight_failure_and_late_completion(self) -> None:
+        for outcome in ("preflight-error", "completed"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                args = self.dispatch_args(directory, "dispatch-cancel-race")
+                with mock.patch.object(self.module, "spawn_worker", return_value=123), mock.patch.object(self.module, "emit"):
+                    self.module.submit(args, True)
+                state = next(self.module.iter_run_states(root, "work-agent"))
+                path = Path(state["statePath"])
+                heartbeat = mock.Mock()
+
+                def attempt(**_kwargs):
+                    self.module.update_json(path, path.parent / ".state.lock", lambda value: value.update({"cancelRequested": True, "status": "cancelling"}))
+                    if outcome == "preflight-error":
+                        raise self.module.AttemptFailure("execution_preflight_failed", "Codex app-server closed its event stream", False)
+                    return "completed", "session"
+
+                with mock.patch.object(self.module, "Heartbeat", return_value=heartbeat), \
+                     mock.patch.object(self.module, "run_codex_attempt", side_effect=attempt) as calls:
+                    result = self.module.worker(argparse.Namespace(project_root=root, agent="work-agent", run_id=state["runId"]))
+                saved = self.module.safe_read_json(path)
+                self.assertEqual(saved["status"], "cancelled")
+                self.assertIsNone(saved["error"])
+                self.assertEqual(calls.call_count, 1)
+                self.assertEqual(result, 1)
+                self.assertEqual(heartbeat.update.call_args.kwargs["status"], "cancelled")
+
     def test_worker_applies_pending_lessons_after_the_outcome_without_affecting_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

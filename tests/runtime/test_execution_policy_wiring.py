@@ -15,6 +15,79 @@ POLICY = runtime.execution_policy.normalize({"schemaVersion": 1, "sandboxPolicy"
 
 
 class ExecutionPolicyWiringTests(unittest.TestCase):
+    def test_cancellation_before_or_during_preflight_never_launches_a_provider(self):
+        for stage in ("before", "failure", "success", "signal"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                session = {"role": "main", "maxAttempts": 1, "codex": "/bin/true", "projectRoot": str(root),
+                           "sandbox": "danger-full-access", "executionPolicy": POLICY}
+                state = runtime.create_run(project_root=root, agent_id="cancel-main", actor="human", request=b"bounded", session=session)
+                path = Path(state["statePath"])
+                cancelled = threading.Event()
+
+                def stop():
+                    runtime.update_json(path, path.parent / ".state.lock", lambda value: value.update({"cancelRequested": True, "status": "cancelling"}))
+
+                def preflight(*_args):
+                    if stage == "signal":
+                        cancelled.set()
+                    else:
+                        stop()
+                    if stage in ("failure", "signal"):
+                        raise ValueError("selected Codex execution policy failed preflight: Codex app-server closed its event stream")
+                    return {"passed": True}
+
+                if stage == "before":
+                    stop()
+                with mock.patch.object(runtime.execution_preflight, "check", side_effect=preflight) as check, \
+                     mock.patch.object(runtime, "spawn_contained_process") as spawn:
+                    with self.assertRaises(runtime.AttemptFailure) as raised:
+                        runtime.run_codex_attempt(project_root=root, session=session, state=state, attempt=1,
+                            heartbeat=mock.Mock(), cancel_event=cancelled, expected_agent_id="cancel-main", expected_run_id=state["runId"])
+                    self.assertEqual(raised.exception.code, "cancelled")
+                    self.assertFalse(raised.exception.launched)
+                    self.assertEqual(check.call_count, 0 if stage == "before" else 1)
+                    spawn.assert_not_called()
+                if stage == "failure":
+                    self.assertIn("closed its event stream", runtime.safe_read_json(path)["executionPreflight"]["error"])
+
+    def test_cancellation_in_launch_preparation_cannot_be_overwritten_by_starting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = {"role": "main", "maxAttempts": 1, "codex": "/bin/true", "projectRoot": str(root),
+                       "sandbox": "danger-full-access", "executionPolicy": POLICY}
+            state = runtime.create_run(project_root=root, agent_id="cancel-main", actor="human", request=b"bounded", session=session)
+            path = Path(state["statePath"])
+            adapter = runtime.adapters.for_session(session)
+
+            def prepare(*_args):
+                runtime.update_json(path, path.parent / ".state.lock", lambda value: value.update({"cancelRequested": True, "status": "cancelling"}))
+
+            with mock.patch.object(runtime.execution_preflight, "check", return_value={"passed": True}), \
+                 mock.patch.object(adapter, "prepare", side_effect=prepare), \
+                 mock.patch.object(runtime, "spawn_contained_process") as spawn:
+                with self.assertRaises(runtime.AttemptFailure) as raised:
+                    runtime.run_codex_attempt(project_root=root, session=session, state=state, attempt=1,
+                        heartbeat=mock.Mock(), cancel_event=threading.Event(), expected_agent_id="cancel-main", expected_run_id=state["runId"])
+                self.assertEqual(raised.exception.code, "cancelled")
+                spawn.assert_not_called()
+            self.assertEqual(runtime.safe_read_json(path)["status"], "cancelling")
+
+    def test_terminal_lock_preserves_accepted_cancellation_and_real_failures(self):
+        for cancelled in (False, True):
+            for status in ("completed", "failed"):
+                with self.subTest(cancelled=cancelled, status=status), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    state = runtime.create_run(project_root=root, agent_id="cancel-main", actor="human", request=b"bounded", session={"role": "main", "maxAttempts": 1})
+                    path = Path(state["statePath"])
+                    if cancelled:
+                        runtime.update_json(path, path.parent / ".state.lock", lambda value: value.update({"cancelRequested": True, "status": "cancelling"}))
+                    error = {"code": "provider_failed", "message": "real failure"} if status == "failed" else None
+                    runtime.mark_terminal(path, status, error)
+                    saved = runtime.safe_read_json(path)
+                    self.assertEqual(saved["status"], "cancelled" if cancelled else status)
+                    self.assertEqual(saved["error"], None if cancelled else error)
+
     def test_legacy_upgrade_requires_current_source_and_matching_sandbox(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(runtime.os.environ, {"AGENT_FACTORY_EXECUTION_POLICY": json.dumps(POLICY)}):
             root = Path(directory)
