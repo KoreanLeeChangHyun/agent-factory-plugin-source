@@ -183,14 +183,14 @@ class ClaudeAdapterTests(unittest.TestCase):
                                      sorted(orchestrator_guard.PROFILE_SCRIPTS[profile]))
                     self.assertFalse(any(name in tool for tool in allowed for name in ("exec.py", "loop.py")))
                     self.assertNotIn("Bash", allowed)
+                    self.assertTrue({"WebSearch", "WebFetch"} <= set(allowed))
+                    self.assertFalse({"Agent", "Workflow", "Edit", "Write"} & set(allowed))
                     if profile == "explore":
-                        self.assertTrue({"WebSearch", "WebFetch"} <= set(allowed))
                         edits = [tool for tool in allowed if tool.startswith(("Edit", "Write"))]
                         self.assertEqual(set(edits), {f"Edit(/{directory}/**)", f"Write(/{directory}/**)"})
                     else:
                         self.assertEqual([tool for tool in allowed if tool.startswith(("Edit", "Write"))],
                                          [f"Edit(/{docs}/**)", f"Write(/{docs}/**)"])
-                        self.assertFalse({"WebSearch", "WebFetch"} & set(allowed))
                     self.assertIn("--settings", command)  # The sub-agent guard still applies.
                 for profile in ("work", "workLight", None):
                     command, _ = claude.cli_command(session, {**state, "workProfile": profile}, PromptParts("fixed", "request"))

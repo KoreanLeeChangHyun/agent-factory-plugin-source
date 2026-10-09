@@ -2,9 +2,15 @@
 import importlib.util
 from pathlib import Path
 import sys
+import hashlib
+import subprocess
 
 import pytest
 import runtime_test_home  # noqa: F401
+from execution import worktrees
+from execution import lessons as capture
+from tasks import commits, workspaces
+from storage.errors import ContractError
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
@@ -20,6 +26,92 @@ def seed(root, category='error'):
                  aiReason='배경 설명 필요', difference='길이', reflection='선호 차이 추정', outcome='간단히 수정')
     lessons.operate(root, 'record', value)
     return value
+
+
+@pytest.mark.parametrize('separate_docs', [False, True])
+def test_git_retry_excludes_new_and_updated_lessons_without_committing(tmp_path, tmp_path_factory, monkeypatch, separate_docs):
+    """Real Git trees/index/ignore and lifecycle writes; the commit failure is simulated."""
+    value = seed(tmp_path)
+    repository = tmp_path / 'docs' if separate_docs else tmp_path
+    def git(*args):
+        result = subprocess.run(['git', '-C', str(repository), *args], capture_output=True)
+        result.check_returncode()
+        return result.stdout
+    git('init', '-q')
+    git('symbolic-ref', 'HEAD', 'refs/heads/test')
+    assert git('status', '--porcelain', '--untracked-files=all') == b''
+    code = repository / 'code.py'
+    code.write_text('before')
+    body = next((tmp_path / 'docs/lessons-learned/errors').glob('*.md'))
+    relative = body.relative_to(repository).as_posix()
+    git('add', '-f', '--', 'code.py', relative)
+    baseline = git('write-tree').decode().strip()  # No commit object or Git commit.
+    code.write_text('fixed')
+    native = worktrees.git
+    def tree_git(root, *args, **kwargs):
+        if args == ('rev-parse', 'HEAD'):
+            return subprocess.CompletedProcess([], 0, baseline.encode() + b'\n', b'')
+        if args[0] == 'symbolic-ref':
+            return native(root, *args, **kwargs)
+        if args[:2] == ('diff', '--cached'):
+            return native(root, *args[:2], baseline, *args[2:], **kwargs)
+        return native(root, *(baseline if arg == 'HEAD' else arg for arg in args), **kwargs)
+    monkeypatch.setattr(worktrees, 'git', tree_git)
+    def commit_git(root, *args):
+        if args[0] == 'commit':
+            raise ContractError('commit_git_failed', 'simulated hook failure')
+        result = tree_git(root, *args)
+        return result.stdout
+    monkeypatch.setattr(commits, 'git', commit_git)
+    monkeypatch.setattr(commits, 'evidence', lambda *_: {'changedPaths': ['docs/code.py' if separate_docs else 'code.py', body.relative_to(tmp_path).as_posix()]})
+    proposal = dict(repository=str(repository), branch='test', head=baseline, paths=['code.py'],
+                    contentHashes={'code.py': hashlib.sha256(b'fixed').hexdigest()},
+                    diffHash=hashlib.sha256(git('diff', '--binary', '--no-ext-diff', '--no-textconv', baseline, '--', 'code.py')).hexdigest(),
+                    message='fixture', workStatePath=str(tmp_path / 'unused.json'),
+                    authority={'decision': 'approved', 'source': 'fixture', 'time': 'fixture', 'scope': 'code.py'})
+    main = {'role': 'main', 'roleBoundaryPolicy': 1}
+    assert workspaces.paths_changed({'path': str(repository)}) == ['code.py']
+    with pytest.raises(ContractError, match='simulated hook failure'):
+        commits.execute(tmp_path, main, proposal, apply=True)
+    run = tmp_path_factory.mktemp('lesson-run')
+    state = {'statePath': str(run / 'state.json'), 'runId': 'retry', 'agentId': 'fixture'}
+    event = {'type': 'item.completed', 'item': {'type': 'command_execution', 'id': 'failure', 'exit_code': 1, 'command': 'git commit'}}
+    saved = capture.observe(tmp_path, state, event)
+    assert saved['saved']
+    lessons.operate(tmp_path, 'record', {**value, 'occurrenceId': 'retry-update'})
+    assert len(lessons.find(tmp_path, 'demo')['occurrences']) == 2
+    assert capture.audit(state) == []
+    assert workspaces.paths_changed({'path': str(repository)}) == ['code.py']
+    assert commits.execute(tmp_path, main, proposal)['status'] == 'ready'
+    generated = (tmp_path / saved['path']).relative_to(repository).as_posix()
+    assert git('check-ignore', '--', generated).strip()
+    assert Path(saved['metadataPath']).is_relative_to(repository) is False
+    for path in (relative, generated):
+        with pytest.raises(ContractError, match='local data'):
+            commits.validate(tmp_path, main, {**proposal, 'paths': [path], 'contentHashes': {path: None}})
+    # An explicitly staged untracking is accepted as deletion, without re-adding its body.
+    git('rm', '--cached', '-f', '--', relative)
+    migration = {**proposal, 'paths': ['code.py', relative], 'contentHashes': {'code.py': proposal['contentHashes']['code.py'], relative: None},
+                 'diffHash': hashlib.sha256(git('diff', '--binary', '--no-ext-diff', '--no-textconv', baseline, '--', 'code.py', relative)).hexdigest()}
+    assert commits.execute(tmp_path, main, migration)['status'] == 'ready'
+    lessons.operate(tmp_path, 'record', {**value, 'occurrenceId': 'after-untracking'})
+    assert commits.execute(tmp_path, main, migration)['status'] == 'ready'
+    assert body.is_file() and not git('ls-files', '--', relative)
+    assert git('check-ignore', '--', relative).strip()
+    assert workspaces.paths_changed({'path': str(repository)}) == ['code.py']
+
+
+@pytest.mark.parametrize('status, expected', [
+    (b' M docs/lessons-learned/errors/old.md\0?? docs/lessons-learned/.gitignore\0', False),
+    (b' M lessons-learned/judgment-differences/old.md\0', False),
+    (b'R  docs/lessons-learned/errors/new.md\0source.py\0', True),
+    (b'R  source.py\0docs/lessons-learned/errors/old.md\0', True),
+    (b'?? skills/document/references/lessons-learned.md\0', True),
+    (b'?? runtime/storage/lessons.py\0', True),
+])
+def test_lesson_dirty_boundary_preserves_sources_and_renames(monkeypatch, status, expected):
+    monkeypatch.setattr(worktrees, 'git', lambda *_: subprocess.CompletedProcess([], 0, status, b''))
+    assert worktrees.dirty('fixture') is expected
 
 
 def test_inline_queries_create_no_input_file_or_write_lock(tmp_path, monkeypatch, capsys):

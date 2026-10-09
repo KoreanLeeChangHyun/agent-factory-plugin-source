@@ -171,8 +171,8 @@ def read_only(state):
 def record_root(project_root, state):
     """Where a run's captures belong: the code Work Unit that holds the project's lessons, else the project.
 
-    An isolated run's lessons are committed and merged with its task instead of dirtying the
-    source checkout the task integrates into. Shared, read-only and unbound runs keep the project."""
+    An isolated run's lessons stay local to its document workspace and are excluded from
+    Git integration. Shared, read-only and unbound runs keep the project."""
     root = Path(project_root)
     workspace = state.get('taskWorkspace')
     if not isinstance(workspace, dict) or workspace.get('mode') != 'code':

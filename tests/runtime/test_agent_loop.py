@@ -2628,7 +2628,7 @@ class AgentLoopContractTests(unittest.TestCase):
                          [" M .gitignore", "?? unrelated.txt"])
         self.assertTrue(complete["taskWorkspaces"][task_id]["repositories"][0]["cleaned"])
 
-    def test_work_isolation_commits_runtime_lessons_with_the_task(self):
+    def test_work_isolation_keeps_runtime_lessons_local_to_the_task(self):
         from execution import worktrees
         plan = self.isolated_repository()
         (self.root / ".gitignore").write_text("*.md\n*.json\n!docs/lessons-learned/errors/*.md\n")
@@ -2643,11 +2643,19 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertTrue(saved["saved"])
         self.assertTrue((path / saved["path"]).is_file())
         self.assertFalse((self.root / "docs").exists())  # The target checkout stays clean.
+        tip = worktrees.git(path, "rev-parse", "HEAD").stdout
+        worktrees.git(path, "add", "-f", "--", saved["path"])
+        with self.assertRaisesRegex(self.agent_exec.ContractError, "Operational lessons are staged"):
+            self.reconcile(started)
+        self.assertEqual(worktrees.git(path, "rev-parse", "HEAD").stdout, tip)
+        self.assertTrue((path / saved["path"]).is_file())
+        worktrees.git(path, "rm", "--cached", "--", saved["path"])
         complete = self.reconcile(started)
         self.assertEqual(complete["status"], "completed")
         self.assertEqual(worktrees.git(self.root, "status", "--porcelain").stdout, b"")
-        self.assertIn(saved["path"], worktrees.git(self.root, "ls-files").stdout.decode().splitlines())
-        self.assertTrue(complete["taskWorkspaces"][task_id]["repositories"][0]["cleaned"])
+        self.assertNotIn(saved["path"], worktrees.git(self.root, "ls-files").stdout.decode().splitlines())
+        self.assertTrue((path / saved["path"]).is_file())
+        self.assertFalse(complete["taskWorkspaces"][task_id]["repositories"][0].get("cleaned", False))
 
     def test_work_isolation_follows_the_captured_main_selection(self):
         parent = self.root / "parent-state.json"

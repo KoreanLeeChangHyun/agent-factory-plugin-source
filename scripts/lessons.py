@@ -163,6 +163,8 @@ def read_records(root, documents_root=None):
     output = []
     for package in sorted(directory.iterdir()):
         path = safe(docroot, package.relative_to(docroot))
+        if path.name == '.gitignore' and path.is_file():
+            continue
         if package.name in body_store.FOLDERS.values() and path.is_dir():
             for body in sorted(path.iterdir()):
                 safe(docroot, body.relative_to(docroot))
@@ -213,6 +215,7 @@ def save(root, record, documents_root=None):
     journal = meta.with_suffix('.pending.json')
     if journal.exists():
         raise ValueError(f'Interrupted lesson write requires recovery: {journal}')
+    body_store.ensure_ignored(docroot, atomic)
     runtime_paths.write(journal, {'documentPath': stored['documentPath'],
                                  'previousMetadata': runtime_paths.read(meta) if meta.exists() else None,
                                  'previousBody': existing_text, 'nextBody': text, 'nextMetadata': stored})

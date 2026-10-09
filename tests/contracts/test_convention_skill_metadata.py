@@ -275,7 +275,7 @@ class ConventionSkillMetadataTests(unittest.TestCase):
                 self.assertEqual(list((SKILLS / name).rglob("*.py")), [])
         self.assertEqual(
             {path.name for path in (ROOT / "scripts").glob("*.py")},
-            {"exec.py", "loop.py", "commit.py", "coordination.py", "lessons.py", "catalog_documents.py", "export_documents.py",
+            {"archify.py", "exec.py", "loop.py", "commit.py", "coordination.py", "lessons.py", "catalog_documents.py", "export_documents.py",
              "migrate_document_paths.py", "migrate_runtime_lessons.py", "search_documents.py", "sync_documents.py"},
         )
 

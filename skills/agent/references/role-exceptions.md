@@ -10,9 +10,9 @@
   evidence artifacts and own handoff records. Code/configuration, other owners' files,
   `docs/skills/`, shared progress/contract files, deletion/moves and rule publication stay denied.
   Paths are normalized and checked against symlinks at launch and at write time.
-- Explorer owns its assigned research package. Scribe owns assigned integration,
-  restructuring and shared canonical Documents; one owner or managed CLI updates common
-  summaries/catalogs. All roles may record their own work, sources, checks, errors and
+- Explorer owns its assigned research package. Scribe owns assigned Document research,
+  source checks, writing, integration, shortening and shared canonical Documents; one owner
+  or managed CLI updates common summaries/catalogs. All roles may record their own work, sources, checks, errors and
   judgment differences in designated records; recording is not adoption/publication authority.
   Main directly records assignment/waits/blockers/retry/stop reasons and actual Human
   decisions with source, time and affected scope. Preserve existing control authorization

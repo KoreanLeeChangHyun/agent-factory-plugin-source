@@ -51,6 +51,16 @@
   metadata on demand; unknown causes and unresolved outcomes stay unknown/unresolved.
 - Catalog and search discover these records. They never activate them as Skills or export
   them to hosts. `runtime` is a capture scope, not a document category or user folder.
+- Operational records under `docs/lessons-learned/` are local data excluded from Git,
+  including generated projections and scratch files. Recording creates a self-ignored
+  `docs/lessons-learned/.gitignore` unless `docs/.gitignore` already ends with
+  `/lessons-learned/`. A separate `docs` repository should track that outer configuration.
+  Already tracked records require explicit authorization to remove their exact paths from
+  the index with `git rm --cached`, preserving local files. Never force-add records.
+  Keep lesson implementation, tests, usage documentation and adopted Skills tracked.
+  Ignored records in an isolated Work Unit remain there after integration; cleanup may
+  stay pending to preserve them. A commit manifest may include an explicitly authorized,
+  already staged index removal with a null content hash, keeping the local body intact.
 - Keep one record for the same incident or known recurring cause. Separate error and
   judgment records may link to each other; judgment difference alone is not an error.
 

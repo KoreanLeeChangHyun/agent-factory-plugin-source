@@ -23,6 +23,7 @@ def public_state(state: dict[str, Any]) -> dict[str, Any]:
         "executionOptions",
         "tokenUsage",
         "contextUsage",
+        "handoffBinding",
         "planProgress",
         "activity",
         "usageAttempts",

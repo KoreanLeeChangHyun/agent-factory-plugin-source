@@ -7,8 +7,9 @@
   elapsed time and worker count are not complexity limits.
 - Choose role/profile separately from model, effort, Fast and permissions: explore investigates;
   workLight handles settled local changes; work handles uncertain design/integration/diagnosis;
-  scribe consolidates authorized Documents. Independent Verification requires explicit Human
-  request. Only Main dispatches. Prefer existing sessions for same-task corrections; explain
+  scribe researches, checks sources, writes, integrates and shortens authorized Documents.
+  Independent Verification requires explicit Human request. Only Main dispatches.
+  Prefer existing sessions for same-task corrections; explain
   new/reuse choice from continuity, purpose and boundaries, not elapsed time.
 - Include prerequisites, input source/version/time, read/write scope, shared ownership and
   unit/profile/session reasons in brief Scope. Never claim unconfirmed results or ownership ready.

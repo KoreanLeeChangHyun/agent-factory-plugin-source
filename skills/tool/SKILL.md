@@ -21,6 +21,7 @@ metadata:
 
 | Script / usage | Operation | Rules |
 |---|---|---|
+| [`archify.py`](references/usage/archify.md) | Pinned Archify JSON validation, HTML delivery and external file opening | [Archify diagrams](../convention/references/archify.md) |
 | [`exec.py`](references/usage/exec.md) | One managed run | [Agent](../agent/SKILL.md) |
 | [`coordination.py`](references/usage/coordination.md) | Append Main-owned contract control/decision records | [Coordination records](../agent/references/role-exceptions.md#coordination-records) |
 | [`commit.py`](references/usage/commit.md) | Main-owned receipt-bound ordinary local commit | [Commit boundary](../agent/references/role-exceptions.md#ordinary-local-commit) |

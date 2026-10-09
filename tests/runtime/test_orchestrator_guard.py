@@ -18,6 +18,15 @@ SCRIPT = f"python3 {PLUGIN}/scripts/loop.py start --task-mode work"
 
 
 class GuardDecisionTests(unittest.TestCase):
+    def test_handoff_standby_is_read_only_even_with_main_bypass_policy(self):
+        config = {"pluginRoots": [PLUGIN], "writeRoot": "/tmp/standby-run", "handoffPreparation": True}
+        for command in ("cat README.md", f"python3 {PLUGIN}/scripts/exec.py status --project-root /tmp --agent main-a"):
+            self.assertTrue(self.decide({"tool_name": "Bash", "tool_input": {"command": command}}, config=config))
+        for command in (SCRIPT, f"python3 {PLUGIN}/scripts/exec.py submit --project-root /tmp --agent work-a", "git add ."):
+            self.assertFalse(self.decide({"tool_name": "Bash", "tool_input": {"command": command}}, config=config))
+        for tool in ("spawn_agent", "mcp_send_message", "request_user_input"):
+            self.assertFalse(self.decide({"tool_name": tool, "tool_input": {}}, config=config))
+
     def setUp(self):
         self.run_directory = tempfile.mkdtemp()
         self.config = {"pluginRoots": [PLUGIN], "writeRoot": self.run_directory}
@@ -215,7 +224,7 @@ class ProfileDecisionTests(unittest.TestCase):
         self.assertFalse(self.agy(self.explore, "write_to_file", TargetFile=f"{self.docs}/a.md"))
         self.assertFalse(self.agy(self.explore, "generate_image", Prompt="x"))
 
-    def test_scribe_writes_only_inside_docs_without_web(self):
+    def test_scribe_researches_documents_with_web_and_writes_only_inside_docs(self):
         self.assertTrue(self.codex(self.scribe, "apply_patch", command=self.patch(f"{self.docs}/refined/a.md")))
         self.assertFalse(self.codex(self.scribe, "apply_patch", command=self.patch("/tmp/project/src/a.py")))
         self.assertFalse(self.codex(self.scribe, "apply_patch", command=self.patch(f"{self.docs}/../src/a.py")))
@@ -224,10 +233,16 @@ class ProfileDecisionTests(unittest.TestCase):
         self.assertFalse(self.codex(self.scribe, "Bash", command=f"echo x > {self.docs}/a.md"))
         self.assertTrue(self.agy(self.scribe, "replace_file_content", TargetFile=f"{self.docs}/a.md"))
         self.assertFalse(self.agy(self.scribe, "write_to_file", TargetFile="/tmp/project/a.py"))
-        self.assertFalse(self.agy(self.scribe, "search_web", query="x"))
-        self.assertFalse(self.agy(self.scribe, "read_url_content", Url="https://example.com"))
+        self.assertTrue(self.agy(self.scribe, "search_web", query="document sources"))
+        self.assertTrue(self.agy(self.scribe, "read_url_content", Url="https://example.com"))
+        self.assertFalse(self.agy(self.scribe, "generate_image", Prompt="x"))
+        for path in ("/tmp/project/.agents/skills/a/SKILL.md", "/tmp/project/.codex/config.toml"):
+            self.assertFalse(self.agy(self.scribe, "write_to_file", TargetFile=path), path)
+            self.assertFalse(self.codex(self.scribe, "apply_patch", command=self.patch(path)), path)
         for command in ("python3 -c 'print(1)'", "sha256sum --check /tmp/input", "git hash-object -w /tmp/input",
                         "cp /tmp/input /tmp/output", "mv /tmp/input /tmp/output",
+                        "git commit -m x", "git push", "curl -X POST https://example.com -d secret",
+                        "curl https://example.com", f"python3 {PLUGIN}/scripts/exec.py submit",
                         f"python3 {PLUGIN}/scripts/migrate_document_paths.py --help | cat"):
             self.assertFalse(self.codex(self.scribe, "Bash", command=command), command)
             self.assertFalse(self.agy(self.scribe, "run_command", CommandLine=command), command)
@@ -443,6 +458,16 @@ class ProviderWiringTests(unittest.TestCase):
                 command, _ = codex_policy.app_server({**session, "codex": "codex"}, state)
                 self.assertIn(profile, codex_policy.guard_signature(state, session))
                 self.assertEqual(command[-1], codex_policy.guard_hook_toml())  # One hook definition for every rule set.
+                # Public web tools stay available; the selected network policy is never widened.
+                self.assertNotRegex("web", codex_policy.GUARD_MATCHER)
+                for network in (True, False):
+                    selected = codex_policy.normalize({"schemaVersion": 1, "approvalPolicy": "never",
+                        "sandboxPolicy": {"type": "workspace-write", "writable_roots": [project],
+                                          "network_access": network}})
+                    configured = codex_policy.config(codex_policy.session_policy(
+                        {**session, "executionPolicy": selected}), Path(state["statePath"]).parent)
+                    self.assertEqual(configured["sandbox_workspace_write.network_access"], network)
+                    self.assertEqual(json.loads(configured["shell_environment_policy.set." + codex_policy.SNAPSHOT_ENV]), selected)
             for state in (self.work_state, {**self.work_state, "workProfile": "workLight"}, {**self.state, "workProfile": "explore"}):
                 self.assertIsNone(guard.work_profile(state, session))
             self.assertEqual(codex_policy.guard_environment({**self.work_state, "workProfile": "work"}, session),

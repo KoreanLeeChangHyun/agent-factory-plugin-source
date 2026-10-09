@@ -8,7 +8,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from native_fixtures import native_fixture, runtime
-from execution.usage import UsageAccumulator, record_attempt, compare_orchestration
+from execution.usage import (UsageAccumulator, record_attempt, compare_orchestration,
+                             context_observation, fresh_context_percent)
 
 
 def native_event(total, last, **extra):
@@ -19,6 +20,28 @@ def native_event(total, last, **extra):
 
 
 class TokenUsageTests(unittest.TestCase):
+    def test_context_observation_requires_fresh_matching_session_and_turn(self):
+        event = {"type": "provider.context", "usedTokens": 800, "contextWindowTokens": 1000,
+                 "session_id": "thread", "turn_id": "turn", "estimated": True,
+                 "source": "thread/tokenUsage/updated"}
+        at = "2026-10-07T18:00:00+00:00"
+        observation = context_observation(event, provider="codex", observed_at=at)
+        def percent(**changes):
+            return fresh_context_percent(observation, **{
+                "now": at, "max_age_seconds": 30, "session_id": "thread", "turn_id": "turn", **changes})
+        self.assertEqual(percent(), 80)
+        self.assertIsNone(percent(now="2026-10-07T18:00:31+00:00"))
+        self.assertIsNone(percent(now="2026-10-07T17:59:59+00:00"))
+        self.assertIsNone(percent(session_id="other"))
+        self.assertIsNone(percent(turn_id="next"))
+        self.assertIsNone(percent(max_age_seconds=0))
+        self.assertTrue(observation["estimated"])
+        self.assertIsNone(observation["providerVersion"])
+        for value in (None, 0, -1, True):
+            unknown = context_observation({**event, "contextWindowTokens": value}, provider="codex", observed_at=at)
+            self.assertEqual(unknown["availability"], "unknown")
+            self.assertIsNone(unknown["usedPercent"])
+
     def test_comparison_keeps_subsets_retries_and_unknown_observations_separate(self):
         states = {
             'main.json': {'agentId': 'main', 'runId': 'one', 'role': 'main', 'attempt': 2,
@@ -100,8 +123,11 @@ class TokenUsageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
             bridge, rpc, _ = native_fixture(Path(directory), goal=False)
             def notification(thread, turn):
+                usage = native_event(1100, 100)["tokenUsage"]
+                usage["last"]["totalTokens"] = 110
+                usage["modelContextWindow"] = 1000
                 return {"method": "thread/tokenUsage/updated", "params": {
-                    "threadId": thread, "turnId": turn, "tokenUsage": native_event(1100, 100)["tokenUsage"]}}
+                    "threadId": thread, "turnId": turn, "tokenUsage": usage}}
             rpc.events[1:1] = [notification("other", "turn-0"), notification("thread-exact", "old-turn"),
                                notification("thread-exact", "turn-0")]
             bridge.run("bounded request")
@@ -109,3 +135,8 @@ class TokenUsageTests(unittest.TestCase):
             reports = [event for event in events if event["type"] == "token.usage"]
             self.assertEqual(len(reports), 1)
             self.assertEqual(reports[0]["turn_id"], "turn-0")
+            contexts = [event for event in events if event["type"] == "provider.context"]
+            self.assertEqual(len(contexts), 1)
+            self.assertEqual(contexts[0]["usedTokens"], 110)
+            self.assertEqual(contexts[0]["contextWindowTokens"], 1000)
+            self.assertEqual(contexts[0]["session_id"], "thread-exact")

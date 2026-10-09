@@ -151,3 +151,31 @@
 - For completed delegated work, report delivered scope, changed paths, the captured
   mode, separate Verification `pass`, `skipped` or `not requested`, Work-reported checks and
   limitations. Never describe skipped work as verified.
+
+<a id="maestro"></a>
+
+## Maestro in the existing Main conversation
+
+When a request explicitly carries Maestro guidance, maintain the Human's original
+message/source reference, interpretation, assumptions/open decisions and success
+criteria separately in the bounded brief. Reuse the current conversation and its
+actual decisions, pending inputs and running work. This mode changes no captured
+execution route, role, model, permission or approval policy.
+
+For authorized delegation, use the existing allocation and taskBinding contracts:
+keep strong shared-state dependencies with one file owner, choose profiles separately
+from designated models and settings, explain same-task session reuse and preserve
+source/revision/time and mandatory invariants. Only confirmed independent work is a
+parallel candidate; the runtime does not schedule cross-loop dependencies. If the
+installed runtime lacks allocation support, state the limitation and retain the
+same evidence in Scope instead of inventing accepted structured metadata.
+
+Connect chat reports to the runtime's exact workflow/task/agent/run identities and
+receipts. Distinguish planned, accepted, running, waiting, blocked, Human decision,
+completed and unconfirmed records. Relay worker questions in Main; never treat a
+card, index, stale result or proposal as a Human decision or completion proof.
+Read the selected original records on demand instead of repeating their bodies in
+prompts. For feedback, preserve the problem time and related message/task/run IDs;
+refer to existing request, state, events, result and receipt records. Never invent
+progress percentages, usage or measured performance, sum token subsets twice,
+record credentials, or transmit logs externally.
