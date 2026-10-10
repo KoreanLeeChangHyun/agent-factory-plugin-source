@@ -243,6 +243,32 @@ class TaskBindingTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(self.runtime.ContractError):
                 self.binding.resolve(document, 'task-one', self.digest)
 
+    def test_allocation_domain_is_optional_exact_and_preserved(self):
+        from tasks.allocation import preserve
+        document = json.loads(json.dumps(self.document))
+        document['tasks'][0]['allocation'] = {**self.allocation(), 'domain': 'extension UI'}
+        _, binding = self.binding.resolve(document, 'task-one', self.digest)
+        self.assertEqual(binding['allocation']['domain'], 'extension UI')
+        brief = self.binding.brief_document(self.request, {**self.allocation(), 'domain': 'plugin runtime'})
+        self.assertEqual(brief['tasks'][0]['allocation']['domain'], 'plugin runtime')
+        # Absent domain stays absent (unclassified); it is never filled in.
+        legacy_document = json.loads(json.dumps(self.document))
+        legacy_document['tasks'][0]['allocation'] = self.allocation()
+        _, legacy = self.binding.resolve(legacy_document, 'task-one', self.digest)
+        self.assertNotIn('domain', legacy['allocation'])
+        changed = json.loads(json.dumps(binding)); changed['allocation']['domain'] = 'other area'
+        with self.assertRaises(self.runtime.ContractError):
+            preserve(binding, changed)
+        for value in ('', ' padded', 'two\nlines', 'x' * 81, 3, None, ['UI']):
+            invalid = json.loads(json.dumps(self.document))
+            invalid['tasks'][0]['allocation'] = {**self.allocation(), 'domain': value}
+            with self.subTest(domain=value), self.assertRaises(self.runtime.ContractError):
+                self.binding.resolve(invalid, 'task-one', self.digest)
+        unknown = json.loads(json.dumps(self.document))
+        unknown['tasks'][0]['allocation'] = {**self.allocation(), 'area': 'UI'}
+        with self.assertRaises(self.runtime.ContractError):
+            self.binding.resolve(unknown, 'task-one', self.digest)
+
     def test_allocation_checks_dependency_order_resource_owners_and_existing_writes(self):
         document = json.loads(json.dumps(self.document))
         first = document['tasks'][0]

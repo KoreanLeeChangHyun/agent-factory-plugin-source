@@ -787,7 +787,7 @@ def profile_instruction(state, project_root, working_directory):
     command += " --input-json " + shlex.quote(json.dumps({"query": "<topic>", "scope": "<scope>"}))
     legacy = state.get("workProfile") == "explore" and state.get("roleBoundaryPolicy") != 1
     explorer = ("Historical Explorer authority is project read-only: retrieve/audit lessons and report pending records; do not write Documents. "
-                if legacy else "Explorer may retrieve/audit and record/resolve its own errors/judgment with source equal to this run directory, using bound roots. Rule publication stays forbidden. ")
+                if legacy else "Explorer may retrieve/audit, record one bundled error/judgment lesson after its work and resolve its own, with source equal to this run directory, using bound roots. Rule publication stays forbidden. ")
     assigned = (state.get("taskBinding") or {}).get("requiredFileOperations")
     paths = ([item["path"] for item in assigned if item.get("operation") in {"add", "modify"}]
              if assigned is not None else (state.get("taskBinding") or {}).get("documentPaths", []))

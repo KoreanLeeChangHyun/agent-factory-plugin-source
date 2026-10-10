@@ -749,9 +749,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             # public state carries the structured `pause` a Human decides on.
             # `workIsolation`: Main runs accept --work-isolation on|off and loops inherit it.
             # `restrictedWorkProfiles`: --work-profile also accepts explore (assigned evidence docs) and scribe (docs/ only).
+            # `taskDomain`: allocation evidence accepts an optional `domain` work-area name.
+            # `projectDomains`: domains.py keeps the shared editable domain list; loop start links the allocation domain.
+            # `modelRecommendation`: allocation `taskType` plus loop start --model-catalog-file records a detected-model recommendation.
+            # `providerHandoff`: loop.py handoff moves the current Work task to a new linked session on another provider/model.
             for operation in ("submit", "send"):
                 capabilities[operation] = {**capabilities[operation], "workProfile": True, "restrictedWorkProfiles": True, "roleDirectExceptions": True,
-                                           "taskAllocation": True, "failureClass": True,
+                                           "taskAllocation": True, "taskDomain": True, "projectDomains": True, "failureClass": True,
+                                           "modelRecommendation": True, "providerHandoff": True,
                                            "pendingLessons": True,
                                            "responseContract": receipt_contracts.RESPONSE_CONTRACTS[-1],
                                            "revisionLimitPause": True, "taskWorkspaces": True,

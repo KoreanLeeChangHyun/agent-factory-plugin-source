@@ -554,7 +554,16 @@ def test_every_host_receives_the_same_output_and_a_conflict_blocks_all_hosts(tmp
     for host in (".codex", ".claude", ".agents"):
         assert (tmp_path / host / "skills/info-example/SKILL.md").read_text(encoding="utf-8") == "# 변경\n"
     assert json.loads(run(tmp_path, "--check").stdout)["outdated"] == []
-    removed = subprocess.run([sys.executable, str(SCRIPT), "--project-root", str(tmp_path), "--host", "codex"],
-                             text=True, capture_output=True)
-    assert removed.returncode == 2  # Single-host runs are gone.
+    selected = subprocess.run([sys.executable, str(SCRIPT), "--project-root", str(tmp_path), "--host", "antigravity",
+                               "--check"], text=True, capture_output=True)
+    assert selected.returncode == 0
+    assert json.loads(selected.stdout) == {"hosts": ["antigravity"], "outdated": [], "errors": []}
 
+
+def test_selected_host_does_not_create_unselected_host_paths(tmp_path):
+    source = package(tmp_path, "skills")
+    result = run(tmp_path, "--host", "antigravity")
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".agents/skills/info-example/SKILL.md").read_bytes() == (source / "SKILL.md").read_bytes()
+    assert not (tmp_path / ".codex").exists()
+    assert not (tmp_path / ".claude").exists()

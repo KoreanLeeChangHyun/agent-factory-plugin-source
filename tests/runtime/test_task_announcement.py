@@ -90,6 +90,19 @@ class TaskAnnouncementTests(unittest.TestCase):
                 self.check_submission(altered)
             self.assertEqual(error.exception.code, 'task_announcement_metadata_mismatch')
 
+    def test_runtime_model_recommendation_is_the_only_allocation_addition_after_announcement(self):
+        from test_task_binding import TaskBindingTests
+        self.document['tasks'][0]['allocation'] = {**TaskBindingTests.allocation(), 'taskType': 'research'}
+        self.source.write_text(json.dumps(self.document))
+        accepted = self.runtime.safe_read_json(Path(self.prepare()['taskListFile']))
+        recorded = copy.deepcopy(accepted)
+        recorded['tasks'][0]['allocation']['modelRecommendation'] = {'taskType': 'research', 'status': 'no-match'}
+        self.check_submission(recorded)
+        recorded['tasks'][0]['allocation']['taskType'] = 'documentation'
+        with self.assertRaises(self.runtime.ContractError) as error:
+            self.check_submission(recorded)
+        self.assertEqual(error.exception.code, 'task_announcement_metadata_mismatch')
+
     def test_retry_reuses_snapshot_and_changed_request_cannot_replace_it(self):
         result = self.prepare()
         original = Path(result['announcementPath']).read_bytes()

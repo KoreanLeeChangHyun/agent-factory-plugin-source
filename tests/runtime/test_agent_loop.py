@@ -241,6 +241,60 @@ class AgentLoopContractTests(unittest.TestCase):
             captured = self.agent_exec.safe_read_json(Path(dispatch["execution"]["taskListPath"]))
             self.assertEqual(captured["tasks"][0]["allocation"], allocation)
 
+    def test_allocation_domain_reaches_loop_workflow_task_and_binding(self):
+        from test_task_binding import TaskBindingTests
+        allocation = {**TaskBindingTests.allocation(), "domain": "extension UI"}
+        allocation_path = self.root / "allocation.json"
+        allocation_path.write_text(json.dumps(allocation))
+        args = self.agent_loop.build_parser().parse_args([
+            "start", "--project-root", str(self.root), "--request-file", str(self.request),
+            "--work-agent", "work-agent", "--task-mode", "work", "--allocation-file", str(allocation_path),
+            "--receipt-recovery", "manual", "--codex", "/bin/true"])
+        started = self.agent_loop.start_loop(args)
+        state = self.agent_exec.safe_read_json(Path(started["statePath"]))
+        # The control center reads workflow tasks; the Work run receives the same accepted binding.
+        self.assertEqual(state["workflow"]["tasks"][0]["allocation"]["domain"], "extension UI")
+        self.assertEqual(state["execution"]["taskBinding"]["allocation"]["domain"], "extension UI")
+
+    def test_requested_by_human_is_recorded_only_when_given(self):
+        args = ["start", "--project-root", str(self.root), "--request-file", str(self.request), "--task-mode", "work",
+                "--receipt-recovery", "manual", "--codex", "/bin/true"]
+        human = self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args(args + ["--work-agent", "work-human", "--requested-by", "human"]))
+        main = self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args(args + ["--work-agent", "work-main"]))
+        self.assertEqual(self.agent_exec.safe_read_json(Path(human["statePath"]))["requestedBy"], "human")
+        self.assertNotIn("requestedBy", self.agent_exec.safe_read_json(Path(main["statePath"])))
+
+    def test_allocation_domain_links_the_worker_in_the_shared_project_list_without_overriding_the_human(self):
+        from tasks import domains
+        from test_task_binding import TaskBindingTests
+        runtime_root = Path(self.agent_exec.runtime_paths.resolve(self.root, create=True)["runtimeRoot"])
+        human = domains.create(runtime_root, "extension UI", "human", "control-center")["domainId"]
+
+        def start(agent, name):
+            allocation_path = self.root / f"allocation-{agent}.json"
+            allocation_path.write_text(json.dumps({**TaskBindingTests.allocation(), "domain": name}))
+            self.request.write_text(f"{agent} bounded work\n")
+            return self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args([
+                "start", "--project-root", str(self.root), "--request-file", str(self.request), "--work-agent", agent,
+                "--task-mode", "work", "--allocation-file", str(allocation_path), "--receipt-recovery", "manual", "--codex", "/bin/true"]))
+        reused = start("work-ui", "Extension UI")
+        self.assertEqual((reused["domainLink"]["domainId"], reused["domainLink"]["reused"], reused["domainLink"]["assigned"]), (human, True, True))
+        created = start("work-runtime", "plugin runtime")
+        self.assertFalse(created["domainLink"]["reused"])
+        domains.assign(runtime_root, "work-runtime", human, "human", "control-center")
+        protected = start("work-runtime", "plugin runtime")
+        self.assertEqual((protected["domainLink"]["assigned"], protected["domainLink"]["protectedDomainId"]), (False, human))
+        state = self.agent_exec.safe_read_json(Path(protected["statePath"]))
+        # The accepted allocation keeps Main's recorded name; only the editable membership is protected.
+        self.assertEqual(state["execution"]["taskBinding"]["allocation"]["domain"], "plugin runtime")
+        stored = domains.read(runtime_root)
+        self.assertEqual(stored["assignments"]["work-runtime"]["setBy"]["actor"], "human")
+        self.assertEqual(stored["assignments"]["work-ui"]["setBy"]["source"], "loop " + reused["loopId"])
+        plain = self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args([
+            "start", "--project-root", str(self.root), "--request-file", str(self.request), "--work-agent", "work-plain",
+            "--task-mode", "work", "--receipt-recovery", "manual", "--codex", "/bin/true"]))
+        self.assertNotIn("domainLink", plain)
+
     def start(self, extra: list[str] | None = None):
         arguments = [
             "start", "--project-root", str(self.root), "--request-file", str(self.request),
@@ -319,6 +373,32 @@ class AgentLoopContractTests(unittest.TestCase):
                     self.stop_task(started)
                     self.assertEqual(len(self.runtime.dispatches), before)
                     command.assert_called_once()
+
+    def test_worker_removal_waits_for_the_stop_and_keeps_the_stopped_records(self):
+        from tasks import domains
+        started = self.start()
+        runtime_root = Path(self.agent_exec.runtime_paths.resolve(self.root, create=True)["runtimeRoot"])
+        with self.assertRaises(self.agent_exec.ContractError) as running:
+            domains.remove_worker(runtime_root, "work-agent", "human", "control-center")
+        self.assertEqual(running.exception.code, "worker_running")
+        child = self.agent_exec.safe_read_json(Path(started["statePath"]))["currentChild"]
+        def cancel(arguments):
+            # The real runtime records the cancelled run state; the fake mirrors that on disk.
+            self.runtime.runs[(child["agentId"], child["runId"])]["status"] = "cancelled"
+            state_path = self.agent_exec.agent_root(self.root) / child["agentId"] / "runs" / child["runId"] / "state.json"
+            if state_path.exists():
+                self.agent_exec.atomic_write_json(state_path, {**self.agent_exec.safe_read_json(state_path), "status": "cancelled"})
+            return {"kind": "ack"}
+        with mock.patch.object(self.runtime, "call", create=True, side_effect=cancel):
+            self.assertEqual(self.stop_task(started)["status"], "cancelled")
+        before = len(self.runtime.dispatches)
+        self.assertEqual(self.reconcile(started)["status"], "cancelled", "A stopped task is not restarted")
+        self.assertEqual(len(self.runtime.dispatches), before)
+        removed = domains.remove_worker(runtime_root, "work-agent", "human", "control-center")
+        self.assertIn("work-agent", removed["domains"]["removedWorkers"])
+        state = self.agent_exec.safe_read_json(Path(started["statePath"]))
+        self.assertEqual(state["terminalReason"]["code"], "human-stopped-task", "The stop and its evidence stay recorded")
+        self.assertTrue(Path(started["statePath"]).exists())
 
     def test_stop_task_rejects_wrong_binding_multiple_tasks_and_uncertain_dispatch_without_mutation(self):
         started = self.start()
@@ -565,6 +645,17 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertEqual(closed["latestWorkRunId"], started["latestWorkRunId"])
         self.assertEqual(len(self.runtime.dispatches), 1)
 
+    def test_pending_decision_records_optional_request_details(self):
+        started = self.start()
+        run = self.runtime.runs[("work-agent", started["latestWorkRunId"])]
+        run.update(status="needs-human-decision",
+                   decisionDetails={"target": "docs/a.md", "reason": "Two layouts fit", "impact": "Renames links"})
+        decision = self.reconcile(started)["pendingDecision"]
+        self.assertEqual((decision["target"], decision["reason"], decision["impact"], decision["alternatives"]),
+                         ("docs/a.md", "Two layouts fit", "Renames links", None))
+        # The details stay outside the hashed question, so a decision's identity is unchanged by them.
+        self.assertNotIn("target", json.dumps({key: decision[key] for key in ("question", "taskBinding")}))
+
     def test_close_failed_preserves_evidence_and_cannot_resume(self):
         started = self.start()
         failed = self.fail_work_receipt(started)
@@ -656,6 +747,14 @@ class AgentLoopContractTests(unittest.TestCase):
     def test_task_assignees_preserve_loop_owner_and_revision_sessions(self):
         self.assign_second_task()
         started = self.start()
+        from tasks import control_center
+        def read_record(agent, run_id):
+            run = self.runtime.runs[(agent, run_id)]
+            return {**run, "taskBinding": run["dispatchTuple"]["taskBinding"]}
+        state = self.agent_exec.safe_read_json(Path(started["statePath"]))
+        initial = control_center.snapshot(state, read_record)
+        self.assertEqual(initial["tasks"][0]["stages"]["work"]["runStatus"], "accepted")
+        self.assertEqual(initial["tasks"][1]["stages"]["work"]["disposition"], "planned")
         self.runtime.complete_work("work-agent", started["latestWorkRunId"])
         verifying = self.reconcile(started)
         self.runtime.complete_verification("verification-agent", verifying["latestVerificationRunId"], "pass")
@@ -679,6 +778,23 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertEqual([task["workAgentId"] for task in ended["workflow"]["tasks"]], ["work-agent", "work-api"])
         count = len(self.runtime.dispatches)
         self.reconcile(ended)
+        self.assertEqual(len(self.runtime.dispatches), count)
+        # Consume the existing receipt-driven flow through the new status surface.
+        args = self.agent_loop.build_parser().parse_args([
+            "status", "--project-root", str(self.root), "--work-agent", "work-agent",
+            "--loop-id", ended["loopId"]])
+        # FakeRuntime keeps transitions in memory; materialize its managed records
+        # so the status endpoint exercises the real, identity-checked disk reader.
+        for agent, run_id in self.runtime.runs:
+            run = read_record(agent, run_id)
+            self.agent_exec.atomic_write_json(Path(run["statePath"]), run)
+        before = Path(ended["statePath"]).read_bytes()
+        view = self.agent_loop.status_loop(args)["controlCenter"]
+        self.assertEqual([task["stages"]["work"]["agentId"] for task in view["tasks"]], ["work-agent", "work-api"])
+        self.assertTrue(all(task["stages"]["work"]["disposition"] == "processed-completed" for task in view["tasks"]))
+        self.assertTrue(all(task["stages"]["verification"]["receiptPath"] for task in view["tasks"]))
+        self.assertEqual(view["tasks"][1]["stages"]["work"]["runId"], revision["latestWorkRunId"])
+        self.assertEqual(Path(ended["statePath"]).read_bytes(), before)
         self.assertEqual(len(self.runtime.dispatches), count)
 
     def test_invalid_assignments_rejected_before_any_dispatch(self):
@@ -1943,9 +2059,11 @@ class AgentLoopContractTests(unittest.TestCase):
         # Incident: a rejected Work result looped through revisions for 23 minutes.
         state = self.start(["--max-revisions", "1"])
         self.assertEqual(state["maxRevisions"], 1)
+        self.assertEqual(state["workflow"]["tasks"][0]["requestRevision"], 1)
         state = self.fail_verification_round(state)
         self.assertEqual(state["status"], "active")
         self.assertEqual(state["revisionCount"], 1)
+        self.assertEqual(state["workflow"]["tasks"][0]["requestRevision"], 2)
         dispatched = len(self.runtime.dispatches)
 
         stopped = self.fail_verification_round(state)
@@ -1971,6 +2089,7 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertEqual(resumed["currentChild"]["role"], "work")
         self.assertEqual(resumed["maxRevisions"], 2)
         self.assertEqual(resumed["revisionCount"], 2)
+        self.assertEqual(resumed["workflow"]["tasks"][0]["requestRevision"], 3)
         self.assertIsNone(resumed["controlPlaneError"])
         stored = self.agent_exec.safe_read_json(Path(resumed["statePath"]))
         self.assertEqual(stored["revisionExtensions"][0]["actor"], "human")

@@ -13,7 +13,8 @@
 - Explorer owns its assigned research package. Scribe owns assigned Document research,
   source checks, writing, integration, shortening and shared canonical Documents; one owner
   or managed CLI updates common summaries/catalogs. All roles may record their own work, sources, checks, errors and
-  judgment differences in designated records; recording is not adoption/publication authority.
+  judgment differences in designated records; [Lessons Learned](../../document/references/lessons-learned.md#mandatory-recording) defines who writes
+  lessons and when. Recording is not adoption/publication authority.
   Main directly records assignment/waits/blockers/retry/stop reasons and actual Human
   decisions with source, time and affected scope. Preserve existing control authorization
   and state transitions; never promote a proposal or fabricate completion/pass.

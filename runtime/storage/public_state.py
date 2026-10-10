@@ -13,6 +13,7 @@ def public_state(state: dict[str, Any]) -> dict[str, Any]:
         "status",
         "decisionKind",
         "decisionScope",
+        "decisionDetails",
         "pendingRpc",
         "pendingLessons",
         "lessonRecording",

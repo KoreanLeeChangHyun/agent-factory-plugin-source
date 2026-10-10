@@ -17,6 +17,8 @@
   <run>/allocation.json` for a brief, or `tasks[].allocation` in the existing task list, never both.
   Older runtimes receive prose only; source support does not prove installed capability.
 - All fields are required when allocation is present; empty arrays explicitly mean none.
+  The only optional fields are `domain`, accepted when installed `submit.taskDomain: true`, and
+  `taskType`, accepted when installed `submit.modelRecommendation: true` ([model recommendation](#model-recommendation)).
 - Preserve Human-specified model, effort, Fast and permissions independently of the
   profile. A supplied model catalog is selection evidence, not authority or a ranking.
   Compare task suitability and important constraints only within the allowed selection
@@ -45,6 +47,8 @@
 | readScope | Nonempty path/source strings; descriptive, grants no permission. |
 | writeScopeReason | Nonempty explanation of the existing brief Scope or requiredFileOperations/documentPaths/workspace. No second write list. |
 | sharedResources | Entries: nonempty resource, evidence; boolean confirmed; ownerTaskId: self or an existing task ID. One resource has one owner. Unknown external ownership remains unresolved evidence. |
+| domain | Optional. Trimmed single-line work-area name (at most 80 characters) such as the product area the outcome belongs to, chosen by Main for this task. Not a profile, role or model. Omit it when unknown; consumers show unclassified and never infer it from titles or history. |
+| taskType | Optional. research, small-change, design-diagnosis or documentation, classified by Main. The runtime then adds `modelRecommendation`; never submit that field. |
 | parallelCandidate | Boolean judgment. True requires confirmed inputs/dependencies/ownership and ownership of declared resources; overlapping existing declared writes fail. |
 
 - Runtime validates declared consistency, retains allocation in task-list snapshots, loop execution
@@ -61,3 +65,46 @@
   routing or schedule dependencies. Loops stay sequential; Main handles external prerequisites
   and parallel chains. Preserve existing failureClass retries, authority, receipt and Verification.
   A scheduler, learned routing, new UI or framework requires a later scope.
+
+<a id="project-domains"></a>
+
+## 2. Project domains
+
+- With installed `submit.projectDomains: true`, one editable project list of work-area domains and
+  worker memberships is shared by the Human (control center) and Main. Run `domains.py list` before
+  choosing an allocation `domain`; reuse an existing name (current or former) for the same work area
+  and create a new name only when none fits. Never invent a fixed taxonomy or infer from titles alone.
+- `loop.py start` links the accepted allocation domain as Main's (`ai`) choice: a matching domain is
+  reused or created and the work agent is placed in it, reported as `domainLink`. Main may also run
+  `domains.py link --actor ai --source <run> --agent <id> --name <domain>` directly.
+- Human edits win. Main may not rename a domain the Human named or move a worker the Human placed
+  (including a Human "unclassified" choice); such writes fail with `domain_protected` and the dispatch
+  keeps going. Use `--expected-revision` from the last read; `domain_conflict` means reload.
+- The list is display/organization data. It never rewrites accepted allocation, taskBinding, receipts
+  or run state; a renamed domain keeps former names so recorded tasks stay linked. Delete and merge
+  are not supported.
+- The Human's "new domain" (`domains.py create --placeholder`, Human only) adds an independent domain
+  provisionally named `미분류` that is renamed later. Provisional domains never match by name, so Main
+  cannot reuse one through `link`; a Main-chosen name `미분류` creates its own real domain. Workers without
+  any membership are the separate fallback "unclassified" group, not a domain.
+
+<a id="model-recommendation"></a>
+
+## 3. Model recommendation and provider handoff
+
+- With an allocation `taskType`, pass the supplied modelCatalog as `loop.py start --model-catalog-file`.
+  The runtime matches it against the Human's `model-affinity.json` in the project runtime root
+  (schemaVersion 1; per task type an optional `profile` and ordered `preferences` of exact IDs or `*`
+  patterns) and records `allocation.modelRecommendation`: status, recommended/selected model,
+  alternatives, excluded and undetected entries, table and catalog hashes. The runtime never creates
+  the table; without it the status is `no-affinity-table` and nothing is recommended.
+- Only detected candidates are chosen; a missing catalog is `recheck-required`. A specified `--work-model`/`--model` or the Human's captured role model is
+  kept (`human-specified`, flagged if undetected). Only a single-task loop applies the recommendation;
+  task lists record `recommended`. An existing Work session limits candidates to its provider.
+- With installed `submit.providerHandoff: true`, the Human may move a running or stopped loop's Work
+  task: `loop.py handoff --work-agent <owner> --loop-id <id> --to-agent <new> --to-model <model>
+  --actor human --authorization-reference <ref> --decision-evidence <text> [--reason <text>]`.
+  It cancels a live Work run and waits for it to end, writes a bundle (original request, progress,
+  changed paths, remaining work and open findings) as the new session's request, reassigns the current
+  and later tasks and records `handoffs[]` linking both sessions. The prior session stays read-only.
+  Pending dispatches or decisions must be resolved first; Verification steps are not handed off.

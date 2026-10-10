@@ -689,4 +689,7 @@ def worker(runtime, args: argparse.Namespace) -> int:
             runtime.lesson_capture.apply_pending(project_root, state)
             runtime.update_json(state_path, state_path.parent / ".state.lock",
                                 lambda value: value.update(pendingLessons=len(runtime.lesson_capture.audit(state))))
+        # Queue the run's observed facts for a lesson writer that Main assigns; never written by Main.
+        with contextlib.suppress(Exception):
+            runtime.lesson_capture.collect(state)
         heartbeat.close()

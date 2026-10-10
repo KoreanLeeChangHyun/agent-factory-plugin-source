@@ -4,13 +4,12 @@
 
 ## 1. Role
 
-- Record every error (including unresolved and recovered errors) and observed Human/AI
-  judgment difference under [Lessons Learned](../../document/references/lessons-learned.md).
-  Include error causes/solutions or both judgments and reflection on their difference.
-  This record is required in every execution mode.
+- **MUST NOT write [Lessons Learned](../../document/references/lessons-learned.md#mandatory-recording)** (`record`, `resolve`, `candidate`, `publish`) in any
+  execution mode. Keep errors and judgment differences as facts with sources in run records
+  and delegate the lesson to the responsible Work or a Scribe.
 - For work, use the [lesson lifecycle CLI](../../document/references/lessons-learned.md#lifecycle-cli)
-  to retrieve scoped lessons before acting, persist errors and Human corrections,
-  and audit observed occurrences before handoff. Record actual rule application outcomes.
+  to retrieve scoped lessons before acting and audit observed occurrences before handoff.
+  Record actual rule application outcomes.
 - **MUST NOT create any new directory the Human has not agreed to** — not in the project root,
   not beside source, not anywhere in the project. This includes temporary, scratch, output,
   backup, test and tool directories. Existing directories, paths the task explicitly
@@ -146,8 +145,8 @@
   to append to Main's execution-record section without rewriting its accepted contract.
   Preserve existing cancellation/retry authorization and transitions; record proposals as
   proposals and never manufacture approval, implementation completion or Verification pass.
-- All roles may record their own work, sources, checks, errors and judgment differences;
-  recording grants no rule adoption or publication authority.
+- All roles may record their own work, sources, checks, errors and judgment differences
+  in run records; recording grants no rule adoption or publication authority.
 - For completed delegated work, report delivered scope, changed paths, the captured
   mode, separate Verification `pass`, `skipped` or `not requested`, Work-reported checks and
   limitations. Never describe skipped work as verified.

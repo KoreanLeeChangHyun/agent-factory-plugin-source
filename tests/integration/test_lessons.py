@@ -405,3 +405,47 @@ def test_storage_failures_have_actionable_nonretryable_cli_diagnostics(tmp_path,
     assert diagnostic['documentRoot'] == str(tmp_path)
     assert diagnostic['supportedFormats'] and 'check' in diagnostic['recovery']
     assert all(path.read_bytes() == content for path, content in before.items())
+
+
+def test_runtime_facts_queue_lesson_writing_and_draft_a_scribe_brief(tmp_path):
+    import json
+    import os
+    binding = lessons.runtime_paths.resolve(tmp_path, create=True)
+
+    def run(agent, run_id, role, request='', **extra):
+        directory = Path(binding['agentsRoot']) / agent / 'runs' / run_id
+        directory.mkdir(parents=True)
+        (directory / 'request.md').write_text(request)
+        state = {'statePath': str(directory / 'state.json'), 'runId': run_id, 'agentId': agent, 'role': role,
+                 'status': 'completed', 'requestPath': str(directory / 'request.md'), **extra}
+        (directory / 'state.json').write_text(json.dumps(state))
+        os.chmod(directory / 'state.json', 0o600)
+        return directory, state
+    addition = {'id': 's1', 'message': '막지 말고 프롬프트로', 'authorizationReference': 'human-1', 'evidence': '원문', 'taskId': 't1'}
+    work, state = run('work-a', 'run-1', 'work', f'{capture.REWORK}\n\nPrevious Work run: run-0\n'
+                      f'Verification result: /v/result.md\n\n{capture.STEERING}\n{json.dumps([addition])}')
+    capture.observe(tmp_path, state, {'type': 'item.completed', 'item': {
+        'type': 'command_execution', 'id': 'i1', 'exit_code': 2, 'command': 'secret=DO_NOT_SAVE'}})
+    verification, verifying = run('verify-a', 'run-2', 'verification', receiptPath='')
+    verifying['receiptPath'] = str(verification / 'receipt.json')
+    (verification / 'state.json').write_text(json.dumps(verifying))
+    (verification / 'receipt.json').write_text(json.dumps({'decision': 'fail', 'findings': [{'id': 'F1'}]}))
+    assert capture.collect(run('work-b', 'run-3', 'work')[1]) is None
+    assert capture.collect(state)['factCount'] == capture.collect(state)['factCount'] == 3
+    assert [fact['kind'] for fact in capture.read_facts(work)] == ['failure', 'rework', 'human-correction']
+    assert capture.collect(verifying)['factCount'] == 1
+    main, _ = run('main-a', 'run-4', 'main')
+    noted = lessons.operate(tmp_path, 'note', {'run': str(main), 'kind': 'human-correction', 'reference': 'human-2',
+                                               'summary': '설치본에 먼저 적용'})
+    assert noted['noted'] and noted['pending']['factCount'] == 1
+    assert [item['runId'] for item in lessons.operate(tmp_path, 'pending', {})['items']] == ['run-1', 'run-2', 'run-4']
+    draft = lessons.operate(tmp_path, 'brief', {})
+    assert draft['runIds'] == ['run-1', 'run-2', 'run-4'] and draft['factCount'] == 5 and len(draft['occurrenceIds']) == 1
+    assert all(text in draft['brief'] for text in ('F1', '막지 말고 프롬프트로', 'run-0', '설치본에 먼저 적용', 'pending --project-root'))
+    assert 'DO_NOT_SAVE' not in draft['brief']
+    assert lessons.operate(tmp_path, 'pending', {'close': ['run-1', 'run-x'], 'by': 'scribe-run'}) == {
+        'closed': ['run-1'], 'missing': ['run-x']}
+    assert [item['runId'] for item in lessons.operate(tmp_path, 'pending', {})['items']] == ['run-2', 'run-4']
+    assert capture.collect(state)['status'] == 'closed'
+    with pytest.raises(ValueError, match='run directory'):
+        lessons.operate(tmp_path, 'note', {'run': str(tmp_path), 'kind': 'note', 'reference': 'r', 'summary': 's'})
