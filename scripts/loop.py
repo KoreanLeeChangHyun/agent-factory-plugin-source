@@ -713,14 +713,52 @@ def work_isolation(args: argparse.Namespace) -> bool:
 
 
 def start_loop(args: argparse.Namespace) -> dict[str, Any]:
+    require_domain_membership(args)
     return link_allocation_domain(args, accept_loop(args))
+
+
+def allocation_domain(args: argparse.Namespace) -> str | None:
+    """The domain Main recorded in this dispatch's allocation (brief file or the selected task), if any."""
+    allocation = agent_exec.safe_read_json(args.allocation_file) if getattr(args, "allocation_file", None) else None
+    if allocation is None and getattr(args, "task_list_file", None):
+        document = agent_exec.safe_read_json(args.task_list_file)
+        allocation = next((task.get("allocation") for task in document.get("tasks", []) if isinstance(task, dict) and task.get("id") == getattr(args, "task_id", None)), None)
+    name = (allocation or {}).get("domain") if isinstance(allocation, dict) else None
+    return name if isinstance(name, str) else None
+
+
+def dispatch_agents(args: argparse.Namespace) -> list[str]:
+    return [agent for agent in (getattr(args, "work_agent", None), getattr(args, "verification_agent", None)) if isinstance(agent, str)]
+
+
+def require_domain_membership(args: argparse.Namespace) -> None:
+    """Every dispatched worker belongs to a real domain: it already has one, or the allocation names one Main may link.
+
+    Checked before anything is accepted, so a refused dispatch registers no worker.
+    """
+    from tasks import domains
+    root = agent_exec.resolve_project_root(args.project_root)
+    runtime_root = Path(agent_exec.runtime_paths.resolve(root, create=True)["runtimeRoot"])
+    document = domains.read(runtime_root)
+    name = allocation_domain(args)
+    if name is not None:
+        domains._real_name(name, "ai")
+    for agent in dispatch_agents(args):
+        reason = domains.membership(document, agent)
+        if reason is None:
+            continue
+        human = document["assignments"].get(agent, {}).get("setBy", {}).get("actor") == "human"
+        if name is None or human:
+            raise agent_exec.ContractError("domain_membership_required", f"Worker {agent} has no domain ({reason}). " + (
+                "The Human left it unresolved; ask the Human to place it or use another worker." if human else
+                "Set the allocation domain, or run domains.py link --actor ai --source <run> --agent <id> --name <domain> first."))
 
 
 def link_allocation_domain(args: argparse.Namespace, result: dict[str, Any]) -> dict[str, Any]:
     """Register the accepted allocation domain in the shared project list as Main's (ai) choice.
 
-    Reuses an existing matching domain or creates one and places the worker unless the Human placed it.
-    The accepted allocation/taskBinding is never changed; a failure here is reported, not a failed dispatch.
+    Reuses an existing matching domain or creates one and places the Work and Verification workers unless the Human
+    placed them. The accepted allocation/taskBinding is never changed; a failure here is reported, not a failed dispatch.
     """
     allocation = getattr(args, "captured_allocation", None)
     if allocation is None and getattr(args, "task_list_file", None):
@@ -730,12 +768,16 @@ def link_allocation_domain(args: argparse.Namespace, result: dict[str, Any]) -> 
     if not isinstance(name, str) or not result.get("loopId"):
         return result
     from tasks import domains
-    try:
-        binding = agent_exec.runtime_paths.resolve(agent_exec.resolve_project_root(args.project_root))
-        link = domains.link_dispatch(Path(binding["runtimeRoot"]), args.work_agent, name, f"loop {result['loopId']}")
-    except (agent_exec.ContractError, OSError, ValueError) as error:
-        link = {"error": getattr(error, "code", "domain_link_failed"), "message": str(error)}
-    return {**result, "domainLink": link}
+    links = {}
+    for field, agent in (("domainLink", args.work_agent), ("verificationDomainLink", getattr(args, "verification_agent", None))):
+        if not agent:
+            continue
+        try:
+            binding = agent_exec.runtime_paths.resolve(agent_exec.resolve_project_root(args.project_root))
+            links[field] = domains.link_dispatch(Path(binding["runtimeRoot"]), agent, name, f"loop {result['loopId']}")
+        except (agent_exec.ContractError, OSError, ValueError) as error:
+            links[field] = {"error": getattr(error, "code", "domain_link_failed"), "message": str(error)}
+    return {**result, **links}
 
 
 def record_model_recommendations(args, root, document, parent) -> str | None:
@@ -1906,6 +1948,7 @@ def handoff_loop(args):
             raise agent_exec.ContractError("loop_handoff_session_invalid", "Hand off to a new Work session ID")
         if to_provider == from_provider and args.to_model == from_model:
             raise agent_exec.ContractError("loop_handoff_unchanged", "Choose another provider or model for the handoff")
+        place_handoff_worker = handoff_membership(root, state, from_agent, args.to_agent)
         prior = runtime.status(current["agentId"], current["runId"]) if current else None
         if prior and prior["status"] not in CHILD_TERMINAL:
             # One writer at a time: the prior Work run must have ended before the new session starts.
@@ -1941,8 +1984,41 @@ def handoff_loop(args):
         state.update(status="active", controlPlaneError=None, currentChild=None, handoffContinuationPending=handoff["id"],
                      updatedAt=now())
         save_loop_state(path, state)
+        domain_link = place_handoff_worker(f"handoff {handoff['id']}")
         dispatch(state, path, runtime, role="work", request_file=bundle)
-        return {**public_state(state, state["currentChild"]), "handoff": handoff}
+        return {**public_state(state, state["currentChild"]), "handoff": handoff, "domainLink": domain_link}
+
+
+def handoff_membership(root, state, from_agent, to_agent):
+    """The new session continues the same task, so it joins the prior worker's domain (or the task's allocation domain).
+
+    Checked before the prior run is cancelled; returns the placement to perform once the handoff is recorded.
+    A placement failure after that point is reported, like a dispatch domain link, instead of undoing the handoff.
+    """
+    from tasks import domains
+    runtime_root = Path(agent_exec.runtime_paths.resolve(root)["runtimeRoot"])
+    document = domains.read(runtime_root)
+    name = ((state.get("execution", {}).get("taskBinding") or {}).get("allocation") or {}).get("domain")
+    if domains.membership(document, from_agent) is None:
+        domain_id = document["assignments"][from_agent]["domainId"]
+
+        def place(source):
+            placed = domains.assign(runtime_root, to_agent, domain_id, "ai", source)
+            return {"domainId": domain_id, "assigned": True, "member": True, "basis": "prior-worker", "revision": placed["revision"]}
+    elif isinstance(name, str):
+        domains._real_name(name, "ai")
+
+        def place(source):
+            return {**domains.link_dispatch(runtime_root, to_agent, name, source), "basis": "allocation"}
+    else:
+        raise agent_exec.ContractError("domain_membership_required", f"Worker {from_agent} has no domain for the new session; place it with domains.py assign first")
+
+    def placed(source):
+        try:
+            return place(source)
+        except (agent_exec.ContractError, OSError, ValueError) as error:
+            return {"error": getattr(error, "code", "domain_link_failed"), "message": str(error)}
+    return placed
 
 
 def settle_stale_child(root: Path, observed: dict[str, Any]) -> None:

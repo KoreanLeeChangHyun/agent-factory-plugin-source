@@ -99,6 +99,10 @@
   outcomes/completion evidence, one owner for strong dependencies/shared state, ready conflict-free
   parallel candidates, separate role/model choice and same-task session reuse. Brief Scope carries
   source/version/time, ownership and reasons; structured records require installed taskAllocation.
+- With installed `modelRecommendation`, add allocation `taskType` and pass the supplied modelCatalog
+  as `loop.py start --model-catalog-file`; a Human-specified model always wins. With `providerHandoff`,
+  move a task to another provider only after the Human approves, via `loop.py handoff`. Details:
+  [model recommendation and handoff](../references/task-allocation.md#model-recommendation).
 - Before managed dispatch, read [orchestration](../references/orchestration.md) for chain
   sequencing, parallelism, Verification failure and Human skip. Also read the Agent Skill's
   [task dispatch](../references/task-dispatch.md) contract; it alone defines task binding,

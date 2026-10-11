@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import runtime_test_home  # noqa: F401  Isolate all runtime subprocesses from the real home.
+import domain_fixtures  # Workers are placed in a domain before dispatch.
 
 import hashlib
 import json
@@ -55,6 +56,7 @@ class LoopModelAndHandoffTests(unittest.TestCase):
         patch = mock.patch.object(self.agent_loop, "AgentRuntime", return_value=self.runtime)
         patch.start()
         self.addCleanup(patch.stop)
+        domain_fixtures.place_workers(self.root)
 
     def start(self, task_type=None, extra=(), catalog=None):
         from test_task_binding import TaskBindingTests
@@ -149,6 +151,10 @@ class LoopModelAndHandoffTests(unittest.TestCase):
         self.assertEqual(state["workflow"]["tasks"][0]["workAgentId"], "work-claude")
         self.assertEqual(state["execution"]["agentModels"]["work"], {"model": "claude-opus-5-5"})
         self.assertEqual(moved["handoffs"], [handoff])
+        # The new session continues the same task, so it joins the prior worker's domain.
+        from tasks import domains
+        stored = domains.read(Path(self.agent_exec.runtime_paths.resolve(self.root)["runtimeRoot"]))["assignments"]
+        self.assertEqual((moved["domainLink"]["basis"], stored["work-claude"]["domainId"]), ("prior-worker", stored["work-agent"]["domainId"]))
         # The new session's result continues the same graph: its run is the one Verification checks.
         self.runtime.complete_work("work-claude", moved["latestWorkRunId"])
         verifying = self.reconcile(moved)
@@ -184,6 +190,20 @@ class LoopModelAndHandoffTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, code)
         self.assertEqual(self.runtime.calls, [])
         self.assertNotIn("handoffs", self.state(started))
+
+    def test_handoff_without_a_domain_for_the_new_session_is_refused_before_stopping_the_writer(self):
+        from tasks import domains
+        started = self.start()
+        runtime_root = Path(self.agent_exec.runtime_paths.resolve(self.root)["runtimeRoot"])
+        legacy = domains.read(runtime_root)
+        del legacy["assignments"]["work-agent"]  # A worker recorded before membership was required.
+        (runtime_root / domains.FILE).write_text(json.dumps(legacy))
+        with self.assertRaises(self.agent_exec.ContractError) as raised:
+            self.handoff(started)
+        self.assertEqual(raised.exception.code, "domain_membership_required")
+        self.assertEqual(self.runtime.calls, [], "The running writer is not cancelled")
+        self.assertNotIn("handoffs", self.state(started))
+        self.assertNotIn("work-claude", domains.read(runtime_root)["assignments"])
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
+import domain_fixtures  # Workers are placed in a domain before dispatch.
 import copy
 import json
 import os
@@ -21,6 +22,7 @@ class TaskAnnouncementTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         binding = self.runtime.runtime_paths.resolve(self.root, create=True)
+        domain_fixtures.place_workers(self.root)
         self.parent_path = self.runtime.agent_directory(self.root, 'main-tasks', create=True) / 'runs' / 'run-main' / 'state.json'
         self.state = {'agentId': 'main-tasks', 'runId': 'run-main', 'role': 'main',
                       'status': 'running', 'conversationId': 'conversation-one', 'runtimeBinding': binding}

@@ -1,4 +1,5 @@
 import runtime_test_home  # noqa: F401 - imported for its side effect: isolates the runtime home
+import domain_fixtures  # Workers are placed in a domain before dispatch.
 import hashlib
 import json
 import os
@@ -133,6 +134,7 @@ class WorkProfileRecordTests(unittest.TestCase):
                 return response
 
             def start(agent, extra):
+                domain_fixtures.place_workers(directory, (agent,))
                 args = agent_loop.build_parser().parse_args([
                     "start", "--project-root", directory, "--task-mode", "work", "--work-agent", agent,
                     "--request-file", str(brief), "--codex", "/bin/true", *extra])

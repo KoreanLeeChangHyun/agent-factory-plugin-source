@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import runtime_test_home  # Isolate all runtime subprocesses from the real home.
+import domain_fixtures  # Workers are placed in a domain before dispatch.
 
 import importlib.util
 import hashlib
@@ -210,6 +211,7 @@ class AgentLoopContractTests(unittest.TestCase):
         self.runtime_patch = mock.patch.object(self.agent_loop, "AgentRuntime", return_value=self.runtime)
         self.runtime_patch.start()
         self.addCleanup(self.runtime_patch.stop)
+        domain_fixtures.place_workers(self.root)
 
     def test_allocation_survives_brief_capture_revision_and_resume(self):
         from test_task_binding import TaskBindingTests
@@ -290,10 +292,38 @@ class AgentLoopContractTests(unittest.TestCase):
         stored = domains.read(runtime_root)
         self.assertEqual(stored["assignments"]["work-runtime"]["setBy"]["actor"], "human")
         self.assertEqual(stored["assignments"]["work-ui"]["setBy"]["source"], "loop " + reused["loopId"])
-        plain = self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args([
+        plain_args = self.agent_loop.build_parser().parse_args([
             "start", "--project-root", str(self.root), "--request-file", str(self.request), "--work-agent", "work-plain",
-            "--task-mode", "work", "--receipt-recovery", "manual", "--codex", "/bin/true"]))
+            "--task-mode", "work", "--receipt-recovery", "manual", "--codex", "/bin/true"])
+        # A worker without a domain and no allocation domain is refused before anything is accepted.
+        with self.assertRaises(self.agent_exec.ContractError) as unplaced:
+            self.agent_loop.start_loop(plain_args)
+        self.assertEqual(unplaced.exception.code, "domain_membership_required")
+        self.assertFalse((runtime_root / "agents" / "work-plain").exists(), "A refused dispatch registers no worker")
+        for reserved in ("미분류", "Unclassified", "기타"):
+            with self.subTest(reserved=reserved), self.assertRaises(self.agent_exec.ContractError) as named:
+                start("work-reserved", reserved)
+            self.assertEqual(named.exception.code, "domain_name_reserved")
+        self.assertFalse((runtime_root / "agents" / "work-reserved").exists())
+        # Main links the worker first (domains.py link); the plain dispatch then proceeds without a domainLink.
+        domains.link_dispatch(runtime_root, "work-plain", "plugin runtime", "run-main")
+        plain = self.agent_loop.start_loop(plain_args)
         self.assertNotIn("domainLink", plain)
+        # A legacy Human "unclassified" entry stays the Human's to resolve; Main cannot dispatch around it.
+        legacy = domains.read(runtime_root)
+        legacy["assignments"]["work-legacy"] = {"domainId": None, "setBy": {"actor": "human", "at": "2026-10-01T00:00:00Z", "source": "control-center"}}
+        (runtime_root / domains.FILE).write_text(json.dumps(legacy))
+        with self.assertRaises(self.agent_exec.ContractError) as kept:
+            start("work-legacy", "plugin runtime")
+        self.assertEqual(kept.exception.code, "domain_membership_required")
+        self.assertIsNone(domains.read(runtime_root)["assignments"]["work-legacy"]["domainId"], "The legacy entry is kept as it was")
+        verified = self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args([
+            "start", "--project-root", str(self.root), "--request-file", str(self.request), "--work-agent", "work-checked",
+            "--verification-agent", "verify-checked", "--allocation-file", str(self.root / "allocation-work-runtime.json"),
+            "--receipt-recovery", "manual", "--codex", "/bin/true"]))
+        self.assertEqual((verified["domainLink"]["assigned"], verified["verificationDomainLink"]["assigned"]), (True, True))
+        stored = domains.read(runtime_root)["assignments"]
+        self.assertEqual(stored["work-checked"]["domainId"], stored["verify-checked"]["domainId"])
 
     def start(self, extra: list[str] | None = None):
         arguments = [
@@ -2969,6 +2999,7 @@ class WorkspacePlanDispatchBindingTests(unittest.TestCase):
         git(self.root, "commit", "-m", "base")
         self.brief = self.root / "brief.md"
         self.brief.write_text("Goal: change file.txt\n\nScope: file.txt only\nDone: file changed\n", encoding="utf-8")
+        domain_fixtures.place_workers(self.root)
         agent_exec = self.agent_exec
 
         def bridge(runtime, arguments):
