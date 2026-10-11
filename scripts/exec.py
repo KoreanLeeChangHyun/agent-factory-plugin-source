@@ -63,7 +63,6 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(PLUGIN_ROOT / "runtime"))
 from system import sandbox as sandbox_diagnostics
 from execution import lessons as lesson_capture
-from execution import worktrees
 from storage.files import response_operation
 from execution import policy as execution_policy
 from storage.errors import ContractError
@@ -140,6 +139,7 @@ from execution.cli import (
 
 # Diagnostic/refusal paths must load even where runtime imports cannot.
 if sys.platform in portable.SUPPORTED_PLATFORMS:
+    from execution import worktrees
     import adapters
     from storage import paths as runtime_paths
     from execution import images as image_input

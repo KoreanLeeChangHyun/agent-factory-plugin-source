@@ -160,7 +160,8 @@ class PlanWorkTests(TaskModeTests):
                          "retry a failed workLight or scribe attempt once with the work profile (--work-profile work) only "
                          "when its failureClass is contract or absent",
                          "a failed explore run is reported, not retried with write access",
-                         "explore writes only exact task-bound research/evidence Documents and own run records, with web access; scribe writes only inside docs/ and has no web access"):
+                         "explore writes only exact task-bound research/evidence Documents and own run records, with web access; scribe uses public web search/read for Documents and writes only inside docs/.",
+                         "Scribe's web access grants no code/configuration writes, external writes/publishing, sensitive-data transmission, dispatch or commits"):
             self.assertIn(expected, instruction)
         for mode in ("direct", "work", "work-verification"):
             self.assertNotIn("failureClass", route_instruction(mode, "main"))

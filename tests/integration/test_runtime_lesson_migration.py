@@ -82,7 +82,7 @@ def test_apply_requires_an_empty_backup_and_merges_in_one_pass(tmp_path):
     assert code == 0 and output['mode'] == 'apply'
     assert sorted(path.name for path in backup.iterdir()) == ['runtime-' + 'a' * 24 + '.json', 'runtime-' + 'b' * 24 + '.json']
     remaining = sorted(path.name for path in lessons_dir.iterdir())
-    assert len(remaining) == 5 and not any(name.startswith(('runtime-aaa', 'runtime-bbb')) for name in remaining)
+    assert set(remaining) == {'.gitignore', 'errors', *(f'runtime-{letter * 24}.json' for letter in 'cdef')}
     record = next(r for r in lessons.records(root) if r['occurrences'][0].get('signature'))
     assert [o['legacyId'] for o in record['occurrences']] == ['runtime-' + 'a' * 24, 'runtime-' + 'b' * 24]
     assert [o.get('recoveredBy') for o in record['occurrences']] == ['e4', None]
