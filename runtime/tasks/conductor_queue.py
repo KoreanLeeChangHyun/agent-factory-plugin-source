@@ -409,7 +409,7 @@ class Store:
             self.pool.decide(c, rid, "assignment", area, inp.get("areaSource") or "input:" + str(inp.get("id", rid)), "declared" if str(inp.get("areaSource", "")).startswith("turn:") else "human", "area")
         policy = self.policy(c, chat)
         self.pool.decide(c, rid, "authorization", {"approvalPolicy": policy["approvalPolicy"], "reference": policy["reference"]}, policy["reference"], "captured", "authorization")
-        self.roles.capture(c, rid, area, inp.get("processingChoice"), "input:" + str(inp.get("id", rid)), profile=inp.get("requestProfile", "work"))
+        self.roles.capture(c, rid, area, inp.get("processingChoice"), "input:" + str(inp.get("id", rid)), profile=inp.get("requestProfile") or (policy.get("work") or {}).get("workProfile", "work"))
         req = self.row(c, "SELECT * FROM requests WHERE id=?", rid)
         self.event(c, chat, "request-created", {"request": self.public_request(req)}, key="request:" + rid)
         return req

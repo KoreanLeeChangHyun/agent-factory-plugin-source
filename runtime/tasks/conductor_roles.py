@@ -33,6 +33,14 @@ class Roles:
             import exec as runtime
             from tasks import team
             roster = team.roster(runtime, root)
+            for worker in roster['workers']:
+                if worker.get('role') == 'work' and not worker.get('workProfile'):
+                    from storage.files import safe_read_json
+                    try:
+                        session = safe_read_json(self.store.path.parent / 'agents' / worker['agentId'] / 'session.json')
+                        worker['workProfile'] = session.get('workProfile')
+                    except (ContractError, OSError, ValueError):
+                        worker['role'] = None  # An unreadable profile is unknown, never an assumed Expert.
             self.native_cache = (self.store.clock(), roster)
         return self.native_cache[1]['workers']
 
@@ -77,7 +85,7 @@ class Roles:
                 raise ContractError('route_invalid', 'Select work or work-verification for new requests')
             c.execute('INSERT OR REPLACE INTO area_processing VALUES(?,?,?)', (area_id, route, reference))
         if profile is not None:
-            if profile not in PROFILES or not isinstance(settings, dict) or not settings.get('model') or settings.get('provider') not in ('codex', 'claude', 'antigravity'):
+            if profile not in (*PROFILES, 'explore', 'scribe') or not isinstance(settings, dict) or not settings.get('model') or settings.get('provider') not in ('codex', 'claude', 'antigravity'):
                 raise ContractError('role_setting_invalid', 'Use an explicit existing role model/provider setting')
             if settings.get('sandbox') not in ('read-only', 'workspace-write', 'danger-full-access') or settings.get('approvalPolicy') not in ('bypass', 'required'):
                 raise ContractError('role_setting_invalid', 'Capture the role permissions without substituting a model')
@@ -116,7 +124,7 @@ class Roles:
             row = c.execute('SELECT settings FROM area_role_settings WHERE area_id=? AND role=?', (aid, profile)).fetchone()
             if row:
                 return json.loads(row['settings'])
-        raw = (policy.get('roleSettings') or {}).get(profile) or (policy.get('work') if profile == 'work' else None)
+        raw = (policy.get('roleSettings') or {}).get(profile) or (policy.get('work') if profile == (policy.get('work') or {}).get('workProfile', 'work') else None)
         if not raw or not raw.get('model'):
             raise ContractError('role_settings_required', 'Configure the selected role using its existing captured settings')
         return {**raw, 'sandbox': raw.get('sandbox', policy.get('sandbox')), 'approvalPolicy': raw.get('approvalPolicy', policy['approvalPolicy'])}

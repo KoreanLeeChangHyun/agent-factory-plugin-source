@@ -371,3 +371,14 @@ class ResponsibilityAndRoles(QueueTest):
         self.assertEqual(self.one('SELECT status FROM attempts')['status'],'starting')
         external=json.loads(self.one('SELECT external FROM attempts')['external'])
         self.assertIn('workflow_acceptance_conflict',external['observation'])
+
+    def test_existing_explorer_profile_is_not_reclassified_as_an_expert(self):
+        self.store.project_root=self.project
+        agent='existing-explorer'
+        session=self.db.parent/'agents'/agent/'session.json'
+        session.parent.mkdir(parents=True)
+        session.write_text(json.dumps({'agentId':agent,'role':'work','workProfile':'explore',**self.settings,'humanApprovalPolicy':'bypass'}))
+        domains.assign(self.db.parent,agent,self.area['domainId'],'human','existing explorer placement')
+        parent=next(a for a in self.store.roles.projection(self.store.connection())['areas'] if a['id']==self.area['domainId'])
+        self.assertEqual(parent['counts']['work']['hired'],0)
+        self.assertEqual(parent['members'][0]['profile'],'explore')
