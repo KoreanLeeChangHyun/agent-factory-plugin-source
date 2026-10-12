@@ -577,6 +577,10 @@ class ManagedConductorDriver(QueueTest):
                    ' {"type": "delegate", "requestId": "%s", "title": "Part 1", "spec": {"goal": "g",'
                    ' "completionCriteria": "c", "writeScope": [], "workspace": {"mode": "read-only"}}}]}' % (req["id"], req["id"]),
                    '{"commands": [{"type": "reply", "requestId": "%s", "text": "Done.", "final": true}]}' % req["id"]]
+        instruction = self.one('SELECT id FROM responsibility_instructions WHERE request_id=?', req['id'])['id']
+        final = json.loads(outputs[1])
+        final['commands'].insert(0, {'type': 'ack-instruction', 'requestId': req['id'], 'instructionId': instruction, 'taskIds': [], 'evidence': 'Stub applied the exact accepted input and Part 1 result'})
+        outputs[1] = json.dumps(final)
         backend = self.Backend(self.db.parent, outputs)
         driver = ManagedConductor(self.project, self.store, poll_seconds=0.001, backend=backend)
         executor = Recorder()

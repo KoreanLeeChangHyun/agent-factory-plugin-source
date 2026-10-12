@@ -76,7 +76,9 @@ class Workflows:
             policy_file = body.with_name(body.stem + '.' + name + '.policy.json')
             files.atomic_write_json(policy_file, exact_policy)
             argv.extend(['--' + name + '-execution-policy-file', str(policy_file), '--' + name + '-human-approval-policy', settings.get('approvalPolicy', policy['approvalPolicy'])])
-            argv.extend(['--' + name + '-model', settings['model'], '--' + name + '-provider', settings['provider']])
+            argv.extend(['--' + name + '-model', settings['model']])
+            if settings.get('provider') is not None:
+                argv.extend(['--' + name + '-provider', settings['provider']])
             if settings.get('reasoningEffort') is not None:
                 argv.extend(['--' + name + '-reasoning-effort', settings['reasoningEffort']])
             if settings.get('fast') is not None:

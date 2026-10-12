@@ -320,3 +320,32 @@ class ResponsibilityAndRoles(QueueTest):
         self.assertEqual(configured['verification']['domainLimit'],1)
         with self.assertRaises(ContractError):
             self.store.pool.configure({'subdomains':{self.area['subdomainId']:{'verification':{'domainLimit':5}}}},'Human setting')
+
+    def test_managed_conductor_declares_scope_through_the_real_command_parser(self):
+        from tasks.conductor_runtime import ManagedConductor
+        policy={**self.native_policy,'conductor':'managed'}
+        self.store.ensure_chat('scope',policy)
+        self.store.ingest('scope','conversation',{'clientMessageId':'scope','text':'output coordination then docs','relation':'new','area':self.area})
+        self.pump()
+        req=self.one("SELECT * FROM requests WHERE chat_id='scope'")
+        context=self.store.begin_turn(req['conductor_id'])
+        instruction=context['responsibility'][req['id']]['pendingInstructions'][0]
+        response={'commands':[{'type':'register-required','requestId':req['id'],'tasks':self.manifest()}]}
+        backend=types.SimpleNamespace(lookup=lambda request:{'runId':'stub','status':'completed','response':json.dumps(response)})
+        commands,_=ManagedConductor(self.project,self.store,backend=backend).turn(context,lambda *args:None)
+        token={k:context[k] for k in ('conductorId','slot','epoch','turnId')}
+        self.store.end_turn(token,commands)
+        self.assertEqual(self.one('SELECT COUNT(*) n FROM obligations')['n'],2)
+        self.assertEqual(self.one('SELECT state FROM responsibility_instructions WHERE id=?',instruction['id'])['state'],'pending')
+
+    def test_automatic_verifier_hire_keeps_human_settings_and_records_ai_placement(self):
+        with self.store.tx() as c:
+            self.store.roles.configure(c,self.area['domainId'],'Human verifier settings',profile='verification',settings=self.verified,route='work-verification')
+        req=self.roles_request()
+        self.turn(req['conductor_id'],[{'type':'delegate','requestId':req['id'],'title':'bounded','spec':{'writeScope':[]}}]); self.pump()
+        d=self.one('SELECT * FROM delegations')
+        verifier=self.store.attempt_context(d['attempt_id'])['verifier']
+        self.assertTrue(verifier)
+        self.assertEqual(self.one('SELECT COUNT(*) n FROM area_role_settings WHERE area_id=?',self.area['subdomainId'])['n'],0)
+        self.assertEqual(self.one('SELECT source FROM area_role_settings WHERE area_id=?',self.area['domainId'])['source'],'Human verifier settings')
+        self.assertEqual(domains.read(self.db.parent)['assignments'][verifier]['setBy']['actor'],'ai')

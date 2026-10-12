@@ -136,7 +136,7 @@ class Roles:
         settings = settings or self.settings(c, area or {}, profile, policy)
         if settings['sandbox'] != policy.get('sandbox') or settings['approvalPolicy'] != policy['approvalPolicy']:
             raise ContractError('role_permission_invalid', 'Selected role permissions must match the captured request authority')
-        result = {**spec, 'taskMode': route, 'workProfile': profile, 'executionSettings': {**settings, 'workProfile': profile}}
+        result = {**spec, 'taskMode': route, 'workProfile': profile, 'executionSettings': {**settings, 'workProfile': profile}, 'workIsolation': policy.get('workIsolation', False)}
         if route == 'work-verification':
             result['verificationSettings'] = initial.get('initialVerificationSettings') or self.settings(c, area or {}, 'verification', policy)
             if result['verificationSettings']['approvalPolicy'] != policy['approvalPolicy']:
@@ -149,12 +149,13 @@ class Roles:
     def signature(self, settings, profile):
         return conductor_pool.signature({'work': {**settings, 'workProfile': profile}, 'sandbox': settings['sandbox'], 'approvalPolicy': settings['approvalPolicy']}, 'worker')
 
-    def hire(self, c, area_value, profile, settings, reference):
+    def hire(self, c, area_value, profile, settings, reference, *, actor="human"):
         from tasks.conductor_queue import ident
         area = self.store.pool.area(area_value)
         if profile not in PROFILES:
             raise ContractError('role_profile_invalid', 'Select Worker, Expert or Verifier')
-        self.configure(c, area['subdomainId'], reference, profile=profile, settings=settings)
+        if actor == 'human':
+            self.configure(c, area['subdomainId'], reference, profile=profile, settings=settings)
         role, signature = self.pool_role(profile), self.signature(settings, profile)
         existing = self.store.pool.idle(c, role, area, signature) or self.adopt_native(c, area, profile, signature, settings)
         if existing:
@@ -163,7 +164,7 @@ class Roles:
         if reason:
             raise ContractError('employment_limit', reason)
         agent = ident('verify-cq' if profile == 'verification' else 'work-cq')
-        domains.assign_subdomain(self.store.path.parent, agent, area['domainId'], area['subdomainId'], 'human', reference)
+        domains.assign_subdomain(self.store.path.parent, agent, area['domainId'], area['subdomainId'], actor, reference)
         self.store.pool.member(c, agent, role, area, signature, 'idle')
         c.execute('INSERT INTO role_member_settings VALUES(?,?,?,?)', (agent, profile, json.dumps(settings), reference))
         return {'agentId': agent, 'profile': profile, 'reused': False, 'nativeSession': 'created-on-first-assignment'}
@@ -180,7 +181,7 @@ class Roles:
         if reason:
             return None, reason
         if not member:
-            hired = self.hire(c, area, 'verification', settings, 'captured-task:' + d['id'])
+            hired = self.hire(c, area, 'verification', settings, 'captured-task:' + d['id'], actor='ai')
             member = self.store.row(c, 'SELECT * FROM pool_members WHERE id=?', hired['agentId'])
         if member['id'] == implementation_agent:
             raise ContractError('verification_independence', 'Implementation owner cannot independently verify its result')

@@ -386,7 +386,7 @@ class Store:
             self.pool.decide(c, req['id'], 'assignment', {'inputId': inp['id'], 'requestId': req['id'], 'relation': p.get('relation')}, p['routingSource'], 'human', 'route:' + inp['id'])
         if p.get('requiredTasks'):
             self.responsibility.register(c, req['id'], p['requiredTasks'], 'input:' + inp['id'])
-        instruction_id = self.responsibility.instruction(c, req['id'], p['text'], 'input:' + inp['id']) if p.get('requestId') or p.get('requiredTasks') else None
+        instruction_id = self.responsibility.instruction(c, req['id'], p['text'], 'input:' + inp['id']) if p.get('requestId') or p.get('requiredTasks') or self.policy(c, chat)['conductor'] == 'managed' else None
         self.deliver_user(c, req, {
             "instructionId": instruction_id, "inputId": inp["id"], "text": p["text"], "clientMessageId": p.get("clientMessageId")},
             "input:" + inp["id"], mid="mb-" + inp["id"])
@@ -613,7 +613,8 @@ class Store:
             require(isinstance(p.get('text'), str) and p['text'].strip(), 'message_empty', 'Request text required')
             area = self.pool.area(p.get('area'))
             req = self.create_request(c, chat, p['text'], {**inp, 'processingChoice': p.get('route'), 'requestProfile': p.get('profile', 'work'), 'areaSource': 'human-control:' + p['commandId']}, area=area)
-            self.deliver_user(c, req, {'text': p['text'], 'clientMessageId': p['commandId']}, 'human-control:' + p['commandId'])
+            instruction_id = self.responsibility.instruction(c, req['id'], p['text'], 'human-control:' + p['commandId']) if self.policy(c, chat)['conductor'] == 'managed' else None
+            self.deliver_user(c, req, {'instructionId': instruction_id, 'text': p['text'], 'clientMessageId': p['commandId']}, 'human-control:' + p['commandId'])
             self.event(c, chat, 'role-pools-state', self.roles.projection(c))
             return {'requestId': req['id']}
         if action in ('hire-role', 'configure-area', 'configure-role'):
@@ -1223,6 +1224,11 @@ class Store:
                       " VALUES(?,?,?,?,?,?,?)", (aid, did, 1, "pending", policy["executor"], now, now))
             if command.get('obligationId'):
                 self.responsibility.bind(c, req['id'], command['obligationId'], did)
+            elif policy['executor'] == 'managed':
+                registered = self.responsibility.register(c, req['id'], [{'key': 'delegation:' + did, 'title': command['title'], 'spec': spec}], 'turn:' + token['turnId'])
+                automatic_id = 'required-' + digest([req['id'], 'delegation:' + did])[:24]
+                automatic = next(t for t in registered['tasks'] if t['id'] == automatic_id)
+                self.responsibility.bind(c, req['id'], automatic['id'], did)
             if area:
                 self.pool.set_area(c, 'delegation', did, area)
             self.pool.decide(c, req['id'], 'scope', {'delegationId': did, 'writeScope': spec['writeScope'], 'area': area}, 'turn:' + token['turnId'], 'declared', did)

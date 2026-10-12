@@ -169,7 +169,9 @@ Return ONLY one JSON object (no prose) of the form
   {"type": "reply", "requestId": ID, "text": TEXT, "final": BOOLEAN}
   {"type": "delegate", "requestId": ID, "title": TEXT, "spec": {"goal": TEXT, "completionCriteria": TEXT,
      "inputs": [TEXT], "writeScope": [PATH]}}
-  {"type": "ask", "requestId": ID, "text": QUESTION}
+  {"type": "ask", "requestId": ID, "text": QUESTION, "reason": TEXT, "impact": TEXT, "alternatives": [TEXT]}
+  {"type": "register-required", "requestId": ID, "tasks": [{"key": KEY, "title": TEXT, "spec": SPEC, "prerequisites": [KEY]}]}
+  {"type": "ack-instruction", "requestId": ID, "instructionId": ID, "taskIds": [REQUIRED_TASK_ID], "evidence": TEXT}
 Use only requestIds from "requests". A final reply is allowed only when that request has no open
 delegation. Answer in the user's language. "checkpoint", when present, is your predecessor's confirmed
 decisions, pending inputs, open delegations and processing position; continue from it."""
@@ -187,9 +189,9 @@ def parse_commands(text):
     except ValueError as error:
         raise ContractError("conductor_output", "Conductor output is not valid JSON") from error
     commands = value.get("commands") if isinstance(value, dict) else None
-    if not isinstance(commands, list) or not all(isinstance(c, dict) and c.get("type") in {"reply", "delegate", "ask", "split"}
+    if not isinstance(commands, list) or not all(isinstance(c, dict) and c.get("type") in {"reply", "delegate", "ask", "split", "register-required", "ack-instruction"}
                                                  for c in commands):
-        raise ContractError("conductor_output", "Conductor output needs a commands list of reply/delegate/ask")
+        raise ContractError("conductor_output", "Conductor output needs an explicitly supported fenced command list")
     return commands
 
 
@@ -355,7 +357,7 @@ class ManagedExecutor:
                     "goal": ctx["spec"].get("goal") or ctx["title"], "inputs": ctx["spec"].get("inputs", []),
                     "completionCriteria": ctx["spec"].get("completionCriteria") or ctx["title"],
                     "writeScope": ctx["spec"].get("writeScope", []), "dependencies": ctx["spec"].get("dependencies", []),
-                    **{k: ctx["spec"][k] for k in ("taskMode", "workProfile", "verificationSettings") if k in ctx["spec"]},
+                    **{k: ctx["spec"][k] for k in ("taskMode", "workProfile", "verificationSettings", "workIsolation") if k in ctx["spec"]},
                     **({"workspace": ctx["spec"]["workspace"]} if "workspace" in ctx["spec"] else {})}},
                 "policy": {"sandbox": "read-only" if (ctx["spec"].get("workspace") or {}).get("mode") == "read-only" else policy["sandbox"], "approvalPolicy": policy["approvalPolicy"],
                            "reference": policy["reference"]}}
