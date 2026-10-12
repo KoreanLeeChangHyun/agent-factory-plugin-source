@@ -357,7 +357,7 @@ class ManagedExecutor:
                     "goal": ctx["spec"].get("goal") or ctx["title"], "inputs": ctx["spec"].get("inputs", []),
                     "completionCriteria": ctx["spec"].get("completionCriteria") or ctx["title"],
                     "writeScope": ctx["spec"].get("writeScope", []), "dependencies": ctx["spec"].get("dependencies", []),
-                    **{k: ctx["spec"][k] for k in ("taskMode", "workProfile", "verificationSettings", "workIsolation") if k in ctx["spec"]},
+                    **{k: ctx["spec"][k] for k in ("taskMode", "workProfile", "verificationSettings", "workIsolation", "executionSettings") if k in ctx["spec"]},
                     **({"workspace": ctx["spec"]["workspace"]} if "workspace" in ctx["spec"] else {})}},
                 "policy": {"sandbox": "read-only" if (ctx["spec"].get("workspace") or {}).get("mode") == "read-only" else policy["sandbox"], "approvalPolicy": policy["approvalPolicy"],
                            "reference": policy["reference"]}}
@@ -383,6 +383,8 @@ class ManagedExecutor:
                     break
                 except (ContractError, OSError) as observation_error:
                     self.store.record_observation(ctx['attemptId'], 'start-uncertain:' + getattr(observation_error, 'code', type(observation_error).__name__))
+                    if hasattr(self.backend, 'classify_error') and self.backend.classify_error(observation_error) not in ('transient', 'provider'):
+                        return  # Retain the reservation and exact dispatch; recover after the source fault is repaired.
                     time.sleep(self.poll)
             if accepted:
                 external = {**accepted, 'agentId': request['session']['agentId'], 'runId': accepted['runId'], 'dispatchId': request['run']['dispatchId']}
@@ -414,7 +416,7 @@ class ManagedExecutor:
 
     def answer(self, ctx, text, command_id):
         if ctx['external'].get('workflow'):
-            self.backend.workflows.answer(ctx['external'], text, 'human-control:' + command_id)
+            self.backend.workflows.answer(ctx['external'], text, 'human-control:' + command_id, expected_decision=(ctx.get('answeredQuestion') or {}).get('decision'))
             self.watch(ctx)
             return
         request = self.request(ctx)
@@ -452,7 +454,7 @@ class ManagedExecutor:
             def ingest(kind, **data):
                 try:
                     self.store.ingest(ctx["chatId"], "lifecycle", {"delegationId": ctx["delegationId"],
-                                                                   "attemptId": ctx["attemptId"], "workerEventId": ctx["external"]["runId"] + ":" + kind,
+                                                                   "attemptId": ctx["attemptId"], "workerEventId": ctx["external"]["runId"] + ":" + kind + (":" + digest(data.get("question"))[:24] if kind == "question" else ""),
                                                                    "kind": kind, **data})
                 except ContractError:
                     pass  # Already recorded by an earlier observer; the ledger keeps the first fact.
@@ -611,7 +613,7 @@ class Runtime:
                 # A newer answer or cancellation supersedes this exact paused run.
                 # Recovery observes the current accepted run; it never sends stale text.
                 if not ctx['cancelRequested'] and (not original.get('runId') or current.get('runId') == original['runId']):
-                    self.executor(ctx).answer(ctx, event['payload']['text'], event['payload']['commandId'])
+                    self.executor({**ctx, 'answeredQuestion': event['payload'].get('question')}).answer(ctx, event['payload']['text'], event['payload']['commandId'])
             else:
                 self.executor(ctx).workspace_action(ctx, event['payload']['action'], event['payload']['authorizationReference'])
             with self.store.tx() as c:

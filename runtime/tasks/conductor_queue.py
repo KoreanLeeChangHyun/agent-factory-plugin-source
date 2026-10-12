@@ -678,7 +678,7 @@ class Store:
                 require(chosen is not None, 'question_ambiguous', 'Select the exact worker question')
                 self.answer_question(c, chosen['id'], 'control:' + p['commandId'])
                 d = self.set_delegation(c, d, 'dispatched')
-                self.event(c, chat, 'worker-answer', {'delegation': self.public_delegation(c, d), 'text': p['text'], 'commandId': p['commandId']}, key=p['commandId'])
+                self.event(c, chat, 'worker-answer', {'delegation': self.public_delegation(c, d), 'text': p['text'], 'commandId': p['commandId'], 'question': self.question_view(chosen)}, key=p['commandId'])
                 return {'status': 'processed', 'requestId': d['request_id']}
             if d["status"] in DELEGATION_TERMINAL:
                 # A finished external effect is reported as finished, never relabelled cancelled.

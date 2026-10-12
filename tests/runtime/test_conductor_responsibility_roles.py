@@ -212,6 +212,13 @@ class ResponsibilityAndRoles(QueueTest):
             fake.complete_verification(ctx['verifier'],state['latestVerificationRunId'],'pass')
             state = loop.reconcile_loop(args)
             result = backend.completion(external)
+            marker=self.db.with_name(request['run']['dispatchId']+'.workflow.json')
+            original=marker.read_bytes(); marker.write_text('{}')
+            # Remove only this acknowledgement fixture; the real loop acceptance is retained.
+            marker.unlink()
+            recovered=backend.lookup(request)
+            marker.write_bytes(original)
+            self.assertEqual(recovered['loopId'],external['loopId'])
         self.assertEqual(result['verificationState'], 'pass')
         self.assertEqual(result['binding']['taskId'],d['id'])
         self.assertEqual(result['binding']['workRunId'], state['latestWorkRunId'])
@@ -349,3 +356,18 @@ class ResponsibilityAndRoles(QueueTest):
         self.assertEqual(self.one('SELECT COUNT(*) n FROM area_role_settings WHERE area_id=?',self.area['subdomainId'])['n'],0)
         self.assertEqual(self.one('SELECT source FROM area_role_settings WHERE area_id=?',self.area['domainId'])['source'],'Human verifier settings')
         self.assertEqual(domains.read(self.db.parent)['assignments'][verifier]['setBy']['actor'],'ai')
+
+    def test_deterministic_acceptance_fault_preserves_ownership_without_infinite_lookup_or_new_start(self):
+        req=self.roles_request()
+        self.turn(req['conductor_id'],[{'type':'delegate','requestId':req['id'],'title':'bounded','spec':{'writeScope':[]}}]); self.pump()
+        d=self.one('SELECT * FROM delegations')
+        ctx=self.store.attempt_context(d['attempt_id'])
+        backend=mock.Mock()
+        backend.lookup.side_effect=ContractError('workflow_acceptance_conflict','Captured acceptance disagrees')
+        backend.classify_error.return_value='contract'
+        ManagedExecutor(self.store,self.project,backend=backend).launch(ctx)
+        self.assertEqual(backend.lookup.call_count,2)
+        backend.submit.assert_not_called()
+        self.assertEqual(self.one('SELECT status FROM attempts')['status'],'starting')
+        external=json.loads(self.one('SELECT external FROM attempts')['external'])
+        self.assertIn('workflow_acceptance_conflict',external['observation'])

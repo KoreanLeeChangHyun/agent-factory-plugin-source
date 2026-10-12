@@ -906,7 +906,7 @@ def accept_loop(args: argparse.Namespace) -> dict[str, Any]:
         acceptance = {"requestHash": request_hash, "workspace": captured,
                       "taskDocument": document, **({"allocation": args.captured_allocation} if args.captured_allocation is not None else {}), "options": {key: value for key, value in vars(args).items() if key in (
                           "task_id", "task_mode", "work_agent", "verification_agent", "work_model", "verification_model",
-                          "work_reasoning_effort", "verification_reasoning_effort", "work_fast", "verification_fast",
+                          "work_reasoning_effort", "verification_reasoning_effort", "work_fast", "verification_fast", "work_provider", "verification_provider", "work_human_approval_policy", "verification_human_approval_policy",
                           "work_execution_mode", "verification_execution_mode", "work_profile", "max_revisions", "receipt_recovery")},
                       **({"workIsolation": True} if args.work_isolation_enabled else {})}
         if acceptance_id is not None:

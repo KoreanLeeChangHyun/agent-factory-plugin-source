@@ -34,8 +34,19 @@ class Workflows:
         marker = self.path.with_name(request['run']['dispatchId'] + '.workflow.json')
         if marker.exists():
             return files.safe_read_json(marker)
-        # A lost acknowledgement is recovered by loop.py's persistent acceptance key.
-        return None
+        # Recover the canonical acceptance even if writing the local acknowledgement failed.
+        accepted = []
+        expected_hash = hashlib.sha256(json.dumps(request['task']['spec'], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        for path in (self.path.parent / 'agents' / request['session']['agentId'] / 'loops').glob('*/state.json'):
+            state = files.safe_read_json(path)
+            if state.get('acceptanceId') != request['run']['dispatchId']:
+                continue
+            if state.get('acceptedRequestHash', state.get('originalRequestHash')) != expected_hash or state.get('verificationAgentId') != request['verification']['agentId']:
+                raise ContractError('workflow_acceptance_conflict', 'This dispatch already has a different canonical acceptance')
+            accepted.append({'agentId': request['session']['agentId'], 'runId': state['loopId'], 'loopId': state['loopId'], 'dispatchId': request['run']['dispatchId'], 'workflow': True})
+        if len(accepted) > 1:
+            raise ContractError('workflow_acceptance_conflict', 'Multiple canonical acceptances need reconciliation')
+        return accepted[0] if accepted else None
 
     def start(self, request):
         session, task, policy = request['session'], request['task'], request['policy']
@@ -134,9 +145,13 @@ class Workflows:
         return {'resultPath': work['resultPath'], 'receiptPath': work['receiptPath'], 'checks': receipt['tests'],
                 'verificationState': 'skipped-by-human' if state.get('humanSkip') else 'pass', 'binding': binding}
 
-    def answer(self, external, text, reference):
+    def answer(self, external, text, reference, expected_decision=None):
         state = self.observe(external)['workflowState']
         decision = state.get('pendingDecision')
+        if not decision:
+            raise ContractError('workflow_decision_invalid', 'No exact managed decision is pending; use the recorded loop control for revision-limit or environment faults')
+        if expected_decision and any(decision.get(k) != expected_decision.get(k) for k in ('id','questionHash','runId')):
+            raise ContractError('workflow_decision_stale', 'This answer names a superseded managed question')
         if not decision:
             raise ContractError('workflow_decision_invalid', 'No exact managed decision is pending')
         response = {'decisionId': decision['id'], 'questionHash': decision['questionHash'], 'taskId': decision['taskBinding']['taskId'], 'runId': decision['runId'], 'loopId': state['loopId'], 'projectRoot': state['projectRoot'], 'answer': text, 'authorizationReference': reference, 'evidence': 'Exact Human answer received through queue'}
