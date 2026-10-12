@@ -99,6 +99,26 @@ class TaskBindingTests(unittest.TestCase):
                 self.assertNotIn('Accepted Main allocation evidence', captured[0].fixed)
 
 
+    def test_legacy_same_task_preserves_scope_without_an_allocation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / 'tasks.json'
+            path.write_text(json.dumps(self.document))
+            args = self.runtime.parse_args(['submit', '--project-root', directory, '--agent', 'work-task',
+                '--role', 'work', '--codex', '/bin/true', '--message', self.request,
+                '--task-list-file', str(path), '--task-id', 'task-one'])
+            with mock.patch.object(self.runtime, 'spawn_worker', return_value=123), mock.patch.object(self.runtime, 'emit') as emit:
+                self.runtime.submit(args, True)
+                state = json.loads(Path(emit.call_args.args[0]['statePath']).read_text())
+                self.runtime.mark_terminal(Path(state['statePath']), 'completed')
+                send = self.runtime.parse_args(['send', '--project-root', directory, '--agent', 'work-task',
+                    '--message', 'Delta only', '--task-list-file', str(path), '--task-id', 'task-one'])
+                self.document['tasks'][0]['completionCriteria'] = 'Silently drop required checks'
+                path.write_text(json.dumps(self.document))
+                with self.assertRaises(self.runtime.ContractError) as error:
+                    self.runtime.submit(send, False)
+                self.assertEqual(error.exception.code, 'task_binding_changed')
+
     def test_loop_rejects_before_creating_or_dispatching(self):
         from test_agent_loop import load_modules
         runtime, loop = load_modules()

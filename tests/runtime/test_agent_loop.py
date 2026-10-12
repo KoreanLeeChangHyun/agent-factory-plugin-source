@@ -146,6 +146,12 @@ class FakeRuntime:
         run = self.runs[(agent_id, run_id)]
         if run["status"] == "needs-human-decision" and not Path(run["resultPath"]).exists():
             Path(run["resultPath"]).write_text("Provide the missing project choice.")
+        return self.persist(run)
+
+    def persist(self, run):
+        """Like exec.py, an observed status is the run's persisted state (team assignment reads it)."""
+        if Path(run["statePath"]).parent.is_dir():
+            self.agent_exec.atomic_write_json(Path(run["statePath"]), run)
         return run
 
     def reconcile_stale(self, agent_id):
@@ -174,7 +180,7 @@ class FakeRuntime:
         Path(run["resultPath"]).write_text("work result\n", encoding="utf-8")
         Path(run["receiptPath"]).write_text(json.dumps(receipt), encoding="utf-8")
         run["status"] = "completed"
-        return run
+        return self.persist(run)
 
     def complete_verification(self, agent_id: str, run_id: str, decision: str):
         run = self.runs[(agent_id, run_id)]
@@ -191,7 +197,7 @@ class FakeRuntime:
         Path(run["resultPath"]).write_text("verification result\n", encoding="utf-8")
         Path(run["receiptPath"]).write_text(json.dumps(receipt), encoding="utf-8")
         run["status"] = "completed"
-        return run
+        return self.persist(run)
 
 
 class AgentLoopContractTests(unittest.TestCase):
@@ -274,7 +280,10 @@ class AgentLoopContractTests(unittest.TestCase):
 
         def start(agent, name):
             allocation_path = self.root / f"allocation-{agent}.json"
-            allocation_path.write_text(json.dumps({**TaskBindingTests.allocation(), "domain": name}))
+            allocation = {**TaskBindingTests.allocation(), "domain": name}
+            if self.agent_exec.session_file(self.root, agent).exists():
+                allocation["session"] = {"strategy": "reuse", "reason": "Another independent task on the idle worker"}
+            allocation_path.write_text(json.dumps(allocation))
             self.request.write_text(f"{agent} bounded work\n")
             return self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args([
                 "start", "--project-root", str(self.root), "--request-file", str(self.request), "--work-agent", agent,
@@ -283,6 +292,10 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertEqual((reused["domainLink"]["domainId"], reused["domainLink"]["reused"], reused["domainLink"]["assigned"]), (human, True, True))
         created = start("work-runtime", "plugin runtime")
         self.assertFalse(created["domainLink"]["reused"])
+        # One session runs one task at a time: finish the first task before the worker takes the next.
+        self.runtime.complete_work("work-runtime", created["latestWorkRunId"])
+        self.agent_loop.reconcile_loop(self.agent_loop.build_parser().parse_args([
+            "reconcile", "--project-root", str(self.root), "--work-agent", "work-runtime", "--loop-id", created["loopId"]]))
         domains.assign(runtime_root, "work-runtime", human, "human", "control-center")
         protected = start("work-runtime", "plugin runtime")
         self.assertEqual((protected["domainLink"]["assigned"], protected["domainLink"]["protectedDomainId"]), (False, human))
@@ -317,9 +330,11 @@ class AgentLoopContractTests(unittest.TestCase):
             start("work-legacy", "plugin runtime")
         self.assertEqual(kept.exception.code, "domain_membership_required")
         self.assertIsNone(domains.read(runtime_root)["assignments"]["work-legacy"]["domainId"], "The legacy entry is kept as it was")
+        checked_allocation = self.root / "allocation-work-checked.json"
+        checked_allocation.write_text(json.dumps({**TaskBindingTests.allocation(), "domain": "plugin runtime"}))
         verified = self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args([
             "start", "--project-root", str(self.root), "--request-file", str(self.request), "--work-agent", "work-checked",
-            "--verification-agent", "verify-checked", "--allocation-file", str(self.root / "allocation-work-runtime.json"),
+            "--verification-agent", "verify-checked", "--allocation-file", str(checked_allocation),
             "--receipt-recovery", "manual", "--codex", "/bin/true"]))
         self.assertEqual((verified["domainLink"]["assigned"], verified["verificationDomainLink"]["assigned"]), (True, True))
         stored = domains.read(runtime_root)["assignments"]
@@ -392,6 +407,7 @@ class AgentLoopContractTests(unittest.TestCase):
                     self.assertEqual(stopped["status"], "cancelled")
                     self.assertTrue(stopped["stopPending"])
                     self.assertEqual(arguments, ["cancel", "--agent", child["agentId"], "--run-id", child["runId"]])  # noqa: B023 - the closure is only called within this iteration
+                    self.runtime.persist(self.runtime.runs[(child["agentId"], child["runId"])] | {"status": "cancelled"})  # noqa: B023 - the closure is only called within this iteration
                     self.runtime.runs[(child["agentId"], child["runId"])]["status"] = "cancelled"  # noqa: B023 - the closure is only called within this iteration
                     return {"kind": "ack"}
                 with mock.patch.object(self.runtime, "call", create=True, side_effect=cancel) as command:
@@ -1335,9 +1351,10 @@ class AgentLoopContractTests(unittest.TestCase):
                 self.assertEqual(self.runtime.dispatches, [])
 
     def test_start_preserves_valid_absolute_and_relative_request_bytes(self) -> None:
-        for path in (self.request, Path("request.md")):
+        # Each start uses its own workers; the first loop still holds work-agent and verification-agent.
+        for path, workers in ((self.request, []), (Path("request.md"), ["--work-agent", "work-other", "--verification-agent", "verify"])):
             with self.subTest(path=path), mock.patch("pathlib.Path.cwd", return_value=self.root):
-                started = self.start(["--request-file", str(path)])
+                started = self.start(["--request-file", str(path), *workers])
                 state = self.agent_exec.safe_read_json(Path(started["statePath"]))
                 self.assertEqual(Path(state["originalRequestPath"]).read_bytes(), b"bounded work\n")
                 self.assertEqual(state["originalRequestHash"], hashlib.sha256(b"bounded work\n").hexdigest())
@@ -2085,6 +2102,215 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertEqual(ended["terminalReason"]["code"], "work-completed")
         self.assertEqual(len(self.runtime.dispatches), 2)
 
+    def revise(self, state, message="Fix the omitted acceptance check", reference="correction-one", **overrides):
+        task = state["workflow"]["tasks"][state["workflow"]["index"]]
+        values = {"workflow-id": state["workflow"]["id"], "task-id": task["id"],
+                  "run-id": state["latestWorkRunId"], **overrides}
+        args = ["revise", "--project-root", str(self.root), "--work-agent", "work-agent",
+                "--loop-id", state["loopId"], "--actor", "main", "--authorization-reference", reference,
+                "--decision-evidence", "User requested this bounded correction", "--message", message]
+        for key, value in values.items():
+            args.extend(["--" + key, value])
+        return self.agent_loop.revise_loop(self.agent_loop.build_parser().parse_args(args))
+
+    def test_user_corrections_keep_identity_session_and_receipts_without_repeating_original(self):
+        state = self.start(["--task-mode", "work"])
+        original_run = state["latestWorkRunId"]
+        binding = self.runtime.runs[("work-agent", original_run)]["dispatchTuple"]["taskBinding"]
+        self.runtime.complete_work("work-agent", original_run)
+        ended = self.reconcile(state)
+        original_receipt = Path(self.runtime.runs[("work-agent", original_run)]["receiptPath"]).read_bytes()
+        for number in (1, 2):
+            before = len(self.runtime.dispatches)
+            old = ended
+            state = self.revise(ended, f"Correction A-{number}: satisfy check {number}", f"A-{number}")
+            self.assertEqual(len(self.runtime.dispatches), before + 1)
+            task = state["workflow"]["tasks"][0]
+            self.assertEqual(len(state["workflow"]["tasks"]), 1)
+            self.assertEqual(task["userRevisionCount"], number)
+            self.assertEqual(task["requestRevision"], number + 1)
+            self.assertEqual(state["revisionCount"], 0, "User changes do not consume automatic repair rounds")
+            dispatch = self.runtime.dispatches[-1]
+            self.assertEqual(dispatch["operation"], "send")
+            self.assertEqual(dispatch["execution"]["taskBinding"], binding)
+            text = Path(dispatch["request_file"]).read_text()
+            self.assertIn(f"Correction A-{number}", text)
+            self.assertIn(f"Base request revision: {number}", text)
+            correction = state["userRevisions"][-1]
+            self.assertEqual(correction["baseRequestRevision"], number)
+            self.assertEqual(correction["baseRequestHash"], self.runtime.runs[("work-agent", old["latestWorkRunId"])]["requestHash"])
+            self.assertEqual(correction["originalRequestHash"], binding["requestHash"])
+            self.assertNotIn("bounded work\n", text)
+            self.assertIn("required execution constraints", text)
+            self.assertEqual(state["dispatchHistory"][-1]["context"], "retained")
+            self.assertEqual(state["dispatchHistory"][-1]["trigger"], "user-revision")
+            self.revise(old, f"Correction A-{number}: satisfy check {number}", f"A-{number}")
+            self.assertEqual(len(self.runtime.dispatches), before + 1, "Lost acknowledgement resumes the recorded correction")
+            self.runtime.complete_work("work-agent", state["latestWorkRunId"])
+            ended = self.reconcile(state)
+            self.assertEqual(ended["status"], "completed")
+        self.assertEqual(Path(self.runtime.runs[("work-agent", original_run)]["receiptPath"]).read_bytes(), original_receipt)
+        saved = self.agent_exec.safe_read_json(Path(ended["statePath"]))
+        self.assertEqual(len(saved["userRevisions"]), 2)
+        self.assertEqual(len(saved["dispatchHistory"]), 3)
+        from tasks import team
+        history = team.history(self.agent_exec, self.root, "work-agent")
+        self.assertEqual(len(history["tasks"]), 1)
+        task = history["tasks"][0]
+        self.assertEqual(task["userRevisionCount"], 2)
+        self.assertEqual([run["trigger"] for run in task["runs"]], ["initial", "user-revision", "user-revision"])
+        self.assertEqual([run["requestRevision"] for run in task["runs"]], [1, 2, 3])
+        self.assertEqual([run["userRevisionNumber"] for run in task["runs"]], [None, 1, 2])
+        self.assertEqual(history["worker"]["runCount"], 3)
+        self.assertEqual(history["worker"]["taskCounts"], {"completed": 1})
+
+    def test_explicit_acceptance_key_recovers_initial_dispatch_without_merging_an_independent_task(self):
+        arguments = ["start", "--project-root", str(self.root), "--work-agent", "work-agent", "--task-mode", "work",
+                     "--request-file", str(self.request), "--codex", "/bin/true", "--acceptance-id", "accept-A"]
+        first = self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args(arguments))
+        duplicate = self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args(arguments))
+        self.assertEqual(first["loopId"], duplicate["loopId"])
+        self.assertEqual(len(self.runtime.dispatches), 1)
+        self.runtime.complete_work("work-agent", first["latestWorkRunId"])
+        self.reconcile(first)
+        arguments[-1] = "accept-B"
+        second = self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args(arguments))
+        self.assertNotEqual(first["workflow"]["id"], second["workflow"]["id"])
+        self.assertEqual(len(self.runtime.dispatches), 2)
+        self.request.write_text("Different bounded request")
+        with self.assertRaises(self.agent_exec.ContractError) as collision:
+            self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args(arguments))
+        self.assertEqual(collision.exception.code, "task_workspace_acceptance_collision")
+
+    def test_user_correction_rebuilds_context_when_native_session_changes(self):
+        state = self.start(["--task-mode", "work"])
+        self.runtime.complete_work("work-agent", state["latestWorkRunId"])
+        state = self.reconcile(state)
+        session = self.agent_exec.session_file(self.root, "work-agent")
+        self.agent_exec.atomic_write_json(session, {"role": "work", "sessionId": "replacement-native-session"})
+        revised = self.revise(state)
+        text = Path(self.runtime.dispatches[-1]["request_file"]).read_text()
+        self.assertIn("bounded work\n", text)
+        self.assertIn("Work passes checks", text)
+        self.assertIn("Previous receipt:", text)
+        self.assertEqual(revised["dispatchHistory"][-1]["context"], "recovery")
+        self.assertEqual(revised["workflow"]["tasks"][0]["id"], "task-one")
+
+    def test_user_correction_rejects_wrong_identity_stale_run_and_another_live_task(self):
+        state = self.start(["--task-mode", "work"])
+        self.runtime.complete_work("work-agent", state["latestWorkRunId"])
+        ended = self.reconcile(state)
+        before = len(self.runtime.dispatches)
+        for overrides in ({"workflow-id": "other-flow"}, {"task-id": "other-task"}, {"run-id": "run-stale"}):
+            with self.assertRaises(self.agent_exec.ContractError):
+                self.revise(ended, **overrides)
+        self.assertEqual(len(self.runtime.dispatches), before)
+        other = self.root / "other-request.md"
+        other.write_text("Independent B")
+        args = self.agent_loop.build_parser().parse_args(["start", "--project-root", str(self.root),
+            "--work-agent", "work-agent", "--task-mode", "work", "--request-file", str(other), "--codex", "/bin/true"])
+        separate = self.agent_loop.start_loop(args)
+        self.assertNotEqual(separate["workflow"]["id"], ended["workflow"]["id"])
+        with self.assertRaises(self.agent_exec.ContractError) as busy:
+            self.revise(ended)
+        self.assertEqual(busy.exception.code, "revision_worker_busy")
+
+    def test_user_revision_restores_pending_dispatch_after_lost_acknowledgement(self):
+        state = self.start(["--task-mode", "work"])
+        self.runtime.complete_work("work-agent", state["latestWorkRunId"])
+        ended = self.reconcile(state)
+        self.runtime.lose_ack = True
+        with self.assertRaises(self.agent_exec.ContractError):
+            self.revise(ended)
+        saved = self.agent_exec.safe_read_json(Path(ended["statePath"]))
+        dispatch_id = saved["pendingDispatch"]["dispatchId"]
+        self.assertEqual(saved["workflow"]["tasks"][0]["userRevisionCount"], 1)
+        self.assertEqual(saved["pendingDispatch"]["userRevisionNumber"], 1)
+        self.revise(ended)
+        restored = self.reconcile(saved)
+        self.assertEqual(len(self.runtime.dispatches), 2)
+        self.assertIsNone(restored["pendingDispatch"])
+        self.assertEqual(restored["dispatchHistory"][-1]["dispatchId"], dispatch_id)
+        self.assertEqual(restored["dispatchHistory"][-1]["userRevisionNumber"], 1)
+        self.assertEqual(len(restored["userRevisions"]), 1)
+
+    def test_user_revision_refuses_a_previous_run_bound_to_another_task(self):
+        state = self.start(["--task-mode", "work"])
+        self.runtime.complete_work("work-agent", state["latestWorkRunId"])
+        ended = self.reconcile(state)
+        run = self.runtime.runs[("work-agent", ended["latestWorkRunId"])]
+        saved_run = self.agent_exec.safe_read_json(Path(run["statePath"]))
+        saved_run["dispatchTuple"]["taskBinding"]["taskId"] = "unrelated-task"
+        self.agent_exec.atomic_write_json(Path(run["statePath"]), saved_run)
+        before = Path(ended["statePath"]).read_bytes()
+        with self.assertRaises(self.agent_exec.ContractError) as error:
+            self.revise(ended)
+        self.assertEqual(error.exception.code, "revision_binding_invalid")
+        self.assertEqual(Path(ended["statePath"]).read_bytes(), before)
+        self.assertEqual(len(self.runtime.dispatches), 1)
+
+    def test_context_recovery_after_first_correction_keeps_its_request_reference(self):
+        state = self.start(["--task-mode", "work"])
+        self.runtime.complete_work("work-agent", state["latestWorkRunId"])
+        first = self.revise(self.reconcile(state), "Keep correction A-1", "A-1")
+        first_request = first["dispatchHistory"][-1]["requestPath"]
+        self.runtime.complete_work("work-agent", first["latestWorkRunId"])
+        ended = self.reconcile(first)
+        self.agent_exec.atomic_write_json(self.agent_exec.session_file(self.root, "work-agent"),
+                                          {"role": "work", "sessionId": "replacement-session"})
+        second = self.revise(ended, "Apply correction A-2", "A-2")
+        text = Path(self.runtime.dispatches[-1]["request_file"]).read_text()
+        self.assertIn(first_request, text)
+        self.assertIn("Apply correction A-2", text)
+        self.assertEqual(second["dispatchHistory"][-1]["context"], "recovery")
+        self.assertEqual(second["dispatchHistory"][-1]["userRevisionNumber"], 2)
+
+    def test_identical_new_briefs_are_separate_tasks_on_the_same_worker(self):
+        args = ["start", "--project-root", str(self.root), "--work-agent", "work-agent",
+                "--task-mode", "work", "--request-file", str(self.request), "--codex", "/bin/true"]
+        first = self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args(args))
+        self.runtime.complete_work("work-agent", first["latestWorkRunId"])
+        self.reconcile(first)
+        second = self.agent_loop.start_loop(self.agent_loop.build_parser().parse_args(args))
+        self.assertNotEqual(first["workflow"]["id"], second["workflow"]["id"])
+        self.assertNotEqual(first["workflow"]["tasks"][0]["id"], second["workflow"]["tasks"][0]["id"])
+        self.assertEqual(self.runtime.dispatches[-1]["operation"], "send")
+
+    def test_failed_user_revision_is_one_failed_task_and_keeps_original_success(self):
+        from tasks import team
+        state = self.start(["--task-mode", "work", "--receipt-recovery", "manual"])
+        original = state["latestWorkRunId"]
+        self.runtime.complete_work("work-agent", original)
+        state = self.revise(self.reconcile(state))
+        failed = self.runtime.runs[("work-agent", state["latestWorkRunId"])]
+        failed.update(status="failed", error={"code": "execution_preflight_failed", "message": "test fixture failure"})
+        stopped = self.reconcile(state)
+        history = team.history(self.agent_exec, self.root, "work-agent")
+        self.assertEqual(stopped["status"], "runtime-error")
+        self.assertEqual(len(history["tasks"]), 1)
+        self.assertEqual(history["tasks"][0]["state"], "failed")
+        self.assertEqual([run["status"] for run in history["tasks"][0]["runs"]], ["completed", "failed"])
+        self.assertEqual(self.runtime.runs[("work-agent", original)]["status"], "completed")
+
+    def test_user_revision_keeps_verification_route_and_correction_acceptance_criteria(self):
+        state = self.start()
+        self.runtime.complete_work("work-agent", state["latestWorkRunId"])
+        verifying = self.reconcile(state)
+        old_check = verifying["latestVerificationRunId"]
+        self.runtime.complete_verification("verification-agent", old_check, "pass")
+        ended = self.reconcile(verifying)
+        revised = self.revise(ended, "Also demonstrate the corrected acceptance criterion")
+        self.assertEqual(revised["taskMode"], "work-verification")
+        self.assertNotIn("verificationRunId", revised["workflow"]["tasks"][0])
+        self.runtime.complete_work("work-agent", revised["latestWorkRunId"])
+        checking = self.reconcile(revised)
+        self.assertNotEqual(checking["latestVerificationRunId"], old_check)
+        text = Path(self.runtime.dispatches[-1]["request_file"]).read_text()
+        self.assertIn("Also demonstrate the corrected acceptance criterion", text)
+        self.assertIn("original completion criteria", text)
+        self.runtime.complete_verification("verification-agent", checking["latestVerificationRunId"], "pass")
+        self.assertEqual(self.reconcile(checking)["status"], "completed")
+
     def test_revision_limit_stops_for_a_human_and_extension_resumes(self) -> None:
         # Incident: a rejected Work result looped through revisions for 23 minutes.
         state = self.start(["--max-revisions", "1"])
@@ -2361,6 +2587,54 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertEqual((self.root / "file.txt").read_text(), "result")
         self.assertEqual(len(self.runtime.dispatches), 1)
         self.assertEqual(complete["taskWorkspaces"]["task-one"]["verification"], "not requested")
+
+    def test_completed_work_units_reopen_corrections_with_same_task_and_preserved_workspace_history(self):
+        started, _ = self.code_workspace_start()
+        workspace = started["taskWorkspaces"]["task-one"]
+        (Path(workspace["path"]) / "file.txt").write_text("A")
+        self.checked_code_work(started)
+        ended = self.reconcile(started)
+        original_binding = self.runtime.dispatches[0]["execution"]["taskBinding"].copy()
+        native_session = self.agent_exec.safe_read_json(self.agent_exec.session_file(self.root, "work-agent"))["sessionId"]
+        for number in (1, 2):
+            previous = ended["taskWorkspaces"]["task-one"]
+            binding_path = Path(ended["statePath"]).parent / ("workspace-" + previous["id"] + ".json")
+            original_bytes = binding_path.read_bytes()
+            revised = self.revise(ended, f"Correct A-{number}", f"unit-A-{number}")
+            current = revised["taskWorkspaces"]["task-one"]
+            self.assertNotEqual(current["id"], previous["id"])
+            self.assertEqual(current["taskId"], previous["taskId"])
+            self.assertEqual(len(revised["workflow"]["tasks"]), 1)
+            self.assertEqual(len(revised["taskWorkspaceHistory"]["task-one"]), number)
+            self.assertEqual(revised["taskWorkspaceHistory"]["task-one"][-1], previous)
+            self.assertEqual(binding_path.read_bytes(), original_bytes)
+            self.assertEqual(self.runtime.dispatches[-1]["execution"]["taskBinding"], original_binding)
+            self.assertEqual(self.agent_exec.safe_read_json(self.agent_exec.session_file(self.root, "work-agent"))["sessionId"], native_session)
+            (Path(current["path"]) / "file.txt").write_text(f"A-{number}")
+            self.checked_code_work(revised)
+            ended = self.reconcile(revised)
+            self.assertEqual(ended["status"], "completed")
+            self.assertEqual((self.root / "file.txt").read_text(), f"A-{number}")
+
+    def test_user_revision_recovers_interrupted_workspace_preparation_without_a_second_workspace(self):
+        from tasks import workspaces
+        started, _ = self.code_workspace_start()
+        (Path(started["taskWorkspaces"]["task-one"]["path"]) / "file.txt").write_text("A")
+        self.checked_code_work(started)
+        ended = self.reconcile(started)
+        prepare = workspaces.prepare
+        def interrupt(runtime, state, path, save):
+            prepare(runtime, state, path, save)
+            raise self.agent_exec.ContractError("test_interrupted", "Simulated process interruption after durable preparation")
+        with mock.patch.object(workspaces, "prepare", side_effect=interrupt), self.assertRaises(self.agent_exec.ContractError):
+            self.revise(ended)
+        stored = self.agent_exec.safe_read_json(Path(ended["statePath"]))
+        workspace_id = stored["taskWorkspaces"]["task-one"]["id"]
+        restored = self.reconcile(stored)
+        self.assertEqual(restored["taskWorkspaces"]["task-one"]["id"], workspace_id)
+        self.assertEqual(len(self.runtime.dispatches), 2)
+        self.assertEqual(len(restored["taskWorkspaceHistory"]["task-one"]), 1)
+        self.assertEqual(restored["workflow"]["tasks"][0]["userRevisionCount"], 1)
 
     def target_owner(self, agent="other-worker", status="running", cwd=None):
         owner = {"agentId": agent, "runId": "run-owner", "role": "work", "status": status,
@@ -2683,6 +2957,19 @@ class AgentLoopContractTests(unittest.TestCase):
         subjects = [worktrees.git(self.root, "log", "-1", "--format=%s", ref).stdout.decode().strip() for ref in ("HEAD", "HEAD^2")]
         name = workspace["workflowId"] + "/" + workspace["taskId"]
         self.assertEqual(subjects, ["Merge task " + name + " / 작업 " + name + " 병합", "Task " + name + " / 작업 " + name])
+
+    def test_identical_isolated_briefs_are_independent_tasks_without_an_explicit_acceptance_key(self):
+        plan = self.isolated_repository()
+        first = self.isolated_brief_start(plan)
+        task_id = next(iter(first["taskWorkspaces"]))
+        (Path(first["taskWorkspaces"][task_id]["path"]) / "file.txt").write_text("A")
+        self.isolated_checked_work(first)
+        self.reconcile(first)
+        second = self.isolated_brief_start(plan)
+        self.assertNotEqual(first["workflow"]["id"], second["workflow"]["id"])
+        self.assertNotEqual(first["workflow"]["tasks"][0]["id"], second["workflow"]["tasks"][0]["id"])
+        self.assertEqual(first["workflow"]["title"], second["workflow"]["title"])
+        self.assertEqual(self.runtime.dispatches[-1]["operation"], "send")
 
     def isolated_conflict(self):
         from execution import worktrees
@@ -3070,7 +3357,8 @@ class WorkspacePlanDispatchBindingTests(unittest.TestCase):
         workspace_file = self.root / (agent + "-workspace.json")
         workspace_file.write_text(json.dumps(plan))
         arguments = ["start", "--project-root", str(self.root), "--request-file", str(self.brief), "--task-mode", "work",
-                     "--work-agent", agent, "--codex", "/bin/true", "--work-isolation", "--workspace-file", str(workspace_file)]
+                     "--work-agent", agent, "--codex", "/bin/true", "--work-isolation", "--workspace-file", str(workspace_file),
+                     "--acceptance-id", "initial-acceptance"]
         with mock.patch.object(self.agent_loop, "launch_driver") as launch, mock.patch.object(self.agent_loop, "emit") as emit:
             self.assertEqual(self.agent_loop.main(arguments), 0)
         first = emit.call_args.args[0]

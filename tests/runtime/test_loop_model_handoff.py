@@ -107,7 +107,8 @@ class LoopModelAndHandoffTests(unittest.TestCase):
         self.assertEqual(state["execution"]["agentModels"]["work"], {"model": "gpt-6-sol"})
         self.assertIn("gpt-6-astra", record["undetectedPreferences"])
         self.request.write_text("other bounded work\n", encoding="utf-8")
-        unknown = self.state(self.start("design-diagnosis", ["--work-agent", "work-other"], None))
+        # The first loop still holds both of its workers, so this task names its own.
+        unknown = self.state(self.start("design-diagnosis", ["--work-agent", "work-other", "--verification-agent", "verify"], None))
         record = unknown["execution"]["taskBinding"]["allocation"]["modelRecommendation"]
         self.assertEqual((record["status"], record["selected"]), ("recheck-required", None))
         self.assertEqual(unknown["execution"]["agentModels"]["work"], {})
