@@ -372,7 +372,7 @@ def subdomain(runtime_root, domain_id, name, actor, source, expected_revision=No
     """Add an explicit child area without migrating domains or legacy memberships."""
     name, by = name_of(name), _actor(actor, source)
     if write_scope is not None:
-        from tasks.conductor_intents import scope_paths
+        from conductor.intents import scope_paths
         scope_paths(write_scope)
 
     def change(document):

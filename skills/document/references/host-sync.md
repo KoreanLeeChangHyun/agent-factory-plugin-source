@@ -140,7 +140,14 @@
   and `tokenUsage`; reported provider usage is not attributed to individual Document tokens.
   No extra model call, persistent cache or copied editable source is created.
 - Reject malformed metadata, duplicate identities, links, unsupported package content
-  and symlinks instead of silently omitting them from discovery.
+  and symlinks instead of silently omitting them from discovery. Metadata must stay
+  JSON-compatible: quote YAML dates and timestamps such as `"2026-10-07"`.
+- When past execution history is relevant, search it with `--type refined --category history`
+  and exact-scope [lesson retrieval](lessons-learned.md#lifecycle-cli). Results are
+  evidence, not current authority or active rules; recheck the current request,
+  canonical Skill and authorization. On a catalog error, do not repeat the same search
+  or bypass the document: report the failing path and error, and repair it only within
+  the task's write scope.
 
 
 <a id="document-layout-migration"></a>

@@ -15,7 +15,7 @@ def validate(document, task_id, request_hash):
         return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value)
     if not isinstance(document, dict) or not identifier(document.get("id")) or not text(document.get("title"), 300):
         fail()
-    from tasks.orchestrator_guard import document_paths
+    from hooks.orchestrator_guard import document_paths
     tasks = document.get("tasks")
     if not isinstance(tasks, list) or not tasks:
         fail()

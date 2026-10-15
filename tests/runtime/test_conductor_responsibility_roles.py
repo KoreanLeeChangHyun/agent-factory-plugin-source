@@ -5,9 +5,9 @@ import types
 from unittest import mock
 
 from storage.errors import ContractError
-from tasks import domains
-from tasks.conductor_backend import ManagedBackend
-from tasks.conductor_runtime import FakeConductor, ManagedExecutor, Runtime
+from conductor import domains
+from conductor.backend import ManagedBackend
+from conductor.runtime import FakeConductor, ManagedExecutor, Runtime
 from test_conductor_queue import QueueTest, POLICY
 
 
@@ -99,7 +99,7 @@ class ResponsibilityAndRoles(QueueTest):
         with self.store.tx() as c:
             self.store.responsibility.reconcile(c)
         self.assertEqual(self.one('SELECT reason FROM obligations ORDER BY rowid')['reason'], 'execution-unassigned')
-        from tasks.conductor_queue import Store
+        from conductor.queue import Store
         self.store.close(); self.store = Store(self.db)
         runtime = Runtime(self.store, conductor=FakeConductor(delay=0, chunk_delay=0))
         self.assertTrue(runtime.drain(5))
@@ -329,7 +329,7 @@ class ResponsibilityAndRoles(QueueTest):
             self.store.pool.configure({'subdomains':{self.area['subdomainId']:{'verification':{'domainLimit':5}}}},'Human setting')
 
     def test_managed_conductor_declares_scope_through_the_real_command_parser(self):
-        from tasks.conductor_runtime import ManagedConductor
+        from conductor.runtime import ManagedConductor
         policy={**self.native_policy,'conductor':'managed'}
         self.store.ensure_chat('scope',policy)
         self.store.ingest('scope','conversation',{'clientMessageId':'scope','text':'output coordination then docs','relation':'new','area':self.area})

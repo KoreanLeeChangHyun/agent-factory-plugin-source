@@ -120,7 +120,7 @@ def test_read_only_never_writes_project(tmp_path):
 
 def test_hook_rejection_persists_without_provider_events_and_explore_never_writes(tmp_path):
     import os
-    from tasks import orchestrator_guard as guard
+    from hooks import orchestrator_guard as guard
     root, run = tmp_path / 'project', tmp_path / 'run'
     root.mkdir(); run.mkdir()
     state = {'statePath': str(run / 'state.json'), 'runId': 'r-hook', 'agentId': 'a-hook', 'provider': 'codex',

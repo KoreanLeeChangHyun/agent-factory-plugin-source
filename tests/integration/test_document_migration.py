@@ -9,7 +9,7 @@ import sys
 import shlex
 
 import pytest
-from tasks import orchestrator_guard as guard
+from hooks import orchestrator_guard as guard
 
 
 ROOT = Path(__file__).resolve().parents[2]

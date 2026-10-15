@@ -23,7 +23,7 @@ WORKERS = ("team-worker", "team-other", "team-verifier", "team-verifier-2", "tea
 class TeamAssignmentTests(unittest.TestCase):
     def setUp(self):
         self.agent_exec, self.agent_loop = load_modules()
-        from tasks import team
+        from conductor import team
         self.team = team
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

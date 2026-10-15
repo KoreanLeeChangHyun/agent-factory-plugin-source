@@ -311,7 +311,7 @@ def tasks_for(observation, agent):
 
 
 def _read_domains(runtime, root):
-    from tasks import domains
+    from conductor import domains
     try:
         binding = runtime.runtime_paths.resolve(root)
         return domains.read(Path(binding["runtimeRoot"])), None

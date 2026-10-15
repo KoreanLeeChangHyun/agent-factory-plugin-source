@@ -6,7 +6,7 @@ import shutil
 import subprocess
 
 from tasks.modes import TASK_MODES
-from tasks.subagent_guard import ALLOWED_TYPE
+from hooks.subagent_guard import ALLOWED_TYPE
 
 MODELS = {"claude-opus": "opus", "claude-sonnet": "sonnet", "claude-haiku": "haiku"}
 EFFORTS = ("low", "medium", "high", "xhigh", "max")

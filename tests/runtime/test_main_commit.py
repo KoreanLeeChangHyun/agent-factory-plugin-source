@@ -9,7 +9,8 @@ from unittest import mock
 
 from storage.errors import ContractError
 from storage.files import file_lock
-from tasks import commits, orchestrator_guard as guard
+from tasks import commits
+from hooks import orchestrator_guard as guard
 import coordination
 
 
@@ -134,7 +135,7 @@ class MainCommitTests(unittest.TestCase):
 
     def test_incomplete_wrong_owner_and_verification_route_require_own_completion(self):
         for update in ({"status": "running"}, {"parentAgentId": "other"}, {"taskMode": "work-verification"},
-                       {"taskWorkspace": {"mode": "code"}}, {"workProfile": "scribe"}):
+                       {"taskWorkspace": {"mode": "code"}}):
             self.work_path.write_text(json.dumps({**self.work, **update}))
             with self.assertRaises(ContractError):
                 commits.execute(self.root, self.main, self.proposal, apply=True)
@@ -168,12 +169,18 @@ class MainCommitTests(unittest.TestCase):
             loop_path.write_text(json.dumps(loop))
             self.assertEqual(commits.execute(self.root, self.main, proposal)["status"], "ready")
             self.work_path.write_text(json.dumps({**self.work, "workProfile": "scribe"}))
-            with self.assertRaises(ContractError):
-                commits.execute(self.root, self.main, proposal)
-            loop["draftReview"] = {"status": "accepted", "workRunId": "run-work",
-                                   "authorizationReference": "Human message", "decisionEvidence": "Draft accepted"}
-            loop_path.write_text(json.dumps(loop))
+            # A Scribe result needs only the commit authority; legacy pending or accepted reviews do not block it.
             self.assertEqual(commits.execute(self.root, self.main, proposal)["status"], "ready")
+            for status in ("pending", "accepted"):
+                loop["draftReview"] = {"status": status, "workRunId": "run-work"}
+                loop_path.write_text(json.dumps(loop))
+                self.assertEqual(commits.execute(self.root, self.main, proposal)["status"], "ready")
+            for status in ("changes-requested", "discarded"):
+                loop["draftReview"] = {"status": status, "workRunId": "run-work",
+                                       "authorizationReference": "Human message", "decisionEvidence": "Recorded"}
+                loop_path.write_text(json.dumps(loop))
+                with self.subTest(status=status), self.assertRaises(ContractError):
+                    commits.execute(self.root, self.main, proposal)
 
     def test_symlink_change_and_existing_history_operation_are_denied(self):
         (self.repository / "a.py").unlink()

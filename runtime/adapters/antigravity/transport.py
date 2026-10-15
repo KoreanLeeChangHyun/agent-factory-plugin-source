@@ -26,7 +26,7 @@ from adapters.antigravity.policy import effort, native_model, validate
 from execution.prompts import PromptParts
 from storage import paths as runtime_paths
 from storage.errors import ContractError
-from tasks import orchestrator_guard
+from hooks import orchestrator_guard
 from storage.files import now, safe_read_json
 
 # Host markers that describe the invoking agent, never this child.

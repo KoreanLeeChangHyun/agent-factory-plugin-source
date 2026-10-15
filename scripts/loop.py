@@ -791,7 +791,7 @@ def require_domain_membership(args: argparse.Namespace) -> None:
 
     Checked before anything is accepted, so a refused dispatch registers no worker.
     """
-    from tasks import domains
+    from conductor import domains
     root = agent_exec.resolve_project_root(args.project_root)
     runtime_root = Path(agent_exec.runtime_paths.resolve(root, create=True)["runtimeRoot"])
     document = domains.read(runtime_root)
@@ -822,7 +822,7 @@ def link_allocation_domain(args: argparse.Namespace, result: dict[str, Any]) -> 
     name = (allocation or {}).get("domain")
     if not isinstance(name, str) or not result.get("loopId"):
         return result
-    from tasks import domains
+    from conductor import domains
     links = {}
     for field, agent in (("domainLink", args.work_agent), ("verificationDomainLink", getattr(args, "verification_agent", None))):
         if not agent:
@@ -992,9 +992,9 @@ def _start_loop_captured(args: argparse.Namespace) -> dict[str, Any]:
     if isolation and any(task["id"] not in workspace_plans for task in tasks) and not getattr(args, "captured_workspace_plan", None):
         raise agent_exec.ContractError("task_workspace_required", "Work isolation is on; every task requires a code or read-only workspace plan")
     if work_profile == "scribe" and any(plan.get("mode") == "code" for plan in (*workspace_plans.values(), workspace_plan or {})):
-        # A code Work Unit is committed and merged automatically; a Scribe draft must wait for the Human's review.
+        # A code Work Unit is committed and merged automatically; Scribe Documents are committed only by Main with actual commit authority.
         raise agent_exec.ContractError("scribe_draft_review_required",
-                                       "Scribe drafts stay uncommitted in the shared checkout for Human review; use the read-only workspace plan")
+                                       "Scribe writes Documents in the shared checkout, committed only by Main with actual commit authority; use the read-only workspace plan")
     if args.task_id != tasks[0]["id"]:
         raise agent_exec.ContractError("task_order_invalid", "Submit the first task; the engine executes the whole list in order")
     validate_assignments(tasks, root, args.work_agent, args.verification_agent)
@@ -1002,7 +1002,7 @@ def _start_loop_captured(args: argparse.Namespace) -> dict[str, Any]:
         task.setdefault("workAgentId", args.work_agent)
         if args.verification_agent:
             task.setdefault("verificationAgentId", args.verification_agent)
-    from tasks import team
+    from conductor import team
     reused = agent_exec.session_file(root, args.work_agent).exists()
     recommendation = ((submitted_document["tasks"][0].get("allocation") or {}).get("modelRecommendation") or {})
     if reused and work_model_override and recommendation.get("status") != "human-specified":
@@ -1515,8 +1515,6 @@ def finish_workflow_task(state, path, runtime, reason):
                  terminalReason={"code": reason, "message": "All submitted tasks completed"}, updatedAt=now())
     if state.pop("revisionOnlyTaskId", None):
         state["terminalReason"]["message"] = "The selected task revision completed; other task histories were preserved"
-    if state["execution"].get("workProfile") == "scribe" and state.get("latestWorkRunId"):
-        record_draft_review(state, runtime)
     if state.get("lifecycleVersion"):
         state["completion"] = {"work": "completed", "integration": "merged" if state.get("taskWorkspaces") else "not-requested",
                                "cleanupPending": any(u.get("cleanupPending") for v in state.get("taskWorkspaces", {}).values() for u in v["repositories"])}
@@ -1524,20 +1522,11 @@ def finish_workflow_task(state, path, runtime, reason):
     return public_state(state)
 
 
-def record_draft_review(state, runtime):
-    """A Scribe's changes stay uncommitted drafts until the Human accepts, revises or discards them."""
-    work = runtime.status(assigned_agent(state, "work"), state["latestWorkRunId"])
-    receipt = agent_exec.validate_receipt(Path(state["projectRoot"]), work, agent_id=work["agentId"], run_id=work["runId"])
-    paths = sorted({str(path) for path in receipt.get("changedPaths") or []})
-    if paths:
-        state["draftReview"] = {"status": "pending", "paths": paths, "workRunId": work["runId"], "recordedAt": now()}
-
-
 DRAFT_REVIEW_DECISIONS = ("accepted", "changes-requested", "discarded")
 
 
 def review_draft(args: argparse.Namespace) -> dict[str, Any]:
-    """Record the Human's decision on a completed Scribe draft; the runtime itself commits or reverts nothing."""
+    """Record a Human decision on a legacy pending Scribe draft review; new loops record none and await no review."""
     if args.actor != "human" or not args.authorization_reference.strip() or not args.decision_evidence.strip():
         raise agent_exec.ContractError("draft_review_unauthorized", "A draft review decision requires Human authorization and evidence")
     root = agent_exec.resolve_project_root(args.project_root)
@@ -1546,7 +1535,7 @@ def review_draft(args: argparse.Namespace) -> dict[str, Any]:
         state = agent_exec.safe_read_json(path)
         review = state.get("draftReview")
         if state.get("status") != "completed" or not isinstance(review, dict) or review.get("status") != "pending":
-            raise agent_exec.ContractError("draft_review_unavailable", "The loop has no Scribe draft awaiting review")
+            raise agent_exec.ContractError("draft_review_unavailable", "The loop has no legacy pending Scribe draft review")
         review.update(status=args.decision, decidedAt=now(), authorizationReference=args.authorization_reference,
                       decisionEvidence=args.decision_evidence, **({"note": args.note} if args.note else {}))
         state["updatedAt"] = now()
@@ -1755,7 +1744,8 @@ def revise_loop(args):
         raise agent_exec.ContractError("revision_evidence_required", "Provide the exact authorized correction and its reference")
     root = agent_exec.resolve_project_root(args.project_root)
     path, _ = read_state(root, args.work_agent, args.loop_id)
-    from tasks import team, binding as task_binding
+    from tasks import binding as task_binding
+    from conductor import team
     with team.assignment_lock(agent_exec, root), agent_exec.file_lock(path.parent / ".loop.lock"):
         state = agent_exec.safe_read_json(path)
         workflow = state.get("workflow") or {}
@@ -1901,7 +1891,7 @@ def status_loop(args: argparse.Namespace) -> dict[str, Any]:
     if isinstance(state.get("currentChild"), dict) and state["status"] not in {"completed", "cancelled"}:
         current = state["currentChild"]
         child = AgentRuntime(root).status(current["agentId"], current["runId"])
-    from tasks import control_center
+    from conductor import control_center
     result = public_state(state, child)
     result["controlCenter"] = control_center.snapshot(
         state, lambda agent, run: agent_exec.find_run(root, agent, run))
@@ -2183,7 +2173,7 @@ def handoff_membership(root, state, from_agent, to_agent):
     Checked before the prior run is cancelled; returns the placement to perform once the handoff is recorded.
     A placement failure after that point is reported, like a dispatch domain link, instead of undoing the handoff.
     """
-    from tasks import domains
+    from conductor import domains
     runtime_root = Path(agent_exec.runtime_paths.resolve(root)["runtimeRoot"])
     document = domains.read(runtime_root)
     name = ((state.get("execution", {}).get("taskBinding") or {}).get("allocation") or {}).get("domain")
@@ -2419,7 +2409,7 @@ def build_parser() -> agent_exec.JsonArgumentParser:
             command.add_argument("--task-id", required=True)
         if name == "review":
             command.add_argument("--decision", choices=DRAFT_REVIEW_DECISIONS, required=True,
-                                 help="Human decision on a completed Scribe draft; records only, never commits or reverts files")
+                                 help="Optional Human decision on a legacy pending Scribe draft review; records only, never commits or reverts files")
             command.add_argument("--note", help="The Human's requested changes or reason")
         if name == "handoff":
             command.add_argument("--to-agent", required=True, help="New Work session that takes over the current and remaining tasks")
@@ -2455,12 +2445,12 @@ def build_parser() -> agent_exec.JsonArgumentParser:
 
 
 def team_roster(args):
-    from tasks import team
+    from conductor import team
     return team.roster(agent_exec, agent_exec.resolve_project_root(args.project_root))
 
 
 def team_candidates(args):
-    from tasks import team
+    from conductor import team
     requirements = {"role": args.role, "provider": args.provider, "model": args.model,
                     "reasoningEffort": args.reasoning_effort, "fast": args.fast, "workProfile": args.work_profile,
                     "humanApprovalPolicy": args.human_approval_policy, "sandbox": args.sandbox, "domain": args.domain}
@@ -2469,7 +2459,7 @@ def team_candidates(args):
 
 
 def team_history(args):
-    from tasks import team
+    from conductor import team
     return team.history(agent_exec, agent_exec.resolve_project_root(args.project_root), args.agent,
                         workflow_id=args.workflow_id, task_id=args.task_id, parent_agent=args.parent_agent)
 

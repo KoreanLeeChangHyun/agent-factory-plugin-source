@@ -9,7 +9,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-from tasks import orchestrator_guard as guard
+from hooks import orchestrator_guard as guard
 from adapters.codex import policy as codex_policy
 from adapters.antigravity import command as agy_command
 

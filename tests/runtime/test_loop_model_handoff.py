@@ -153,7 +153,7 @@ class LoopModelAndHandoffTests(unittest.TestCase):
         self.assertEqual(state["execution"]["agentModels"]["work"], {"model": "claude-opus-5-5"})
         self.assertEqual(moved["handoffs"], [handoff])
         # The new session continues the same task, so it joins the prior worker's domain.
-        from tasks import domains
+        from conductor import domains
         stored = domains.read(Path(self.agent_exec.runtime_paths.resolve(self.root)["runtimeRoot"]))["assignments"]
         self.assertEqual((moved["domainLink"]["basis"], stored["work-claude"]["domainId"]), ("prior-worker", stored["work-agent"]["domainId"]))
         # The new session's result continues the same graph: its run is the one Verification checks.
@@ -193,7 +193,7 @@ class LoopModelAndHandoffTests(unittest.TestCase):
         self.assertNotIn("handoffs", self.state(started))
 
     def test_handoff_without_a_domain_for_the_new_session_is_refused_before_stopping_the_writer(self):
-        from tasks import domains
+        from conductor import domains
         started = self.start()
         runtime_root = Path(self.agent_exec.runtime_paths.resolve(self.root)["runtimeRoot"])
         legacy = domains.read(runtime_root)

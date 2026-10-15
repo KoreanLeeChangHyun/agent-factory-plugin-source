@@ -82,7 +82,7 @@ def run_codex_attempt(
     if state.get("workingDirectory", str(working_directory)) != str(working_directory):
         raise runtime.AttemptFailure("worktree_binding_changed", "Run working directory no longer matches its conversation", False)
     session["workingDirectory"] = str(working_directory)
-    from tasks.orchestrator_guard import profile_instruction
+    from hooks.orchestrator_guard import profile_instruction
     from execution.prompts import PromptParts
     prompt_parts = PromptParts(prompt_parts.fixed + profile_instruction(state, project_root, working_directory), prompt_parts.dynamic)
     allocation = state.get("taskBinding", {}).get("allocation")

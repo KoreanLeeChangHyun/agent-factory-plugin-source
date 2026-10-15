@@ -42,8 +42,8 @@
   hashes capture that approved set, including any approved pre-existing content in those files.
   Main must not infer authority from tool access or label a proposal approved.
 - Use `verificationStatePath` for exact pass evidence when the selected route requires it;
-  `loopStatePath` may supply an existing recorded Human skip. A scribe draft always requires
-  its completed loop's recorded Human acceptance through `loopStatePath`. No extra Verification
+  `loopStatePath` may supply an existing recorded Human skip. A scribe result needs no separate
+  acceptance; a legacy recorded `changes-requested` or `discarded` review still blocks it. No extra Verification
   is required for work/plan-work; use their Work receipt and own-check evidence.
 - The tool validates the canonical completed receipt, owning Main, paths, branch, HEAD,
   content/diff hashes, absence of conflicts/history operations and an empty or exactly

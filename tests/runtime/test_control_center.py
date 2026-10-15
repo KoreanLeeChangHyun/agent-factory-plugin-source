@@ -2,7 +2,7 @@
 import copy
 import unittest
 
-from tasks.control_center import snapshot
+from conductor.control_center import snapshot
 
 
 class ControlCenterTests(unittest.TestCase):

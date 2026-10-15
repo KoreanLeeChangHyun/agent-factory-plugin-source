@@ -273,7 +273,7 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertNotIn("requestedBy", self.agent_exec.safe_read_json(Path(main["statePath"])))
 
     def test_allocation_domain_links_the_worker_in_the_shared_project_list_without_overriding_the_human(self):
-        from tasks import domains
+        from conductor import domains
         from test_task_binding import TaskBindingTests
         runtime_root = Path(self.agent_exec.runtime_paths.resolve(self.root, create=True)["runtimeRoot"])
         human = domains.create(runtime_root, "extension UI", "human", "control-center")["domainId"]
@@ -421,7 +421,7 @@ class AgentLoopContractTests(unittest.TestCase):
                     command.assert_called_once()
 
     def test_worker_removal_waits_for_the_stop_and_keeps_the_stopped_records(self):
-        from tasks import domains
+        from conductor import domains
         started = self.start()
         runtime_root = Path(self.agent_exec.runtime_paths.resolve(self.root, create=True)["runtimeRoot"])
         with self.assertRaises(self.agent_exec.ContractError) as running:
@@ -793,7 +793,7 @@ class AgentLoopContractTests(unittest.TestCase):
     def test_task_assignees_preserve_loop_owner_and_revision_sessions(self):
         self.assign_second_task()
         started = self.start()
-        from tasks import control_center
+        from conductor import control_center
         def read_record(agent, run_id):
             run = self.runtime.runs[(agent, run_id)]
             return {**run, "taskBinding": run["dispatchTuple"]["taskBinding"]}
@@ -861,15 +861,26 @@ class AgentLoopContractTests(unittest.TestCase):
             "--actor", actor, "--authorization-reference", "test-request", "--decision-evidence", "Human reviewed the draft",
             "--decision", decision, *(["--note", note] if note else [])]))
 
-    def test_scribe_draft_waits_for_the_human_review_decision(self):
-        # Human decision 2026-10-06: a Scribe's changes are drafts until the Human accepts, revises or discards them.
+    def test_scribe_loop_completes_without_a_review_gate(self):
         started = self.start(["--task-mode", "work", "--work-profile", "scribe"])
         self.runtime.complete_work("work-agent", started["latestWorkRunId"])
         completed = self.reconcile(started)
         self.assertEqual(completed["status"], "completed")
-        self.assertEqual(completed["draftReview"]["status"], "pending")
-        self.assertEqual(completed["draftReview"]["paths"], ["changed.txt"])
-        self.assertEqual(completed["draftReview"]["workRunId"], started["latestWorkRunId"])
+        self.assertNotIn("draftReview", completed)
+        with self.assertRaises(self.agent_exec.ContractError) as raised:
+            self.review(started, "accepted")
+        self.assertEqual(raised.exception.code, "draft_review_unavailable")
+
+    def test_legacy_pending_draft_review_stays_readable_and_decidable(self):
+        started = self.start(["--task-mode", "work", "--work-profile", "scribe"])
+        self.runtime.complete_work("work-agent", started["latestWorkRunId"])
+        self.reconcile(started)
+        path = Path(started["statePath"])
+        state = json.loads(path.read_text())
+        state["draftReview"] = {"status": "pending", "paths": ["changed.txt"],
+                                "workRunId": started["latestWorkRunId"], "recordedAt": "2026-10-06T00:00:00Z"}
+        path.write_text(json.dumps(state))
+        self.assertEqual(self.reconcile(started)["draftReview"]["status"], "pending")
         with self.assertRaises(self.agent_exec.ContractError) as raised:
             self.review(started, "accepted", actor="main")
         self.assertEqual(raised.exception.code, "draft_review_unauthorized")
@@ -2153,7 +2164,7 @@ class AgentLoopContractTests(unittest.TestCase):
         saved = self.agent_exec.safe_read_json(Path(ended["statePath"]))
         self.assertEqual(len(saved["userRevisions"]), 2)
         self.assertEqual(len(saved["dispatchHistory"]), 3)
-        from tasks import team
+        from conductor import team
         history = team.history(self.agent_exec, self.root, "work-agent")
         self.assertEqual(len(history["tasks"]), 1)
         task = history["tasks"][0]
@@ -2277,7 +2288,7 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertEqual(self.runtime.dispatches[-1]["operation"], "send")
 
     def test_failed_user_revision_is_one_failed_task_and_keeps_original_success(self):
-        from tasks import team
+        from conductor import team
         state = self.start(["--task-mode", "work", "--receipt-recovery", "manual"])
         original = state["latestWorkRunId"]
         self.runtime.complete_work("work-agent", original)

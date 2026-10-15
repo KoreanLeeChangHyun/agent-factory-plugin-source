@@ -9,7 +9,9 @@ distributions are generated from it and must not be edited directly.
 | `runtime/storage/` | Runtime home, paths, persistence, public state, errors and migration |
 | `runtime/system/` | OS seams and process lifecycle: transport, containment, sandbox, Windows/macOS, pinned Archify renderer |
 | `runtime/execution/` | One agent turn: CLI, requested options, policy, prompts, images, usage, streaming, worktrees, Goal state, Interview events, document context, lesson capture and facts |
-| `runtime/tasks/` | Task modes, bindings, announcements, allocation and model recommendation (`model-affinity.json`), plan receipts, loop progress, conductor and control-center views, operation records and supervision, domains, Work Units, integration checks and commits |
+| `runtime/tasks/` | Task modes, bindings, announcements, allocation and model recommendation (`model-affinity.json`), preparation, plan receipts, loop progress, task history, decisions, revisions, operation records and supervision, Work Units, integration checks and commits |
+| `runtime/conductor/` | Conductor domain: chat routing, the SQLite queue ledger, pool admission, performers, roles, responsibility, intents, workflows and Work Unit adapters, the queue runtime, work-area domains, team roster and the control-center view |
+| `runtime/hooks/` | Host `PreToolUse` hooks: the orchestrator guard and the Work sub-agent guard |
 | `runtime/contracts/` | Receipt and capability contracts and their preflight |
 | `runtime/runs/` | Run lifecycle: records, worker launch, attempts, and inspection/control commands |
 | `runtime/adapters/` | Provider adapters (`codex`, `claude`, `antigravity`) |

@@ -6,10 +6,10 @@ import types
 from unittest import mock
 
 from storage.errors import ContractError
-from tasks import domains
-from tasks.conductor_backend import ManagedBackend
-from tasks.conductor_pool import DEFAULT
-from tasks.conductor_runtime import FakeConductor, Runtime, ManagedConductor
+from conductor import domains
+from conductor.backend import ManagedBackend
+from conductor.pool import DEFAULT
+from conductor.runtime import FakeConductor, Runtime, ManagedConductor
 from test_conductor_queue import QueueTest, POLICY
 
 
@@ -58,14 +58,21 @@ class Pools(QueueTest):
         self.assertEqual(decision['actor'], 'human')
 
     def test_conductor_limit_queues_all_followups_then_reuses_the_same_instance(self):
+        # The limit bounds conductor turns running at once: with one slot, a second request waits only while the
+        # first instance is actually in a turn (not merely while it owns an open request).
+        value = copy.deepcopy(DEFAULT)
+        value['conductor'].update(domainLimit=1, subdomainLimit=1)
+        self.store.pool.configure(value, 'Human one-turn cap')
         self.send(area=self.area)
         first = self.one('SELECT * FROM requests')
+        running = self.store.begin_turn(first['conductor_id'])
         second = self.send('second', self.area)
         waiting = self.one("SELECT * FROM requests WHERE status='queued-for-instance'")
         self.send('additional requirement', requestId=waiting['id'], relation='followup')
         self.assertEqual(len(json.loads(self.one('SELECT message FROM request_waits')['message'])), 2)
         self.assertEqual(self.one('SELECT COUNT(*) n FROM conductors')['n'], 1)
-        self.turn(first['conductor_id'], [{'type': 'reply', 'requestId': first['id'], 'text': 'done', 'final': True}])
+        self.store.end_turn({k: running[k] for k in ('conductorId', 'slot', 'epoch', 'turnId')},
+                            [{'type': 'reply', 'requestId': first['id'], 'text': 'done', 'final': True}])
         self.assertEqual(self.store.schedule_instances(), 1)
         self.pump()
         next_request = self.one('SELECT * FROM requests WHERE id=?', waiting['id'])
@@ -202,7 +209,7 @@ class Pools(QueueTest):
                                        'spec': {'writeScope': [], 'workspace': {'mode': 'shared'}}}])
         self.pump()
         attempt = self.one("SELECT a.id FROM attempts a JOIN delegations d ON d.attempt_id=a.id WHERE d.request_id=?", req['id'])['id']
-        from tasks.conductor_runtime import ManagedExecutor
+        from conductor.runtime import ManagedExecutor
         context = self.store.attempt_context(attempt)
         request = ManagedExecutor(self.store, self.project, backend=object()).request(context)
         self.assertEqual((request['session']['agentId'], request['session']['managedCreated']), (agent, True))
@@ -223,7 +230,8 @@ class Pools(QueueTest):
             'goal': 'part%d 1 task 0.05s' % n, 'completionCriteria': 'checked', 'writeScope': [],
             'workspace': {'mode': 'read-only'}, 'area': area}} for n, area in enumerate((self.area, self.area_b, third))]
         self.turn(root['conductor_id'], [{'type': 'split', 'requestId': root['id'], 'intents': items}])
-        self.assertEqual(self.one("SELECT COUNT(*) n FROM requests WHERE status='queued-for-instance'")['n'], 1)
+        # Instances waiting for work hold no slot, so no child waits for an instance; turns are bounded at start.
+        self.assertEqual(self.one("SELECT COUNT(*) n FROM requests WHERE status='queued-for-instance'")['n'], 0)
         runtime = Runtime(self.store, conductor=FakeConductor(delay=0, chunk_delay=0))
         self.assertTrue(runtime.drain(10))
         self.assertEqual(self.one("SELECT COUNT(*) n FROM requests WHERE status='completed'")['n'], 4)
@@ -285,7 +293,7 @@ class Pools(QueueTest):
         self.assertEqual(self.one("SELECT COUNT(*) n FROM questions WHERE state='pending'")['n'], 0)
 
     def test_reuse_rank_and_scope_permissions_are_independent_of_other_role_settings(self):
-        from tasks.conductor_pool import signature
+        from conductor.pool import signature
         changed = {**self.policy, 'conductorSettings': {'model': 'another-conductor'}}
         scope = {'workspace': {'mode': 'read-only'}}
         self.assertEqual(signature(self.policy, 'worker', scope), signature(changed, 'worker', scope))
@@ -301,7 +309,7 @@ class Pools(QueueTest):
         self.assertEqual(self.store.pool.idle(self.store.connection(), 'worker', self.store.pool.area(self.area), 'sig')['id'], 'work-old')
 
     def test_external_owner_blocks_idle_reuse_and_retirement_without_stopping_it(self):
-        from tasks.conductor_pool import signature
+        from conductor.pool import signature
         worker = 'work-external'
         self.config(domainLimit=1, subdomainLimit=1, idleRetentionSeconds=0)
         with self.store.tx() as c:
@@ -337,15 +345,19 @@ class Pools(QueueTest):
         self.pump()
         self.store.ensure_chat('other-chat', self.policy)
         area = self.store.pool.area(self.area)
-        from tasks.conductor_pool import signature
+        from conductor.pool import signature
         with self.store.tx() as c:
             c.execute("UPDATE pool_members SET state='idle' WHERE id=?", (root['conductor_id'],))
             self.assertIsNone(self.store.pool.idle(c, 'conductor', area, signature(self.policy, 'conductor'), chat_id='other-chat'))
-        # The resumed parent's turn cannot bypass two busy physical reservations.
+        # The resumed parent's turn cannot bypass another session's running turn under a one-turn domain cap.
         value = copy.deepcopy(DEFAULT)
         value['conductor']['domainLimit'] = 1
         self.store.pool.configure(value, 'Human reduced cap')
+        other = next(dict(r) for r in self.store.connection().execute('SELECT * FROM requests WHERE parent_id=? AND conductor_id!=?', (root['id'], root['conductor_id'])))
+        self.assertIsNotNone(self.store.begin_turn(other['conductor_id']))
+        with self.store.tx() as c:
+            self.store.enqueue(c, root['conductor_id'], root['id'], 'user-message', {'text': 'resume'}, 'test:resume')
         ctx = self.store.begin_turn(root['conductor_id'])
         self.assertIsNone(ctx)
-        self.assertTrue(self.one('SELECT reason FROM instance_waits')['reason'].startswith('employment-limit:'))
+        self.assertTrue(self.one('SELECT reason FROM instance_waits')['reason'].startswith('conductor-turns:'))
         self.assertEqual(self.one('SELECT chat_id FROM conductors WHERE id=?', root['conductor_id'])['chat_id'], 'pool')

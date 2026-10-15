@@ -12,9 +12,9 @@ from pathlib import Path
 
 from storage import paths
 from storage.errors import ContractError
-from tasks import conductor_queue as cq
-from tasks import domains
-from tasks.conductor_runtime import FakeConductor, FakeExecutor, Runtime
+from conductor import queue as cq
+from conductor import domains
+from conductor.runtime import FakeConductor, FakeExecutor, Runtime
 
 ROOT = Path(__file__).resolve().parents[2]
 POLICY = {"approvalPolicy": "bypass", "reference": "test authority", "executor": "fake", "conductor": "fake"}
@@ -488,7 +488,7 @@ class RecoveryAndProjection(QueueTest):
 
 class ManagedExecutorBridge(QueueTest):
     def test_delegation_uses_the_existing_exec_lifecycle_without_resubmitting_a_known_start(self):
-        from tasks.conductor_runtime import ManagedExecutor
+        from conductor.runtime import ManagedExecutor
 
         class Backend:
             def __init__(self):
@@ -563,7 +563,7 @@ class ManagedConductorDriver(QueueTest):
             return {"run": {**run, "status": "completed"}}
 
     def test_turns_use_captured_settings_resume_the_slot_session_and_switch_with_the_checkpoint(self):
-        from tasks.conductor_runtime import ManagedConductor
+        from conductor.runtime import ManagedConductor
         settings = {"provider": "claude", "model": "claude-test", "reasoningEffort": "medium"}
         policy = {**POLICY, "conductor": "managed", "conductorSettings": settings,
                   "compaction": {"preparePercent": 50, "targetPercent": 60}}
@@ -606,7 +606,7 @@ class ManagedConductorDriver(QueueTest):
         self.assertEqual(self.one("SELECT status FROM requests WHERE id=?", req["id"])["status"], "completed")
 
     def test_invalid_conductor_output_is_retried_then_quarantined_without_effects(self):
-        from tasks.conductor_runtime import ManagedConductor, parse_commands
+        from conductor.runtime import ManagedConductor, parse_commands
         for bad in ("no json here", '{"commands": "x"}', '{"commands": [{"type": "shell", "cmd": "rm"}]}'):
             with self.assertRaises(ContractError):
                 parse_commands(bad)

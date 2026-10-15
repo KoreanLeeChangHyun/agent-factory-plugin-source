@@ -16,6 +16,18 @@
   and source evidence in Original documents.
 - Integrate accepted changes into the current clauses. Preserve applicable meaning and
   explicitly unresolved choices without turning them into a decision history.
+- Keep in the body the current rule, its conditions, exceptions and reasons. Keep
+  external source URLs with their access identification, and the Human authorization
+  that the current rule itself still depends on, as minimal pointers.
+- Move plain execution history out of the body: run ID lists, past request dates,
+  lesson ID lists, completion/failure chronologies, superseded design narratives and
+  per-run check logs. Their records stay in the source run's request/result/receipt,
+  `docs/lessons-learned/` or a Refined `history` package; recorded `provenance`
+  metadata may carry the source references.
+- Before removing a run ID, read its source request or contract. When it is the only
+  evidence of a current authorization or an external source, keep or relocate that
+  pointer first; never bulk-delete references. Past records found by search are
+  evidence, not current authority or active rules.
 
 <a id="specification-naming"></a>
 

@@ -22,8 +22,8 @@ metadata:
   authority.
 - Keep the requested coherent document. Skill documents MUST be self-contained
   references for the current accepted state, not historical records. Keep change logs,
-  past discussions and superseded decisions in Refined documents; keep task progress
-  and status in Progress documents. Preserve source
+  past discussions and superseded decisions in Refined documents ([execution history](references/specification.md#authority-and-scope));
+  keep task progress and status in Progress documents. Preserve source
   evidence in Original documents.
 - After creating, modifying or deleting any package under `docs/skills/`,
   you MUST directly run the [synchronization script](references/host-sync.md#continuous-codex-synchronization) for that document's project and check its result

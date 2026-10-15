@@ -9,7 +9,7 @@ from pathlib import Path
 
 from storage import paths as runtime_paths
 from storage.errors import ContractError
-from tasks import domains
+from conductor import domains
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 

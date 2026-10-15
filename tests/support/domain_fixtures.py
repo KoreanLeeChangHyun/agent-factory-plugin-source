@@ -8,7 +8,7 @@ FIXTURE_WORKERS = ("work-agent", "verification-agent", "work", "verify", "one-wo
 
 def place_workers(project_root, agents=FIXTURE_WORKERS, name="fixture work area"):
     from storage import paths as runtime_paths
-    from tasks import domains
+    from conductor import domains
     runtime_root = Path(runtime_paths.resolve(Path(project_root), create=True)["runtimeRoot"])
     for agent in agents:
         domains.link_dispatch(runtime_root, agent, name, "test fixture")

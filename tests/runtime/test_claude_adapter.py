@@ -159,7 +159,7 @@ class ClaudeAdapterTests(unittest.TestCase):
             self.assertEqual(len(inspection_arguments(Path(root))), 2)
 
     def test_explore_and_scribe_narrow_claude_tools_under_any_permission(self):
-        from tasks import orchestrator_guard
+        from hooks import orchestrator_guard
         with tempfile.TemporaryDirectory() as root:
             (Path(root) / "docs").mkdir()
             prepared = runtime.create_run(project_root=Path(root), agent_id="claude-work-profiles", actor="main", request=b"test",
@@ -200,7 +200,7 @@ class ClaudeAdapterTests(unittest.TestCase):
         # Human decision 2026-10-03: launch configuration, not prompt wording, blocks every other sub-agent type.
         import shlex
         import subprocess
-        from tasks import subagent_guard
+        from hooks import subagent_guard
         with tempfile.TemporaryDirectory() as root:
             prepared = runtime.create_run(project_root=Path(root), agent_id="claude-work-subagents", actor="main", request=b"test",
                                           session={"role": "main", "maxAttempts": 1})

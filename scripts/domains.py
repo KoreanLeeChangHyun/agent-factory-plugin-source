@@ -14,7 +14,7 @@ from execution.cli import JsonArgumentParser, add_project_argument  # noqa: E402
 from storage import paths as runtime_paths  # noqa: E402
 from storage.errors import ContractError  # noqa: E402
 from storage.files import emit, error_document  # noqa: E402
-from tasks import domains  # noqa: E402
+from conductor import domains  # noqa: E402
 
 
 def build_parser():

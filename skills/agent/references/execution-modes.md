@@ -42,7 +42,7 @@
   - Claude: `dontAsk` with an `--allowedTools` list and a `PreToolUse` hook on shell/edit tools.
     Explorer native Write/Edit permissions name exact assigned files; the hook also rejects
     symlink traversal. Main retains bounded web confirmation tools.
-  - Codex: a session-flag `PreToolUse` hook (`runtime/tasks/orchestrator_guard.py`) on
+  - Codex: a session-flag `PreToolUse` hook (`runtime/hooks/orchestrator_guard.py`) on
     `Bash`, `apply_patch` and the sub-agent start tools. The runtime adds an exact-hash
     `hooks.state` trust entry to the user's Codex config on first use and fails the run if
     Codex does not trust the hook.
@@ -179,17 +179,18 @@
 - Scribe's web access grants no code/configuration writes, external writes or publishing,
   sensitive-data transmission, dispatch or commits. Skills whose sources are outside
   `docs/` remain outside its write scope; report the needed change for a code Work owner.
-  Report completed research separately from pending drafting, integration and Human acceptance.
+  Report completed research separately from pending drafting and integration.
   A research result alone does not complete a follow-up role's work.
 - Use the [direct role exceptions](role-exceptions.md) for exact Explorer assignments,
   shared Document ownership, own records, captured authority and ordinary local commits.
-- A Scribe's changes are drafts for Human review. `loop.py start` rejects a scribe code
-  Work Unit (`scribe_draft_review_required`), because Work Units merge automatically; with
-  Work isolation on, Scribe uses the read-only plan in the shared checkout. A completed
-  scribe loop reports `draftReview` with the changed paths. Main relays them and records
-  the Human's answer with `loop.py review --decision accepted|changes-requested|discarded`;
-  the runtime records only and never commits or reverts. Rule candidates that a Scribe
-  prepares from Lessons Learned are drafts in the same way; publication needs Human approval.
+- `loop.py start` rejects a scribe code Work Unit (`scribe_draft_review_required`), because
+  Work Units merge automatically; with Work isolation on, Scribe uses the read-only plan in
+  the shared checkout. A completed scribe loop is complete: Main reports its result and
+  changed paths without a separate accept, revise or discard step, and handles later changes
+  as ordinary follow-up requests. Intentional drafts and unresolved choices stay as the
+  Document states them. Commits still need actual commit authority. A legacy pending
+  `draftReview` stays readable; `loop.py review` can still record a Human decision on it.
+  Rule candidates prepared from Lessons Learned still need Human approval to publish.
 - For standalone `exec.py submit/send`, use `--model`, `--reasoning-effort`, and `--fast`/`--no-fast`.
 - Fast selects Codex's service tier independently of reasoning effort. Preserve both values exactly. Role Fast is omitted for non-Codex providers.
 - Model settings do not change execution authority or add an agent to the route.

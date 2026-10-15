@@ -10,9 +10,9 @@ from unittest import mock
 
 from storage import paths
 from storage.errors import ContractError
-from tasks import conductor_intents as intents
-from tasks.conductor_runtime import FakeConductor, ManagedExecutor, Runtime
-from tasks.conductor_workspaces import WorkUnits
+from conductor import intents
+from conductor.runtime import FakeConductor, ManagedExecutor, Runtime
+from conductor.work_units import WorkUnits
 from tasks import workspaces
 from test_conductor_queue import QueueTest, Recorder, POLICY
 
@@ -205,7 +205,7 @@ class ManagedAdmission(QueueTest):
         req = self.one("SELECT * FROM requests WHERE chat_id='managed'")
         self.turn(req['conductor_id'], [ {'type': 'delegate', 'requestId': req['id'], 'title': name,
             'spec': {'goal': name, 'writeScope': [], 'workspace': {'mode': 'read-only'}}} for name in ('lost-ack', 'zombie')])
-        from tasks.conductor_pool import DEFAULT
+        from conductor.pool import DEFAULT
         configuration = copy.deepcopy(DEFAULT)
         configuration['worker']['subdomainLimit'] = 2
         self.store.pool.configure(configuration, 'fixture setting')
@@ -238,7 +238,7 @@ class ManagedAdmission(QueueTest):
         self.assertEqual(len(backend.submissions), 2)
 
     def test_worker_question_answer_recovery_and_heartbeat_timeout_are_observed(self):
-        from tasks.conductor_runtime import FakeExecutor
+        from conductor.runtime import FakeExecutor
         req, delegation, _ = self.request_with_delegation()
         self.worker(delegation['id'], 'question', question={'text': 'Which format?', 'decisionKind': 'clarification'})
         self.pump()

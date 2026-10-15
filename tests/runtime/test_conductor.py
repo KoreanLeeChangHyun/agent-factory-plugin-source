@@ -12,8 +12,8 @@ from pathlib import Path
 from unittest import mock
 from storage import paths
 from storage.errors import ContractError
-from tasks.conductor import Conductor
-from tasks.conductor_backend import ManagedBackend
+from conductor.routing import Conductor
+from conductor.backend import ManagedBackend
 
 ROOT=Path(__file__).resolve().parents[2]
 SETTINGS={role:{'provider':'codex','model':'gpt-test','reasoningEffort':'medium','fast':False} for role in ('conversation','work')}
