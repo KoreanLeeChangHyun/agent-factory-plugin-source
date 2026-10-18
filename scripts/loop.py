@@ -82,6 +82,9 @@ FAILURE_CLASSES = {
         "task_preparation_failed", "task_guidance_missing", "task_guidance_unsafe", "task_check_input_changed",
     },
     "human": {"needs-human-decision", "revision_limit_reached", "cancelled"},
+    # The provider's usage or rate limit: the same task continues on another provider (Human decision 2026-10-18,
+    # message 73404444).
+    "quota": {"rate_limit_exceeded"},
 }
 
 
@@ -121,6 +124,8 @@ def publish_progress(path, state):
 def save_loop_state(path, state):
     state["stateRevision"] = state.get("stateRevision", 0) + 1
     agent_exec.atomic_write_json(path, state)
+    from runs.trace import loop_transition
+    loop_transition(state)
     publish_progress(path, state)
 
 
@@ -528,7 +533,7 @@ def prepare_dispatch(
         trigger = "steering" if trigger == "initial" else trigger
         request_file = write_request(path.parent, "steering-" + uuid.uuid4().hex + ".md",
             content.decode("utf-8") + "\n\n[Bound additions to this task; preserve captured authority]\n"
-            + json.dumps(queued, ensure_ascii=False))
+            + json.dumps(queued, ensure_ascii=False, separators=(",", ":")))
         content = agent_exec.safe_read_bytes(request_file, agent_exec.MAX_REQUEST_BYTES)
     if (role == "work" and state.get("latestWorkRunId") and recovery_of_run_id is None
             and not state.get("handoffContinuationPending")
@@ -1187,7 +1192,7 @@ Receipt recovery evidence:
     additions += [item for item in state.get("steering", [])
                   if item.get("taskId") == binding.get("taskId") and item.get("status") == "delivered"]
     addition_context = ("\nAccepted additions to this same task (check these as well as the original completion criteria):\n"
-                        + json.dumps(additions, ensure_ascii=False, indent=2)) if additions else ""
+                        + json.dumps(additions, ensure_ascii=False, separators=(",", ":"))) if additions else ""
     return write_request(directory, f"verification-{work['runId']}.md", f"""Verify this Work result.
 
 Original request: {state['originalRequestPath']}
@@ -1199,7 +1204,7 @@ Work receipt: {work['receiptPath']}
 
 
 def revision_request(state: dict[str, Any], verification: dict[str, Any], receipt: dict[str, Any], directory: Path) -> Path:
-    findings = json.dumps(receipt["findings"], ensure_ascii=False, indent=2)
+    findings = json.dumps(receipt["findings"], ensure_ascii=False, separators=(",", ":"))
     return write_request(directory, f"revision-{verification['runId']}.md", f"""Address these failed Verification findings.
 
 Original request: {state['originalRequestPath']}
@@ -2093,7 +2098,10 @@ def handoff_loop(args):
     A running Work child is cancelled first; the prior session and its runs are never changed. The bundle becomes
     the new session's request, and the handoff record links both sessions in the loop state.
     """
-    if args.actor != "human" or not args.authorization_reference.strip() or not args.decision_evidence.strip():
+    # Main may hand off on its own only when a provider's quota ran out, to another provider (Human decision
+    # 2026-10-18, message 73404444); every other handoff stays the Human's.
+    quota = getattr(args, "trigger", "human") == "quota"
+    if (args.actor != "human" and not (args.actor == "main" and quota)) or not args.authorization_reference.strip() or not args.decision_evidence.strip():
         raise agent_exec.ContractError("loop_handoff_unauthorized", "A provider handoff requires Human authorization and evidence")
     root = agent_exec.resolve_project_root(args.project_root)
     agent_exec.validate_id(args.to_agent, agent_exec.AGENT_ID, "to_agent")
@@ -2126,6 +2134,8 @@ def handoff_loop(args):
             raise agent_exec.ContractError("loop_handoff_session_invalid", "Hand off to a new Work session ID")
         if to_provider == from_provider and args.to_model == from_model:
             raise agent_exec.ContractError("loop_handoff_unchanged", "Choose another provider or model for the handoff")
+        if quota and to_provider == from_provider:
+            raise agent_exec.ContractError("loop_handoff_unchanged", "A quota handoff moves the task to another provider")
         place_handoff_worker = handoff_membership(root, state, from_agent, args.to_agent)
         prior = runtime.status(current["agentId"], current["runId"]) if current else None
         if prior and prior["status"] not in CHILD_TERMINAL:
@@ -2148,7 +2158,7 @@ def handoff_loop(args):
                    "toAgentId": args.to_agent, "toProvider": to_provider, "toModel": args.to_model,
                    "taskId": state["execution"]["taskBinding"]["taskId"], "reason": args.reason,
                    "loopStatus": state["status"], "loopPhase": state["phase"],
-                   "actor": args.actor, "authorizationReference": args.authorization_reference.strip(),
+                   "actor": args.actor, "trigger": "quota" if quota else "human", "authorizationReference": args.authorization_reference.strip(),
                    "decisionEvidence": args.decision_evidence.strip(), "createdAt": now(), "toRunId": None}
         bundle = write_request(path.parent, handoff["id"] + ".md", handoff_bundle(state, root, handoff, prior, session))
         handoff.update(bundlePath=str(bundle), bundleSha256=hashlib.sha256(bundle.read_bytes()).hexdigest())
@@ -2417,6 +2427,8 @@ def build_parser() -> agent_exec.JsonArgumentParser:
             command.add_argument("--to-reasoning-effort", choices=("none", "low", "medium", "high", "xhigh", "max"))
             command.add_argument("--to-fast", action=argparse.BooleanOptionalAction, default=None)
             command.add_argument("--reason", help="Why the task moves, recorded in the handoff bundle")
+            command.add_argument("--trigger", choices=("human", "quota"), default="human",
+                                 help="quota: the provider's usage limit ran out; Main may then hand off to another provider itself")
         if name == "extend-revisions":
             command.add_argument("--additional", type=int, default=1,
                                  help="Further Work revisions the Human authorizes after the limit stopped the loop")

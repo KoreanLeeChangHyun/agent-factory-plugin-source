@@ -59,12 +59,12 @@ class FakeConductor:
                 children = context.get("children", {}).get(request_id, [])
                 if children and all(ch["status"] in ("completed", "cancelled") for ch in children):
                     commands.append({"type": "reply", "requestId": request_id, "final": True,
-                                     "text": say("분리된 작업 결과를 종합했습니다.", "Separated intents have finished.")})
+                                     "text": say("분리된 수행 결과를 종합했습니다.", "Separated intents have finished.")})
                 continue
             if request["status"] in ("cancelled", "cancelling"):
                 if any(i["kind"] == "request-cancelled" for i in items):
                     commands.append({"type": "reply", "requestId": request_id,
-                                     "text": say("요청 취소를 확인했습니다. 이미 끝난 작업 결과는 그대로 보존됩니다.",
+                                     "text": say("요청 취소를 확인했습니다. 이미 끝난 수행 결과는 그대로 보존됩니다.",
                                                  "Cancellation acknowledged. Work that already finished keeps its result.")})
                 continue
             for item in [i for i in items if i['kind'] == 'required-task']:
@@ -129,7 +129,7 @@ class FakeConductor:
                                      + "\n".join(lines)})
                 else:
                     commands.append({"type": "reply", "requestId": request_id,
-                                     "text": say("작업 결과를 받았습니다 (%d/%d 완료)." % (len(done), len(states)),
+                                     "text": say("수행 결과를 받았습니다 (%d/%d 완료)." % (len(done), len(states)),
                                                  "Received a result (%d/%d done)." % (len(done), len(states)))})
         return commands, self.usage(context)
 

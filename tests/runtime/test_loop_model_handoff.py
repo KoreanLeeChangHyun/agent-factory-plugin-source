@@ -192,6 +192,22 @@ class LoopModelAndHandoffTests(unittest.TestCase):
         self.assertEqual(self.runtime.calls, [])
         self.assertNotIn("handoffs", self.state(started))
 
+    def test_main_hands_off_by_itself_only_for_a_quota_stop_to_another_provider(self):
+        # Human decision 2026-10-18 (message 73404444): a used-up provider moves work without asking.
+        started = self.start()
+        with self.assertRaises(self.agent_exec.ContractError) as raised:
+            self.handoff(started, "--trigger", "quota", agent="work-luna", model="gpt-6-luna", actor="main")
+        self.assertEqual(raised.exception.code, "loop_handoff_unchanged", "a quota handoff changes provider")
+        moved = self.handoff(started, "--trigger", "quota", actor="main")
+        self.assertEqual((moved["handoff"]["actor"], moved["handoff"]["trigger"], moved["handoff"]["toProvider"]), ("main", "quota", "claude"))
+
+    def test_quota_failures_are_their_own_class(self):
+        self.assertEqual(self.agent_loop.failure_class({"code": "rate_limit_exceeded", "message": "429"}), "quota")
+        from runs import attempt
+        for message in ('{"message": "exceeded retry limit, last status: 429 Too Many Requests"}', "Claude execution failed: Claude AI usage limit reached|1792300000"):
+            self.assertRegex(message, attempt.QUOTA_MESSAGE)
+        self.assertNotRegex("Claude execution failed: error_during_execution", attempt.QUOTA_MESSAGE)
+
     def test_handoff_without_a_domain_for_the_new_session_is_refused_before_stopping_the_writer(self):
         from conductor import domains
         started = self.start()

@@ -79,6 +79,31 @@ class RuntimeResponseTests(unittest.TestCase):
                 self.assertIsNone(saved["tokenUsage"]["reasoningOutputTokens"])
                 self.assertEqual(saved["usageAttempts"]["1"]["reports"], 1)
 
+    def test_attempt_measurements_survive_success_and_provider_failure(self):
+        for return_code in (0, 1):
+            with self.subTest(return_code=return_code):
+                state = self.new_run()
+                events = [
+                    {"type": "turn.started", "turn_id": "turn-measured"},
+                    {"type": "item.started", "item": {"id": "command-one", "type": "command_execution"}},
+                    {"type": "item.completed", "item": {"id": "command-one", "type": "command_execution", "aggregated_output": "결과"}},
+                    {"type": "turn.completed", "turn_id": "turn-measured"},
+                ]
+                if return_code:
+                    with self.assertRaises(rt.AttemptFailure):
+                        self.attempt(state, self.envelope(state), return_code=return_code, usage_events=events)
+                else:
+                    self.attempt(state, self.envelope(state), usage_events=events)
+                saved = rt.public_state(rt.safe_read_json(Path(state["statePath"])))
+                measured = saved["measurementAttempts"]["1"]
+                self.assertEqual(measured["toolCalls"], 1)
+                self.assertEqual(measured["providerTurns"], 1)
+                self.assertEqual(measured["toolOutputUtf8Bytes"], 6)
+                self.assertEqual(measured["events"], 7)
+                self.assertGreater(measured["prompt"]["fixedUtf8Bytes"], 0)
+                self.assertGreater(measured["prompt"]["dynamicUtf8Bytes"], 0)
+                self.assertIsNone(measured["inferenceCalls"])
+
     def test_native_attempt_sends_structured_parts_with_current_inline_request(self):
         from execution.prompts import PromptParts
         state = self.new_run(request=b'current native request')
@@ -236,8 +261,11 @@ class RuntimeResponseTests(unittest.TestCase):
             ('main', b'a' * (64 * 1024), True),
             ('main', b'a' * (64 * 1024 + 1), False),
             ('main', ('가' * 22000).encode('utf-8'), False),
-            ('work', b'bounded work', False),
-            ('verification', b'bounded verification', False),
+            ('work', b'bounded work', True),
+            ('verification', b'bounded verification', True),
+            ('work', b'a' * (64 * 1024), True),
+            ('work', ('가' * 22000).encode('utf-8'), False),
+            ('verification', b'a' * (64 * 1024 + 1), False),
         ):
             with self.subTest(role=role, size=len(request)):
                 prompt = rt.build_prompt(agent_id='test-agent', role=role,
@@ -423,9 +451,12 @@ class RuntimeResponseTests(unittest.TestCase):
         self.assertNotIn('pattern', json.dumps(schema))
         self.assertNotIn('uniqueItems', json.dumps(schema))
         terminal = self.envelope(state, decisionKind=None, **self.RECEIPT_FIELDS)
+        self.assertFalse(Path(state['receiptPath']).exists())
         self.assertEqual(self.attempt(state, terminal)[0], 'completed')
         # The prompt tells the Agent to return the fields, never to write the file.
         self.assertIn('do not write one yourself', self.process_input.sent)
+        self.assertIn('AFTER you return the final JSON', self.process_input.sent)
+        self.assertIn('Do not poll for receipt.json', self.process_input.sent)
         self.assertNotIn(state['receiptPath'], self.process_input.sent)
         self.assertEqual(rt.safe_read_json(Path(state['receiptPath'])), {
             'schemaVersion': '0.1.0', 'kind': 'work-receipt', 'runId': state['runId'],
@@ -446,6 +477,15 @@ class RuntimeResponseTests(unittest.TestCase):
                 self.assertFalse(Path(state['receiptPath']).exists())
                 # The answer survives as evidence for the recovery turn.
                 self.assertTrue(Path(state['resultPath']).read_text(encoding='utf-8').strip())
+
+    def test_agent_reported_failure_keeps_its_reason_without_fabricating_a_receipt(self):
+        state = self.new_run('work')
+        terminal = self.envelope(state, status='failed', resultText='Required input is unavailable', **self.RECEIPT_FIELDS)
+        self.assertEqual(self.attempt(state, terminal)[0], 'failed')
+        saved = rt.safe_read_json(Path(state['statePath']))
+        self.assertEqual(saved['error']['code'], 'agent_reported_failure')
+        self.assertEqual(Path(state['resultPath']).read_text(), terminal['resultText'])
+        self.assertFalse(Path(state['receiptPath']).exists())
 
     def test_structured_receipt_is_validated_by_the_existing_rules_before_it_is_written(self):
         cases = (({'changedPaths': ['/etc/passwd']}, 'receipt_path_contract_invalid'),

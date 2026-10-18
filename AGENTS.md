@@ -5,7 +5,7 @@
 
 - This checkout owns the plugin implementation and package. Extension UI, VSIX and MCP development belong to their respective repositories.
 
-- Agent Factory exposes three public Skills under `skills/`: [agent](skills/agent/SKILL.md), [convention](skills/convention/SKILL.md) and [document](skills/document/SKILL.md). Preserve their identities; never mirror them into `.codex/`.
+- Agent Factory exposes four public Skills under `skills/`: [agent](skills/agent/SKILL.md), [convention](skills/convention/SKILL.md), [document](skills/document/SKILL.md) and [tool](skills/tool/SKILL.md). Preserve their identities; never mirror them into `.codex/`.
 - Before choosing an edit target, apply the three-domain boundary in the [plugin project rules](../docs/skills/rule-plugin-development/SKILL.md). Distributed Skills serve product users; both repositories’ project Skills serve their developers.
 
 ## Ownership and storage

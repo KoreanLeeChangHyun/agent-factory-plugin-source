@@ -143,6 +143,8 @@ class PlanWorkTests(TaskModeTests):
                 with mock.patch.object(native, "inspect_capabilities", return_value=capabilities), mock.patch.object(runtime, "emit") as emit:
                     runtime.main(["capabilities", "--project-root", directory])
                 for operation in ("submit", "send"):
+                    # Hosts drop their own conductor-mode block only when the route instruction owns it.
+                    self.assertIs(emit.call_args.args[0][operation]["conductorGuidance"], True)
                     modes = emit.call_args.args[0][operation]["taskModes"]
                     self.assertIn("work", modes)
                     self.assertIn("work-verification", modes)
@@ -167,10 +169,34 @@ class PlanWorkTests(TaskModeTests):
             self.assertNotIn("failureClass", route_instruction(mode, "main"))
         self.assertEqual(route_instruction("orchestrate", "work"), "")
 
+    def test_orchestrate_route_owns_the_rules_hosts_no_longer_send(self):
+        # The extension omits its conductor-mode block for a runtime advertising conductorGuidance.
+        instruction = route_instruction("orchestrate", "main")
+        for expected in ("A single-fact web lookup is one look when one search or one read of a known page answers it; "
+                         "answer it with its source.",
+                         "write one request file in this run's directory starting with a `Title:` line",
+                         "it becomes the task title shown to the Human",
+                         "allocation taskType with the supplied modelCatalog as --model-catalog-file",
+                         "without polling the child, and keep Main Goal disabled for delegated routes",
+                         "a dispatch acknowledgement is not completion"):
+            self.assertIn(expected, instruction)
+
+    def test_direct_route_treats_performer_messages_as_session_turns(self):
+        instruction = route_instruction("direct", "main")
+        for expected in ("Single-session mode", "messages are turns, not task assignments",
+                         "a performer/session test needs only a brief acknowledgement",
+                         "Do not ask for a task assignment, performer profile or a switch to conductor mode",
+                         "Do not dispatch Work or Verification for this task"):
+            self.assertIn(expected, instruction)
+        self.assertNotIn("loop.py start", instruction)
+
     def test_main_guidance_reports_work_checks_without_reverification(self):
         instruction = route_instruction("plan-work", "main")
         self.assertIn("loop.py start --task-mode plan-work", instruction)
-        self.assertIn("do not review implementation or rerun checks", instruction)
+        self.assertIn("Do not review implementation or rerun checks", instruction)
+        # Main checks the result against Done itself before reporting (Human decision 2026-10-18).
+        self.assertIn("compare the brief's Done with evidence", instruction)
+        self.assertIn("loop.py revise", instruction)
         self.assertIn("Do not start separate Verification", instruction)
         self.assertEqual(route_instruction("plan-work", "work"), "")
 

@@ -143,6 +143,8 @@ class NativeCodexTests(unittest.TestCase):
             self.assertEqual(state["responseContract"], 2)
             bridge.run("Work role")
             self.assertEqual(starts, [])  # Goal activation starts no turn and the contract was met.
+            objectives = [params.get('objective', '') for method, params in rpc.calls if method == 'thread/goal/set']
+            self.assertTrue(any('AFTER that final response' in objective for objective in objectives))
             # The Goal turn got the receipt fields through its instructions, not a per-turn schema.
             resume = [params for method, params in rpc.calls if method == "thread/resume"][-1]
             self.assertIn('"addressedFindingIds"', resume["developerInstructions"])

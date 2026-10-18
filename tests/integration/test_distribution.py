@@ -61,13 +61,15 @@ class DistributionTests(unittest.TestCase):
             self.assertFalse((installed / "runtime/cloud_reporting.py").exists())
             self.assertFalse((installed / "mcp").exists())
             self.assertFalse((installed / "skills/mcp").exists())
-            layout = (installed / "skills/document/SKILL.md").read_text()
-            normalized_layout = " ".join(layout.split())
-            for document_type in ("original", "skills"):
-                self.assertIn(
-                    f"<project-root>/docs/{document_type}/<category>[-<domain>]-<name>/",
-                    normalized_layout,
-                )
-            self.assertIn("<project-root>/docs/refined/<category>/<topic>/", normalized_layout)
-            self.assertIn("complete standalone behavior", normalized_layout)
+            document_entry = (installed / "skills/document/SKILL.md").read_text()
+            layout = (installed / "skills/document/references/layout.md").read_text()
+            self.assertIn("references/layout.md", document_entry)
+            for route in (
+                "original/<domain>-<name>/",
+                "analysis/<domain>-<name>/",
+                "design-<domain>-<name>/",
+                "rule-<domain>-<name>/",
+            ):
+                self.assertIn(route, layout)
+            self.assertIn("complete standalone behavior", " ".join(document_entry.split()))
             self.assertFalse((installed / "docs").exists())

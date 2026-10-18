@@ -78,6 +78,16 @@ class TokenUsageTests(unittest.TestCase):
         self.assertEqual(result["outputTokens"], 35)
         self.assertEqual(result["reports"], 2)
 
+    def test_old_replays_after_many_reports_are_not_counted_again(self):
+        usage = UsageAccumulator()
+        first = native_event(1100, 100)
+        usage.observe(first)
+        for index in range(1, 301):
+            usage.observe(native_event(1100 + index * 100, 100))
+        before = usage.snapshot()
+        self.assertFalse(usage.observe(first))
+        self.assertEqual(usage.snapshot(), before)
+
     def test_counter_reset_does_not_subtract_usage(self):
         usage = UsageAccumulator()
         usage.observe(native_event(1100, 100))

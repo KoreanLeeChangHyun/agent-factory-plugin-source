@@ -22,6 +22,31 @@ POLICY = runtime.execution_policy.normalize({"schemaVersion": 1,
 
 
 class ClaudeAdapterTests(unittest.TestCase):
+    def test_capability_probe_decodes_utf8_independently_of_windows_code_page(self):
+        import subprocess
+        import sys
+
+        run_process = subprocess.run
+        help_text = '도움말 😀 ' + ' '.join(claude.capabilities.REQUIRED_OPTIONS)
+
+        def run(arguments, **kwargs):
+            text = help_text if arguments[-1] == '--help' else '2.1.285 (Claude Code)'
+            source = 'import sys; sys.stdout.buffer.write(' + repr(text.encode('utf-8')) + ')'
+            return run_process([sys.executable, '-c', source], **kwargs)
+
+        with mock.patch.object(subprocess, '_text_encoding', return_value='cp949'), \
+                mock.patch.object(claude.capabilities.subprocess, 'run', side_effect=run):
+            result = claude.capabilities._probe('claude')
+        self.assertTrue(result['submit']['model'], result['diagnostic'])
+        self.assertTrue(result['submit']['thinkingDisplay'])
+
+    def test_capability_probe_reports_missing_output_without_type_error(self):
+        with mock.patch.object(claude.capabilities.subprocess, 'run',
+                               return_value=mock.Mock(returncode=0, stdout=None)):
+            result = claude.capabilities._probe('claude')
+        self.assertFalse(result['submit']['model'])
+        self.assertIn('--print', result['diagnostic'])
+
     def test_provider_identity_never_resumes_other_provider(self):
         self.assertEqual(provider_for(), "codex")
         self.assertEqual(provider_for("claude-sonnet"), "claude")
@@ -414,6 +439,72 @@ class ClaudeAdapterTests(unittest.TestCase):
                     self.assertEqual(json.loads(finals[0]["item"]["text"])["resultText"], "current answer")
                 else:
                     self.assertEqual(emitted[-1]["type"], "error")
+
+    def test_the_first_result_ends_the_session_and_nothing_after_it_counts(self):
+        # 2026-10-18: a Worker reported failure, Claude Code kept the session for its background task, resumed the
+        # turn when it finished, wrote the file and reported success; only the first result was recorded.
+        session_id, request_id = str(uuid.uuid4()), str(uuid.uuid4())
+        init = {"type": "system", "subtype": "init", "session_id": session_id}
+        ack = {"type": "user", "uuid": request_id, "session_id": session_id, "message": {"role": "user", "content": "current request"}}
+        result = {"type": "result", "subtype": "success", "is_error": False, "session_id": session_id}
+        later_tool = {"type": "assistant", "session_id": session_id, "message": {"id": "m2", "content": [
+            {"type": "tool_use", "id": "toolu_late", "name": "Bash", "input": {"command": "printf x > file"}}]}}
+        stream = [init, ack, {**result, "structured_output": {"status": "failed", "resultText": "not written"}},
+                  later_tool, {**result, "structured_output": {"status": "completed", "resultText": "written"}}]
+        with tempfile.TemporaryDirectory() as root:
+            state = {"runtimeBinding": {}, "role": "work"}
+            session = {"sessionId": session_id, "executionPolicy": POLICY, "projectRoot": root}
+            process = mock.Mock(pid=4242)
+            process.stdin = mock.Mock()
+            process.stdout = io.StringIO("\n".join(json.dumps(e) for e in stream))
+            # Still running after the grace period, then ended by the stop.
+            process.wait.side_effect = [claude.transport.subprocess.TimeoutExpired("claude", 3), -15, -15]
+            process.poll.return_value = -15
+            output, records = io.StringIO(), []
+            with mock.patch.object(claude.transport, "safe_read_json", side_effect=[state, session]), \
+                    mock.patch.object(claude.transport.runtime_paths, "bind"), \
+                    mock.patch.object(claude.transport, "cli_command", return_value=(["claude"], ack)), \
+                    mock.patch.object(claude.transport.subprocess, "Popen", return_value=process), \
+                    mock.patch.object(claude.transport, "descendants", return_value=[]), \
+                    mock.patch.object(claude.transport.trace, "record", side_effect=lambda _state, event, **data: records.append((event, data))), \
+                    mock.patch.object(claude.transport.sys, "argv", ["transport", "state", "session"]), \
+                    mock.patch.object(claude.transport.sys, "stdin", io.StringIO(PromptParts("fixed", "request").encode())), \
+                    redirect_stdout(output):
+                self.assertEqual(claude.transport.main(), 0)
+            process.terminate.assert_called_once()
+            emitted = [json.loads(line) for line in output.getvalue().splitlines()]
+            finals = [json.loads(e["item"]["text"]) for e in emitted if e.get("item", {}).get("type") == "agent_message"]
+            self.assertEqual([final["resultText"] for final in finals], ["not written"])
+            self.assertFalse([e for e in emitted if e.get("item", {}).get("id") == "toolu_late"])
+            self.assertIn("provider.process.stopped_after_result", [event for event, _ in records])
+
+    def test_stop_after_result_ends_the_session_with_every_process_it_started(self):
+        import subprocess, time
+        if not Path("/proc").is_dir():
+            self.skipTest("process tree lookup needs /proc")
+        script = "import subprocess, sys, time\nchild = subprocess.Popen(['sleep', '60'])\nprint(child.pid, flush=True)\ntime.sleep(60)\n"
+        process = subprocess.Popen(["python3", "-c", script], stdout=subprocess.PIPE, text=True)
+        try:
+            child = int(process.stdout.readline())
+            self.assertIn(child, claude.transport.descendants(process.pid))
+            with mock.patch.object(claude.transport, "RESULT_EXIT_GRACE_SECONDS", 0.2), mock.patch.object(claude.transport.trace, "record"):
+                self.assertTrue(claude.transport.stop_after_result({}, process, "execute"))
+            self.assertIsNotNone(process.poll())
+            for _ in range(50):
+                if not Path(f"/proc/{child}").exists() or "Z" in Path(f"/proc/{child}/stat").read_text().split(")")[1][:3]:
+                    break
+                time.sleep(0.05)
+            alive = Path(f"/proc/{child}").exists() and "Z" not in Path(f"/proc/{child}/stat").read_text().split(")")[1][:3]
+            self.assertFalse(alive, "a process the session started outlived the stop")
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.stdout.close()
+            process.wait()
+
+        quick = subprocess.Popen(["true"])
+        quick.wait()
+        self.assertFalse(claude.transport.stop_after_result({}, quick, "execute"), "a session that exits by itself is not stopped")
 
     def test_capabilities_and_session_creation_use_claude_executable(self):
         help_text = " ".join(claude.capabilities.REQUIRED_OPTIONS)

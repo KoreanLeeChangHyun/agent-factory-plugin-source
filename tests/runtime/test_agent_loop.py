@@ -2207,6 +2207,29 @@ class AgentLoopContractTests(unittest.TestCase):
         self.assertEqual(revised["dispatchHistory"][-1]["context"], "recovery")
         self.assertEqual(revised["workflow"]["tasks"][0]["id"], "task-one")
 
+    def test_compact_verification_and_repair_prompts_preserve_all_record_values(self):
+        directory = Path(self.start(["--task-mode", "work"])["statePath"]).parent
+        message = '## 변경 내용\n한글😀 "quotes" \\path\n' * 2000 + '필수 제약: 삭제 금지'
+        addition = {"id": "change-1", "taskId": "task-one", "message": message,
+                    "status": "delivered", "baseRequestRevision": 2,
+                    "authorizationReference": "human-message-1", "decisionEvidence": "bounded correction",
+                    "metadata": {"nested": ["preserve", {"unknownFutureField": True}]}}
+        queued = {**addition, "id": "change-queued", "status": "queued"}
+        unrelated = {**addition, "id": "change-other", "taskId": "other-task"}
+        state = {"execution": {"taskBinding": {"taskId": "task-one"}},
+                 "userRevisions": [addition, queued, unrelated], "steering": [],
+                 "originalRequestPath": str(self.request), "latestWorkRunId": "work-1"}
+        work = {"runId": "work-1", "resultPath": "/result.md", "receiptPath": "/receipt.json"}
+        prompt = self.agent_loop.verification_request(state, work, directory).read_text()
+        encoded = prompt.split("(check these as well as the original completion criteria):\n", 1)[1].strip()
+        self.assertEqual(json.loads(encoded), [addition])
+        self.assertLess(len(encoded), len(json.dumps([addition], ensure_ascii=False, indent=2)))
+        findings = [{"id": "finding-1", "problem": message, "severity": "error",
+                     "details": {"checks": ["scope", "authority", "completion"]}}]
+        repair = self.agent_loop.revision_request(state, {"runId": "verify-1", "resultPath": "/verification.md"},
+                                                 {"findings": findings}, directory).read_text()
+        self.assertEqual(json.loads(repair.split("Findings:\n", 1)[1]), findings)
+
     def test_user_correction_rejects_wrong_identity_stale_run_and_another_live_task(self):
         state = self.start(["--task-mode", "work"])
         self.runtime.complete_work("work-agent", state["latestWorkRunId"])

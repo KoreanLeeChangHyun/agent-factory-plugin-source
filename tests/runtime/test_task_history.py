@@ -136,16 +136,18 @@ class TaskHistoryTests(unittest.TestCase):
         outside = self.root / "source.txt"
         outside.write_text("preserve")
         (selected / "linked").symlink_to(outside)
-        with self.assertRaises(ValueError):
+        # A nested link is removed without following it only when rmtree is
+        # descriptor-based; otherwise deletion is refused before any change.
+        with mock.patch.object(history.shutil.rmtree, "avoids_symlink_attacks", False), self.assertRaises(ValueError):
             history.delete(self.runtime, self.args)
         self.assertTrue(selected.exists())
         self.assertEqual(outside.read_text(), "preserve")
-        (selected / "linked").unlink()
         with mock.patch.object(history.shutil, "rmtree", side_effect=OSError("disk denied")), self.assertRaises(OSError):
             history.delete(self.runtime, self.args)
         self.assertTrue(selected.exists())
         history.delete(self.runtime, self.args)
         self.assertFalse(selected.exists())
+        self.assertEqual(outside.read_text(), "preserve")
 
     def test_cli_physically_deletes_and_new_process_cannot_retrieve_the_run(self):
         selected = self.child()

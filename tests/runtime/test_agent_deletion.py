@@ -49,7 +49,7 @@ class AgentDeletionTests(unittest.TestCase):
         self.assertTrue(self.delete()["alreadyDeleted"])
 
     def test_active_status_live_process_containment_and_dispatch_lock_protect_records(self):
-        for status in ("running", "starting", "needs-human-decision"):
+        for status in ("running", "starting"):
             self.runtime.atomic_write_json(self.run / "state.json", {**self.state, "status": status})
             with self.assertRaises(self.runtime.ContractError):
                 self.delete()
@@ -125,6 +125,55 @@ class AgentDeletionTests(unittest.TestCase):
             self.delete()
         self.assertEqual(error.exception.code, "agent_delete_incomplete")
         self.assertTrue(dispatch.exists())
+
+    def test_ended_turn_awaiting_human_decision_does_not_block_explicit_deletion(self):
+        self.runtime.atomic_write_json(self.run / "state.json", {**self.state, "status": "needs-human-decision"})
+        self.assertEqual(self.delete()["kind"], "agent-deleted")
+        self.assertFalse(self.agent.exists())
+
+    def dispatched_task(self, task, status="completed"):
+        path = self.runtime.run_directory(self.root, "work-one", "run-" + task, create=True)
+        self.runtime.atomic_write_json(path / "state.json", {"agentId": "work-one", "runId": "run-" + task,
+            "role": "work", "status": status, "parentAgentId": "main-one", "parentRunId": "run-one",
+            "taskBinding": {"workflowId": "flow-one", "taskId": task}})
+        self.runtime.atomic_write_json(self.run / "children" / ("run-" + task + ".json"), {"agentId": "work-one", "runId": "run-" + task})
+        return path
+
+    def test_with_tasks_deletes_dispatched_task_histories_then_the_agent(self):
+        tasks = [self.dispatched_task("task-one"), self.dispatched_task("task-two")]
+        os.symlink(self.root / "outside", tasks[0] / "snapshot-link")
+        (self.root / "outside").write_text("keep")
+        with self.assertRaises(self.runtime.ContractError) as error:
+            self.delete()
+        self.assertEqual(error.exception.code, "agent_delete_shared")
+        self.args.preview = True
+        self.assertEqual(self.delete(), {"kind": "agent-delete-preview", "agentId": "main-one", "tasks": 2})
+        self.assertTrue(all(path.exists() for path in tasks))
+        self.args.preview, self.args.with_tasks = False, True
+        result = self.delete()
+        self.assertEqual(result["kind"], "agent-deleted")
+        self.assertEqual(len(result["deletedTasks"]), 2)
+        self.assertFalse(self.agent.exists())
+        self.assertFalse(any(path.exists() for path in tasks))
+        self.assertEqual((self.root / "outside").read_text(), "keep")
+
+    def test_with_tasks_refuses_active_dispatched_task_without_deleting_anything(self):
+        ended = self.dispatched_task("task-one")
+        self.dispatched_task("task-two", status="running")
+        self.args.with_tasks = True
+        with self.assertRaises(self.runtime.ContractError) as error:
+            self.delete()
+        self.assertEqual(error.exception.code, "agent_delete_active")
+        self.assertTrue(ended.exists())
+        self.assertTrue(self.agent.exists())
+
+    def test_reservation_resolved_by_its_accepted_run_is_deleted(self):
+        self.runtime.atomic_write_json(self.run / "state.json", {**self.state, "dispatchId": "dispatch-one"})
+        dispatch = self.agent / "dispatches" / "dispatch-one.json"
+        self.runtime.atomic_write_json(dispatch, {"schemaVersion": "0.1.0", "kind": "dispatch-reservation",
+                                                  "dispatchId": "dispatch-one", "dispatchTuple": {"agentId": "main-one"}})
+        self.assertEqual(self.delete()["kind"], "agent-deleted")
+        self.assertFalse(self.agent.exists())
 
     def test_target_binding_symlinks_authority_and_io_failures_never_ack_success(self):
         self.args.authorization_reference = ""

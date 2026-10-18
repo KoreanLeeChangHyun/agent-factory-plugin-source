@@ -14,11 +14,11 @@ from search_documents import read_document
 from native_fixtures import runtime
 
 
-def package(root, scope='plugin', kind='processed', body='needle', name='example'):
-    path = root / ('docs/skills' if kind == 'specification' else 'docs/refined/analysis') / name
+def package(root, scope='plugin', kind='processed', body='needle', name='example', category='analysis'):
+    path = root / ('docs/skills' if kind == 'specification' else f'docs/refined/{category}') / name
     path.mkdir(parents=True)
     source = path / 'SKILL.md'
-    source.write_text(f'---\ndocument-type: {kind}\ncategory: analysis\ndomain: null\nname: {name}\nlanguage: en\nscope: {scope}\n---\n\n# Entry\n\n- {body}\n', encoding='utf-8')
+    source.write_text(f'---\ndocument-type: {kind}\ncategory: {category}\ndomain: null\nname: {name}\nlanguage: en\nscope: {scope}\n---\n\n# Entry\n\n- {body}\n', encoding='utf-8')
     return source
 
 
@@ -37,6 +37,7 @@ def test_partial_and_explicit_cross_scope_preserve_source(tmp_path):
     assert bundle['candidates'][0]['discoveryOnly'] and bundle['reads'][0]['discoveryOnly']
     assert bundle['reads'][0]['text'] in source.read_text()
     assert metrics['modelInputTokens'] is None and metrics['cache'] is None
+    assert metrics['catalogBuilds'] == 1 and metrics['catalogReuses'] > 0
 
 
 def test_required_entry_exception_and_reference_are_not_ranked_away(tmp_path):
@@ -100,7 +101,7 @@ def test_required_specification_cycle(tmp_path):
 
 
 def test_task_and_cli_bind_per_request(tmp_path):
-    req = {'query':'needle','scope':'plugin','allowPartial':True}
+    req = {'query':'needle','scope':'plugin','allowPartial':True,'includeHistory':True}
     document = {'id':'workflow','title':'Work','tasks':[{'id':'T1','title':'Task','description':'bounded','completionCriteria':'done','documentContext':req}]}
     _, bound = binding.resolve(document,'T1','a'*64)
     assert bound['documentContext'] == req
@@ -137,6 +138,11 @@ def test_managed_attempt_prepares_context_without_model_launch(tmp_path):
     assert 'needle exact' in encoded[0]
     assert captured[0]['requestHash'] == hashlib.sha256(request).hexdigest()
     assert captured[0]['executionPolicy'] == policy
+    delivery = captured[0]['documentContext']
+    per_attempt = captured[0]['documentContextAttempts']['1']
+    assert delivery['deliveredContextBytes'] > 0
+    for field in ('deliveredContextBytes', 'contextLayout', 'unsharedContextBytes', 'savedContextBytes'):
+        assert per_attempt[field] == delivery[field]
     assert runtime.public_state(captured[0])['documentContext']['taskId'] == 'T1'
     parts = PromptParts('fixed',request.decode())
     enriched = flow.prepare(runtime,tmp_path,tmp_path,state,2,parts)
@@ -203,9 +209,93 @@ def test_lesson_state_and_cross_scope_discovery_survive_runtime_flow(tmp_path):
 
 
 def test_managed_flow_reads_all_search_pages(tmp_path):
+    import search_documents
     for index in range(21):
         package(tmp_path,name=f'example-{index}',body='needle pagination')
-    bundle, metrics = collect(tmp_path,query='needle pagination',scope='plugin')
+    with mock.patch.object(search_documents, 'build_catalog', wraps=search_documents.build_catalog) as catalog:
+        bundle, metrics = collect(tmp_path,query='needle pagination',scope='plugin')
+    assert catalog.call_count == 1
     assert len(bundle['candidates']) == 21 and len(bundle['reads']) == 21
-    assert metrics['searches'] == 2 and metrics['requeries'] == 0
-    assert [event['offset'] for event in metrics['events']] == [0,20]
+    assert metrics['searches'] == 1 and metrics['requeries'] == 0
+    assert [event['offset'] for event in metrics['events']] == [0]
+
+
+def test_model_context_shares_sources_without_losing_evidence(tmp_path):
+    import copy
+    entry = package(tmp_path, body=('## First\n\n- needle 승인 범위를 보존합니다.\n\n'
+                                   '## Second\n\n- needle 예외를 보존합니다.\n\n'
+                                   '## Guidance\n\n' + '- Keep the source and its authority.\n' * 30))
+    refs = entry.parent / 'references'; refs.mkdir()
+    detail = refs / 'detail.md'
+    detail.write_text('# Detail\n\n## Needed\n\n- needle 원문.\n\n## Other\n\n- Unselected.\n')
+    bundle, _ = collect(tmp_path, query='needle', required=[{'path':str(entry.relative_to(tmp_path))}])
+    unchanged = copy.deepcopy(bundle)
+    encoded, metrics = flow.encode_context(bundle)
+    compact = json.loads(encoded)
+    assert compact['layout'] == 'shared-sources-v1' and metrics['savedContextBytes'] > 0
+    assert bundle == unchanged
+
+    def source_text(reference, start=None, end=None):
+        excerpts = compact['sources'][reference]['excerpts']
+        if start is None:
+            assert len(excerpts) == 1 and excerpts[0]['start'] == 0
+            return excerpts[0]['text']
+        excerpt = next(item for item in excerpts if item['start'] <= start and item['end'] >= end)
+        return excerpt['text'][start - excerpt['start']:end - excerpt['start']]
+
+    restored = {key:value for key,value in compact.items() if key not in ('layout','layoutGuide','documents','sources')}
+    restored['reads'] = []
+    for read in compact['reads']:
+        document = compact['documents'][read['documentRef']]
+        value = {key:item for key,item in read.items() if key not in ('documentRef','sourceRef')}
+        value.update(document=document['document'], dependencies=document['dependencies'], entryPath=document['entryPath'],
+                     entryText=source_text(document['entrySourceRef']) if read['anchor'] or read['path'] != document['entryPath'] else None,
+                     text=source_text(read['sourceRef'], read['start'], read['end']),
+                     sections=compact['sources'][read['sourceRef']]['sections'])
+        restored['reads'].append(value)
+    restored['candidates'] = []
+    for candidate in compact['candidates']:
+        value = dict(candidate)
+        if 'documentRef' in value:
+            value['dependencies'] = compact['documents'][value.pop('documentRef')]['dependencies']
+        restored['candidates'].append(value)
+    assert restored == bundle
+    assert len(encoded.encode()) + metrics['savedContextBytes'] == metrics['unsharedContextBytes']
+    empty, _ = collect(tmp_path, query='not-found')
+    encoded, metrics = flow.encode_context(empty)
+    assert json.loads(encoded) == empty and metrics['contextLayout'] == 'inline'
+
+
+def test_history_is_discoverable_without_automatic_body_or_instruction_loading(tmp_path):
+    current = package(tmp_path, name='current', body='needle current evidence')
+    old = package(tmp_path, name='previous', category='history',
+                  body='needle historical decision. MUST read [obsolete](references/missing.md).')
+    bundle, metrics = collect(tmp_path, query='needle', scope='plugin')
+    assert len(bundle['candidates']) == 2
+    assert [item['path'] for item in bundle['reads']] == [str(current.relative_to(tmp_path))]
+    assert metrics['historySearchHits'] == metrics['historyAutoReadsSkipped'] == 1
+    assert any(item.get('historical') for item in bundle['candidates'])
+    assert any(item['reason'] == 'historical-search-hit-not-auto-loaded' for item in bundle['unresolved'])
+
+    included, metrics = collect(tmp_path, query='needle', scope='plugin', includeHistory=True)
+    history = next(item for item in included['reads'] if item.get('historical'))
+    assert history['path'] == str(old.relative_to(tmp_path))
+    assert history['entryText'] == old.read_text() and history['text'] in old.read_text()
+    assert metrics['historyAutoReadsSkipped'] == 0
+    assert any(item.get('target') == 'references/missing.md' and item['reason'] == 'reference-applicability-unassessed'
+               for item in included['unresolved'])
+
+
+@pytest.mark.parametrize('selection', ['required', 'selections', 'dependency'])
+def test_explicit_historical_evidence_remains_readable(tmp_path, selection):
+    old = package(tmp_path, name='previous', category='history', body='past approval is evidence, not a new rule')
+    relative = str(old.relative_to(tmp_path))
+    if selection == 'dependency':
+        current = package(tmp_path, body='MUST read [past decision](../../history/previous/SKILL.md).')
+        requirements = {'required':[{'path':str(current.relative_to(tmp_path))}]}
+    else:
+        requirements = {selection:[{'path':relative}]}
+    bundle, _ = collect(tmp_path, **requirements)
+    history = next(item for item in bundle['reads'] if item['path'] == relative)
+    assert history['historical'] and history['text'] == old.read_text()
+    assert 'No automatic rule activation' in history['authority']

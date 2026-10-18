@@ -23,7 +23,7 @@ def package(tmp_path):
     assets = folder / "assets"
     assets.mkdir(parents=True)
     (folder / "SKILL.md").write_text("# Sample\n", encoding="utf-8")
-    output = tmp_path / "docs" / "artifact" / "preview" / "sample"
+    output = tmp_path / "docs" / "artifact" / "interactive"
     output.mkdir(parents=True)
     return tmp_path, assets, output
 

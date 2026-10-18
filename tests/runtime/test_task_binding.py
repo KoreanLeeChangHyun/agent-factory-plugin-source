@@ -18,6 +18,16 @@ class TaskBindingTests(unittest.TestCase):
         _, binding = resolve(document, document['tasks'][0]['id'], hashlib.sha256(request.encode()).hexdigest())
         self.assertEqual(binding['description'], request)
 
+    def test_brief_title_line_names_the_task(self):
+        from tasks.binding import brief_document
+        request = 'Title: 도메인 목록 상태 점 색 정리\n# Goal\nMake the domain list status dots use the agreed colours.\n# Done\nChecks pass.'
+        document = brief_document(request)
+        self.assertEqual(document['title'], '도메인 목록 상태 점 색 정리')
+        self.assertEqual(document['tasks'][0]['title'], '도메인 목록 상태 점 색 정리')
+        self.assertEqual(document['tasks'][0]['description'], request)
+        self.assertEqual(brief_document('# Goal\n작업 제목: 링크 검사\nCheck every link.')['title'], '링크 검사')
+        self.assertEqual(brief_document('# Goal\nCheck every link.')['title'], 'Check every link.')
+
     def setUp(self):
         self.runtime = load_module()
         capability = mock.patch.object(self.runtime.native_codex, "inspect_capabilities",

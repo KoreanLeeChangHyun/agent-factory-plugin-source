@@ -114,18 +114,38 @@ def test_lesson_dirty_boundary_preserves_sources_and_renames(monkeypatch, status
     assert worktrees.dirty('fixture') is expected
 
 
-def test_inline_queries_create_no_input_file_or_write_lock(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('compact', [False, True])
+def test_inline_queries_create_no_input_file_or_write_lock(tmp_path, monkeypatch, capsys, compact):
     import json
     def forbidden_lock(*_args):
         raise AssertionError('Queries must not acquire a write lock')
     monkeypatch.setattr(lessons, 'locked', forbidden_lock)
     for action, payload in (('retrieve', {'query': 'example', 'scope': 'runtime'}),
                             ('audit', {'occurrenceIds': ['unknown']})):
-        monkeypatch.setattr(sys, 'argv', ['lessons.py', '--project-root', str(tmp_path), action, '--input-json', json.dumps(payload)])
+        monkeypatch.setattr(sys, 'argv', ['lessons.py', '--project-root', str(tmp_path), action,
+                                        '--input-json', json.dumps(payload), *(['--compact'] if compact else [])])
         assert lessons.main() == 0
         data = json.loads(capsys.readouterr().out)
         assert data.get('count') == 0 if action == 'retrieve' else data['missing'] == ['unknown']
     assert list(tmp_path.iterdir()) == []
+
+
+def test_compact_cli_retrieval_preserves_records_and_input_errors(tmp_path):
+    import json
+    seed(tmp_path)
+    command = [sys.executable, str(SCRIPTS / 'lessons.py'), '--project-root', str(tmp_path),
+               'retrieve', '--input-json']
+    for payload, code in ((json.dumps({'query': '사례', 'scope': 'project-a'}), 0), ('[]', 1)):
+        legacy = subprocess.run([*command, payload], capture_output=True, text=True)
+        compact = subprocess.run([*command, payload, '--compact'], capture_output=True, text=True)
+        assert legacy.returncode == compact.returncode == code
+        assert legacy.stderr == compact.stderr == ''
+        expected = json.loads(legacy.stdout)
+        assert json.loads(compact.stdout) == expected
+        assert legacy.stdout == json.dumps(expected, ensure_ascii=False) + '\n'
+        assert len(compact.stdout.encode()) < len(legacy.stdout.encode())
+        if code == 0:
+            assert expected['count'] == 1 and expected['records'][0]['occurrences']
 
 
 def candidate(root):
@@ -404,6 +424,9 @@ def test_storage_failures_have_actionable_nonretryable_cli_diagnostics(tmp_path,
     assert diagnostic['code'] == 'lesson_storage_incompatible' and diagnostic['retryable'] is False
     assert diagnostic['documentRoot'] == str(tmp_path)
     assert diagnostic['supportedFormats'] and 'check' in diagnostic['recovery']
+    compact = subprocess.run([*result.args, '--compact'], capture_output=True, text=True)
+    assert compact.returncode == result.returncode and compact.stderr == result.stderr
+    assert json.loads(compact.stdout) == diagnostic
     assert all(path.read_bytes() == content for path, content in before.items())
 
 

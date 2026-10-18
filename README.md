@@ -15,7 +15,7 @@ distributions are generated from it and must not be edited directly.
 | `runtime/contracts/` | Receipt and capability contracts and their preflight |
 | `runtime/runs/` | Run lifecycle: records, worker launch, attempts, and inspection/control commands |
 | `runtime/adapters/` | Provider adapters (`codex`, `claude`, `antigravity`) |
-| `scripts/` | Command entrypoints: `exec.py`, `loop.py`, `conductor.py`, `coordination.py`, `commit.py`, `domains.py`, `operation_records.py`, `lessons.py`, `archify.py` and the document tools |
+| `scripts/` | Command entrypoints: `exec.py`, `loop.py`, `conductor.py`, `coordination.py`, `commit.py`, `domains.py`, `operation_records.py`, `lessons.py`, `evidence.py` (screen captures and check baselines), `archify.py` and the document tools |
 | `distribution/package.json` | Shared name, version, description and host repositories |
 | `distribution/hosts/<host>/` | Host-only manifests and README templates |
 | `distribution/port.py` | Generator for every host distribution |
@@ -23,6 +23,54 @@ distributions are generated from it and must not be edited directly.
 | `distribution/tool_usage.py` | Generates `skills/tool/references/usage/` from each script's argparse definition (`--check`) |
 | `distribution/skill_budget.py` | Reports and enforces Skill document token budgets (`--check`) |
 | `tests/` | Test suite for the source tree and generated layouts |
+
+## Runtime architecture
+
+![You talk only to the Conductor. It writes a work request; performers carry it out and write a work report; the Conductor compares the report with the Done criteria before it answers you. A Verifier checks the work only when you ask.](https://raw.githubusercontent.com/KoreanLeeChangHyun/agent-factory-vscode-extension/main/static/images/readme-conductor.png)
+
+The conductor–performer flow above runs on these layers. Entry scripts parse commands;
+everything below them is shared by every host distribution.
+
+```mermaid
+flowchart TB
+  accTitle: Plugin runtime layers
+  accDescr: Command scripts call the conductor, task and run layers. Runs execute one agent turn through the execution layer and a provider adapter, which starts the Codex, Claude Code or Antigravity CLI. Storage and system seams sit under every layer, and contracts define receipts and capabilities.
+  S["scripts/<br/>exec.py · loop.py · conductor.py · domains.py · lessons.py · archify.py"]
+  C["runtime/conductor/<br/>routing · queue · domains · team roster"]
+  T["runtime/tasks/<br/>modes · allocation · loops · decisions · Work Units"]
+  R["runtime/runs/<br/>run records · worker launch · attempts"]
+  E["runtime/execution/<br/>one agent turn · prompts · usage · lesson facts"]
+  A["runtime/adapters/<br/>codex · claude · antigravity"]
+  CLI["Codex · Claude Code · Antigravity CLIs"]
+  K["runtime/contracts/<br/>receipts · capabilities"]
+  B["runtime/storage/ · runtime/system/<br/>runtime home · files · processes · sandbox"]
+  H["runtime/hooks/<br/>host PreToolUse guards"]
+  S --> C & T & R
+  C --> T --> R --> E --> A --> CLI
+  R --> K
+  E -.-> B
+  R -.-> B
+  CLI -.-> H
+```
+
+A delegated task, end to end:
+
+```mermaid
+sequenceDiagram
+  accTitle: A delegated task
+  accDescr: Main starts a loop with a work request; the runtime launches a Work run on the provider CLI, records its events, result and receipt, and Main reads the result, compares it with Done and reports.
+  participant M as Main (conductor)
+  participant L as loop.py / exec.py
+  participant R as runtime runs
+  participant W as Work session (CLI)
+  M->>L: start --work-agent … (work request)
+  L->>R: accept run, bind task and domain
+  R->>W: launch turn with the request
+  W-->>R: events, result.md, receipt.json
+  R-->>L: loop state and completion notice
+  L-->>M: result, receipt, changed paths
+  M->>M: compare with Done, then revise or report
+```
 
 ## How distributions are produced
 

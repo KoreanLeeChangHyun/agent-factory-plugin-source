@@ -6,12 +6,35 @@ Human-facing responses support the language the Human uses or explicitly selects
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Agent Factory is a Codex plugin for Human-directed software delivery. It provides
-a bounded agent workflow, evidence exploration, and shared project conventions.
+Agent Factory is a Codex plugin for Human-directed software delivery. One conductor
+talks with you, hands bounded work to performers, checks every report against what you
+asked for, and keeps the project's documents, contracts and lessons.
+
+## How it works
+
+![You talk only to the Conductor. It writes a work request; performers carry it out and write a work report; the Conductor compares the report with the Done criteria before it answers you. A Verifier checks the work only when you ask.](https://raw.githubusercontent.com/KoreanLeeChangHyun/agent-factory-vscode-extension/main/static/images/readme-conductor.png)
+
+- **Conductor (Main).** Converses, plans, interviews and routes. By default
+  (orchestrator mode) it delegates every change and research task; in direct mode it
+  implements itself.
+- **Performers (Work profiles).** **Expert** (`work`) for open-ended changes, **Worker**
+  (`workLight`) for bounded, already-decided changes, **Explorer** (`explore`) for
+  read-only research and **Scribe** (`scribe`) for documents.
+- **Work request and work report.** The request (goal, scope, Done criteria) is the
+  only handoff to a performer; the report returns the result, changed paths and the
+  performer's own checks.
+- **Result alignment.** Before reporting, the conductor compares each report with its
+  Done criteria and sends a mismatch back to the same task.
+- **Verification on request.** A separate Verification agent checks the work only when
+  the selected route calls for it; findings return to Work until it passes.
+- **Domains.** Every performer belongs to a named work area; follow-up work in a domain
+  goes to its performers (`domains.py`).
 
 ## Core features
 
 ### 1. Document system
+
+![Documents, interviews and lessons: sources become research, accepted research becomes Specification, and Specification is synchronized into project Skills that agents load. Interviews record decisions; agents record lessons and contracts; supported lessons are consolidated into rules.](https://raw.githubusercontent.com/KoreanLeeChangHyun/agent-factory-vscode-extension/main/static/images/readme-knowledge.png)
 
 - Keep project knowledge in a structured, searchable collection that agents can
   consult across tasks. Maintain one editable source for each document.
@@ -22,40 +45,22 @@ a bounded agent workflow, evidence exploration, and shared project conventions.
   Writing or summarizing a document does not automatically make it a project rule.
 - When you request migration, organize existing documents into the project structure
   while preserving their content and references. Accepted Specification documents
-  can be synchronized into project Skills for agents to use in later work.
+  are synchronized into project Skills for agents to use in later work.
 
 ### 2. Contracts → Work–Verification loop
+
+![Contract and loop: the Conductor returns a versioned contract; the Expert works and reports; a Verifier checks against Done and findings go back to the Expert until it passes; the Conductor reports with the contract record.](https://raw.githubusercontent.com/KoreanLeeChangHyun/agent-factory-vscode-extension/main/static/images/readme-loop.png)
 
 - Turn a conversation into a work contract with six sections: contract information,
   hired workers and their IDs, task goals with assigned worker IDs and completion criteria,
   important constraints including task dependencies, a file tree showing each change
   operation and file-specific goal beside its task ID, and a task-level order diagram.
-  The constraints table is the source for the diagram’s dependency arrows.
 - Each contract version at `docs/progress/<contract-id>/contract-v<N>.md` also holds
   its execution record: runs, agents, Work and Verification status, and evidence per
   task. Revisions create a new version and preserve earlier ones.
-- In a Work–Verification loop, the agents have distinct responsibilities:
-
-  | Agent | Responsibility |
-  | --- | --- |
-  | Main | Consolidate the request, coordinate execution, and report results. |
-  | Work | Carry out the contracted tasks and perform its own checks. |
-  | Verification | Independently check the completed work against its requirements. |
-
-  ```mermaid
-  flowchart LR
-    accTitle: Work–Verification loop
-    accDescr: Work carries out the contracted tasks and runs its own checks. Verification independently checks the result; findings return to Work for correction until Verification passes.
-    C["Work contract"] --> W["Work agent"]
-    W --> V["Verification agent"]
-    V -->|"findings"| W
-    V -->|"pass"| R["Main reports"]
-  ```
-
 - Verification findings return to Work for correction, and revised work returns
-  to Verification for another check. A passing result completes the verification
-  stage; unresolved findings remain visible.
-- Choose the execution mode for the task. Direct Main work and Work-only execution
+  to Verification for another check. Unresolved findings remain visible.
+- Choose the execution route for each message. Direct Main work and Work-only execution
   are also available; a separate Verification agent runs only when the selected
   route calls for it.
 
@@ -66,36 +71,31 @@ a bounded agent workflow, evidence exploration, and shared project conventions.
   could materially change the outcome.
 - Address one decision at a time, with meaningful options, their advantages and
   disadvantages, and a recommendation. Your answers guide the next question.
-- Skip, defer, correct, or narrow a question as needed. Recommendations and
-  assumptions remain distinct from your decisions.
-- Finish with a summary of the decisions and any remaining gaps. Save the interview
-  as a document when requested or required by the workflow, and use it to inform
-  a work contract or further planning.
+- Finish with a summary of the decisions and any remaining gaps, saved as a document
+  when requested and used to inform a work contract or further planning.
 
 ### 4. Lessons learned
 
 - Preserve errors, including recovered failures, alongside differences between
-  your judgment and the agent's. Record the context, known causes, attempted
+  your judgment and the agent's, with their context, known causes, attempted
   solutions, and actual outcomes.
-- Retrieve relevant lessons before related work so earlier findings can inform
-  the approach. Keep unknown causes and unresolved issues explicit.
-- Record how a lesson was applied and whether it helped, needed correction, or
-  failed again. Recurrences add evidence without erasing the earlier record.
-- When you request consolidation, turn supported lessons into reusable project
-  rules. Lesson records remain evidence; they do not automatically become accepted
-  Specifications or trigger background changes.
+- Retrieve relevant lessons before related work and record whether each applied lesson
+  helped, needed correction, or failed again.
 - The runtime keeps observed facts for each run (tool failures, failed runs, rework,
   failed Verification and your corrections) and queues the run for lesson writing.
   Main can add a fact it observed with `lessons.py note`; `lessons.py pending` lists or
   closes queued runs, and `lessons.py brief` drafts a lesson-writing request for them.
+- When you request consolidation, supported lessons become reusable project rules.
+  Lesson records remain evidence; they never become rules on their own.
 
 ## VS Code extension
+
+![The Agent Factory VS Code extension: the Control Center shows performers by domain and the work report of one execution.](https://raw.githubusercontent.com/KoreanLeeChangHyun/agent-factory-vscode-extension/main/static/images/readme-control-center.png)
 
 - This plugin is fully installable and usable on its own; the VS Code extension is optional.
 - The Agent Factory VS Code extension requires this plugin to be installed and
   enabled at the identical semantic base version. For example, extension `{{version}}`
   accepts plugin `{{version}}+codex.<token>`.
-
 - On activation, the extension checks whether the plugin is installed, enabled, and compatible,
   and attempts automatic installation when needed. An already active, compatible plugin is used without reinstalling.
   If compatibility cannot be confirmed afterward, activation stops with an error.
@@ -120,31 +120,26 @@ The plugin exposes four public Skills:
 
 ### Agent execution
 
-- By default (orchestrator mode) Main converses, plans and routes, and delegates changes
-  and research to Work; Verification runs only when you ask for it. In worker mode Main
-  handles tasks directly.
 - For each message, you can select Work (delegate a task), Plan (create a plan only),
-  or Verification (check existing work). Combine planning, work, and verification with
-  Plan·Work, Work·Verification, or Plan·Work·Verification.
-- Your selection applies only to that message. See the
-  [execution guide](skills/agent/references/execution-modes.md) for details.
+  or Verification (check existing work), or combine them as Plan·Work,
+  Work·Verification or Plan·Work·Verification. The selection applies only to that
+  message. See the [execution guide](skills/agent/references/execution-modes.md).
 - With a task type and the host's detected model catalog, `loop.py start --model-catalog-file`
   recommends a Work model from your own `model-affinity.json` in the project runtime root.
-  Only detected models are chosen, a model you specify is kept, and without the file nothing
-  is recommended. See [task allocation](skills/agent/references/task-allocation.md#model-recommendation).
-- You can move a running or stopped loop's Work task to another agent and model with
-  `loop.py handoff`. The new session receives the original request, progress, changed paths,
-  remaining work and open findings; the earlier session stays read-only.
+  Only detected models are chosen and a model you specify is kept. See
+  [task allocation](skills/agent/references/task-allocation.md#model-recommendation).
+- `loop.py handoff` moves a running or stopped loop's Work task to another agent and model.
+  The new session receives the original request, progress, changed paths, remaining work
+  and open findings; the earlier session stays read-only. When a provider's usage limit
+  stops a task, Main hands it to another provider itself (`--trigger quota`) and tells you.
 - `operation_records.py` provides read-only lookup (`query`) and word search (`search`) over
   tasks, sessions, decisions, observations and lessons, with each hit citing its source.
-  `supervise` classifies unfinished loops as normal, delayed, stuck or decision-needed and
-  records periodic one-line reports.
-- Research and interviews help gather evidence and clarify requirements.
+  `supervise` classifies unfinished loops as normal, delayed, stuck or decision-needed.
 
 ### Models and sessions
 
 - Agents can also run on Claude Code: choose a `claude-*` model such as `claude-opus-5-5`,
-  `claude-sonnet-5`, `claude-fable-5-1` or `claude-haiku-4-5-20251001`, or the aliases
+  `claude-sonnet-5-5`, `claude-fable-5-1` or `claude-haiku-5-5`, or the aliases
   `claude-opus`, `claude-sonnet` and `claude-haiku`.
 - Every route works with Claude. Plan runs in Claude's plan mode, then the same session executes.
   Execution permissions map to the nearest Claude permission mode; they are not an OS sandbox.
@@ -156,8 +151,6 @@ The plugin exposes four public Skills:
   For Claude Code, install the separate [Claude Code distribution](https://github.com/KoreanLeeChangHyun/agent-factory-claude-plugin).
 
 ## Manual installation
-
-- Official runtime installation guides: [Codex CLI](https://developers.openai.com/codex/cli/) · [Claude Code](https://code.claude.com/docs/en/setup).
 
 - The Agent Factory VS Code extension installs the plugin automatically by default.
 - To use the plugin on its own or install it manually, run:
@@ -181,9 +174,10 @@ The plugin exposes four public Skills:
 - Project specification documents written according to Agent Factory rules in `docs/skills/`
   are synchronized to `.codex/skills/`, `.claude/skills/` and `.agents/skills/`, making them
   available to Codex, Claude Code and Antigravity as project Skills.
-- After writing project specification documents in `docs/skills/`, agents run the
+- After writing, modifying or deleting project specification documents in `docs/skills/`,
+  agents run the
   [Document Skill synchronization script](skills/document/references/host-sync.md#continuous-codex-synchronization)
-  and check the result. They also run it after modifying or deleting these documents.
+  and check the result.
 - If synchronized documents are edited independently, synchronization reports a conflict
   and stops to preserve those changes.
 - Existing Skills outside managed synchronization are preserved without modification.

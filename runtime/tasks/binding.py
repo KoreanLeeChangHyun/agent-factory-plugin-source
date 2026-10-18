@@ -77,11 +77,13 @@ def load(read_json, path, task_id, request_hash):
 def brief_document(request, allocation=None):
     """A single-task list derived from an orchestrator brief.
 
-    The title is the brief's first content line: label-only lines such as "# Brief" or
-    "Goal:" are skipped, and a "Goal: text" line contributes its text."""
+    An explicit "Title: text" (or "제목: text") line names the task. Otherwise the title is the
+    brief's first content line: label-only lines such as "# Brief" or "Goal:" are skipped, and a
+    "Goal: text" line contributes its text."""
     text = request.strip()
     title = "Task"
-    for line in text.splitlines():
+    explicit = re.search(r"^[#>*\-\s]*(?:title|task title|작업\s*제목|제목)\s*[:：]\s*(\S.*)$", text, flags=re.I | re.M)
+    for line in [explicit.group(1)] if explicit else text.splitlines():
         candidate = re.sub(r"^[#>*\-\s]+", "", line).strip()
         candidate = re.sub(r"^(?:brief|goal|objective|task)\s*[:\-]?\s*", "", candidate, flags=re.I).strip()
         if candidate and not re.fullmatch(r"(?:scope|done|report|constraints?)\s*:?", candidate, flags=re.I):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate skills/tool/references/usage/<script>.md from each plugin script's argparse definition.
 
-One file per script, so an agent reads only the tool it is about to run.
+One file per script; exec has an index and one complete page per command.
 
 argparse stays the single source for arguments; this file only renders it.
 Usage: python3 distribution/tool_usage.py [--check]
@@ -95,10 +95,22 @@ def render() -> dict[str, str]:
             parts += ["Every subcommand with options also accepts: " + ", ".join(option_text(o) for o in shared) + ".", ""]
         parts += render_options(tree, set())
         while parts and parts[-1] == "": parts.pop()
+        prefix = parts.copy()
+        split_commands = script.stem == "exec"
+        if split_commands:
+            parts += ["", "Read the selected command's linked options before running it."]
         for command in commands:
             summary = " ".join((command["help"] or "").split())
-            parts += ["", f"## `{command['name']}`" + (f": {summary}" if summary else "")]
-            parts += render_options(command, common) or (["No options."] if not command["options"] else [])
+            heading = f"## `{command['name']}`" + (f": {summary}" if summary else "")
+            section = [heading, *(render_options(command, common) or (["No options."] if not command["options"] else []))]
+            if split_commands:
+                name = f"{script.stem}-{command['name']}.md"
+                # Each leaf retains global/shared options as well as the full command.
+                leaf = [f"# `{script.name} {command['name']}` usage", *prefix[1:], "", *section]
+                files[name] = "\n".join(leaf).rstrip() + "\n"
+                parts += ["", heading, f"- [Options]({name})"]
+            else:
+                parts += ["", *section]
         files[script.stem + ".md"] = "\n".join(parts).rstrip() + "\n"
     return files
 

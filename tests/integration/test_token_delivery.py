@@ -47,7 +47,16 @@ class TokenDeliveryTests(unittest.TestCase):
                 env = {"PATH": os.environ["PATH"], "HOME": str(root), "CODEX_HOME": str(home),
                        "AF_LOCAL_DUMMY_TOKEN": "fixture-only", "LANG": "C.UTF-8"}
                 session = dict(fixture.session)
-                for index in range(2):
+                for index in range(4):
+                    if index:
+                        state = fixture.runtime.create_run(project_root=project, agent_id=state["agentId"],
+                            actor="human", request=b"Follow-up request", session=session)
+                    if index == 1:
+                        # Existing native sessions/forks can outlive the delivery
+                        # sidecar. Its absence must not duplicate native guidance.
+                        fixture.runtime.session_file(project, state["agentId"]).with_name(
+                            "instruction-delivery.json").unlink()
+                    provider.result_path = state["resultPath"]
                     process = subprocess.Popen([codex, "app-server", "--listen", "stdio://"],
                         cwd=project, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL, text=True)
@@ -57,13 +66,23 @@ class TokenDeliveryTests(unittest.TestCase):
                         rpc = native.Rpc(process)
                         bridge = native.Bridge(fixture.runtime, session, state, rpc)
                         with redirect_stdout(io.StringIO()) as output:
-                            bridge.run(PromptParts("FIXED_RULE_TOKEN_FIXTURE", f"Bounded request {index}"))
+                            rule = "FIXED_RULE_TOKEN_FIXTURE" if index < 2 else "REVISED_RULE_TOKEN_FIXTURE"
+                            fixed = ("These are the current Agent Factory fixed instructions.\n"
+                                     "<agent-factory-role-prompt>\n" + rule + "\n</agent-factory-role-prompt>")
+                            bridge.run(PromptParts(fixed, f"Bounded request {index}"))
                         events = [json.loads(line) for line in output.getvalue().splitlines()]
                         usage = UsageAccumulator()
                         for event in events:
                             usage.observe(event)
                         self.assertEqual(usage.snapshot()["inputTokens"], 100)
                         self.assertEqual(usage.snapshot()["outputTokens"], 10)
+                        terminal = json.loads(bridge.last_message)
+                        fixture.runtime.publish_terminal_result(terminal, state)
+                        self.assertEqual(Path(state["resultPath"]).read_text(), "Native answer")
+                        with self.assertRaises(fixture.runtime.ContractError):
+                            fixture.runtime.publish_terminal_result({**terminal,
+                                "resultPath": str(root / "wrong-result.md")}, state)
+                        self.assertFalse((root / "wrong-result.md").exists())
                         session["sessionId"] = bridge.thread_id
                     finally:
                         timer.cancel()
@@ -76,8 +95,13 @@ class TokenDeliveryTests(unittest.TestCase):
                         process.stdin.close()
                         process.stdout.close()
                 self.assertEqual(provider.errors, [])
-                self.assertEqual(len(provider.requests), 2)
-                for request in provider.requests:
+                self.assertEqual(len(provider.requests), 4)
+                self.assertNotIn("const", provider.requests[0]["text"]["format"]["schema"]["properties"]["resultPath"])
+                for index, request in enumerate(provider.requests):
+                    self.assertEqual(provider.requests[0]["text"]["format"], request["text"]["format"])
                     text = json.dumps(request)
-                    self.assertEqual(text.count("USER_RULE_TOKEN_FIXTURE"), 1)
+                    # Prior revisions remain native history; the current revision
+                    # must arrive once, including after another ordinary resume.
+                    self.assertEqual(text.count("USER_RULE_TOKEN_FIXTURE"), 1 if index < 2 else 2)
                     self.assertEqual(text.count("FIXED_RULE_TOKEN_FIXTURE"), 1)
+                    self.assertEqual(text.count("REVISED_RULE_TOKEN_FIXTURE"), 0 if index < 2 else 1)

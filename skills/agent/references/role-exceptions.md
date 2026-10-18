@@ -1,5 +1,7 @@
 # Direct role exceptions
 
+<a id="assigned-records"></a>
+
 ## 1. Assigned Documents and records
 
 - Explorer assignments are exact project-relative `documentPaths` on the selected task of

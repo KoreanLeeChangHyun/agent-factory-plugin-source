@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
 import yaml
 
 
@@ -19,6 +20,32 @@ def run(script, root, *args):
         capture_output=True,
         text=True,
     )
+
+
+def restore_reads(context):
+    """Decode the public shared-source contract for exact comparisons with single reads."""
+    if context.get('layout') != 'shared-sources-v1':
+        return context.get('reads', [context])
+
+    def extract(reference, start, end):
+        excerpt = next(item for item in context['sources'][reference]['excerpts']
+                       if item['start'] <= start and item['end'] >= end)
+        return excerpt['text'][start - excerpt['start']:end - excerpt['start']]
+
+    restored = []
+    for read in context['reads']:
+        document = context['documents'][read['documentRef']]
+        entry = context['sources'][document['entrySourceRef']]
+        needs_entry = read['anchor'] or read['path'] != document['entryPath']
+        value = {key: value for key, value in read.items() if key not in ('sourceRef', 'documentRef')}
+        value.update(document=document['document'], dependencies=document['dependencies'],
+                     entryPath=document['entryPath'],
+                     entryText=(extract(document['entrySourceRef'], 0, max(item['end'] for item in entry['excerpts']))
+                                if needs_entry else None),
+                     text=extract(read['sourceRef'], read['start'], read['end']),
+                     sections=context['sources'][read['sourceRef']]['sections'])
+        restored.append(value)
+    return restored
 
 
 def original(root, name="source-example", **metadata):
@@ -524,14 +551,135 @@ def test_partial_search_paging_and_revision_bound_section_read(tmp_path):
     assert json.loads(cli.stdout)['partial'] is True
 
 
-def test_canonical_skill_read_and_dependency_changes(tmp_path):
-    import pytest
+@pytest.mark.parametrize('selection', ['entry', 'entry-section', 'reference-section', 'metadata', 'search', 'miss'])
+def test_compact_cli_preserves_complete_reads_and_search_results(tmp_path, selection):
+    package = processed(tmp_path, body='[Detail](references/detail.md)\n\n'
+                        '<a id="rules"></a>\n\n## Rules\n\n' + ''.join(
+                            f'- Rule {index}: 사용자님 승인 전 배포 금지. 🧭 e\u0301.\n' for index in range(30))
+                        + '\n## Exceptions\n\n- Preserve the unresolved exception.\n')
+    (package / 'references').mkdir()
+    detail = package / 'references/detail.md'
+    detail.write_text('# Detail\n\n## Needed\n\n- 선택한 근거.\n\n## Other\n\n- Other evidence.\n')
+    if selection == 'metadata':
+        path = original(tmp_path) / 'metadata.yaml'
+        args = ['--read-path', path.relative_to(tmp_path).as_posix()]
+    elif selection in ('search', 'miss'):
+        args = ['--query', 'Rule' if selection == 'search' else 'not-present']
+    else:
+        path = detail if selection == 'reference-section' else package / 'SKILL.md'
+        args = ['--read-path', path.relative_to(tmp_path).as_posix()]
+        if selection.endswith('-section'):
+            args += ['--anchor', 'needed' if selection == 'reference-section' else 'rules']
+    legacy = run(SEARCH, tmp_path, *args)
+    compact = run(SEARCH, tmp_path, *args, '--compact')
+    assert legacy.returncode == compact.returncode == 0, (legacy.stderr, compact.stderr)
+    expected, actual = json.loads(legacy.stdout), json.loads(compact.stdout)
+    if actual.get('layout') == 'shared-sources-v1':
+        assert actual['kind'] == 'document-read-context'
+        assert actual['schemaVersion'] == expected['schemaVersion']
+        assert len(actual['reads']) == 1 and actual['candidates'] == []
+        assert restore_reads(actual) == [expected]
+    else:
+        assert actual == expected
+    if selection == 'entry-section':
+        assert actual['layout'] == 'shared-sources-v1'
+        source = actual['sources'][actual['reads'][0]['sourceRef']]
+        assert len(source['excerpts']) == 1
+        assert source['excerpts'][0]['text'] == (package / 'SKILL.md').read_text()
+    assert len(compact.stdout.encode('utf-8')) < len(legacy.stdout.encode('utf-8'))
+    if selection.endswith('-section'):
+        detail.write_text(detail.read_text() + '\n- New dependency evidence.\n')
+        stale = run(SEARCH, tmp_path, *args, '--compact', '--revision', expected['revision'])
+        assert stale.returncode != 0 and stale.stdout == ''
+        assert 'Stale document revision' in json.loads(stale.stderr)['error']
+
+
+@pytest.mark.parametrize('separate_docs', [False, True])
+def test_batch_cli_preserves_order_complete_sources_and_document_roots(tmp_path, separate_docs):
+    from search_documents import read_document
+
+    docs = tmp_path / 'document-workspace' if separate_docs else tmp_path
+    package = processed(docs, body='[First](references/first.md) [Second](references/second.md)\n\n'
+                        '## Rules\n\n' + '- 사용자님 승인 전 배포 금지. 🧭 e\u0301.\n' * 30
+                        + '\n## Exceptions\n\n- Preserve the unresolved exception.\n')
+    (package / 'references').mkdir()
+    for name in ('first', 'second'):
+        (package / f'references/{name}.md').write_text(f'# {name}\n\n## Needed\n\n- {name} 근거.\n')
+    other = original(docs) / 'metadata.yaml'
+    paths = [package / 'references/first.md', package / 'references/second.md', package / 'SKILL.md', other]
+    selections = [dict(path=path.relative_to(docs).as_posix(), **({'anchor': 'rules'} if path.name == 'SKILL.md' else {}))
+                  for path in paths]
+    selections.append(dict(selections[0]))  # Preserve caller order and duplicate selections.
+    expected = [read_document(tmp_path, **item, documents_root=docs) for item in selections]
+    for item, read in zip(selections, expected):
+        item['revision'] = read['revision']
+    source = tmp_path / 'selections.json'
+    source.write_text(json.dumps(selections))
+    args = ['--read-selections-file', str(source), '--documents-root', str(docs)]
+    legacy, compact = run(SEARCH, tmp_path, *args), run(SEARCH, tmp_path, *args, '--compact')
+    assert legacy.returncode == compact.returncode == 0, (legacy.stderr, compact.stderr)
+    inline, shared = json.loads(legacy.stdout), json.loads(compact.stdout)
+    assert inline['kind'] == shared['kind'] == 'document-read-context'
+    assert inline['reads'] == expected and inline['candidates'] == []
+    assert shared['layout'] == 'shared-sources-v1' and len(shared['documents']) == 2
+    assert restore_reads(shared) == expected
+    assert len(compact.stdout.encode()) < len(legacy.stdout.encode())
+
+
+@pytest.mark.parametrize('failure', ['json', 'shape', 'missing', 'stale', 'global-revision'])
+def test_batch_cli_failure_has_no_partial_output(tmp_path, failure):
+    package = processed(tmp_path)
+    path = (package / 'SKILL.md').relative_to(tmp_path).as_posix()
+    selections = [dict(path=path), dict(path=path)]
+    if failure == 'shape':
+        selections[1]['unknown'] = True
+    elif failure == 'missing':
+        selections[1]['path'] = 'docs/processed/missing/SKILL.md'
+    elif failure == 'stale':
+        selections[1]['revision'] = 'stale'
+    source = tmp_path / 'selections.json'
+    source.write_text('[' if failure == 'json' else json.dumps(selections))
+    args = ['--read-selections-file', str(source), '--compact']
+    if failure == 'global-revision':
+        args += ['--revision', 'must-be-per-selection']
+    result = run(SEARCH, tmp_path, *args)
+    assert result.returncode == 1 and result.stdout == ''
+    assert json.loads(result.stderr)['error']
+
+
+def test_batch_rejects_package_revision_change_between_selections(tmp_path, monkeypatch):
+    import search_documents
+
+    package = processed(tmp_path)
+    path = (package / 'SKILL.md').relative_to(tmp_path).as_posix()
+    original_read = search_documents.read_document
+    calls = 0
+
+    def changing_read(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            (package / 'SKILL.md').write_text((package / 'SKILL.md').read_text() + '\n- New exception.\n')
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(search_documents, 'read_document', changing_read)
+    with pytest.raises(ValueError, match='revision changed within batch'):
+        search_documents.read_selections(tmp_path, [dict(path=path), dict(path=path)])
+
+
+@pytest.mark.parametrize("metadata_storage", ["inline", "sidecar"])
+def test_canonical_skill_read_and_dependency_changes(tmp_path, metadata_storage):
     from search_documents import read_document
     package = tmp_path / 'docs/skills/rule-demo'
     package.mkdir(parents=True)
     entry = package / 'SKILL.md'
     entry.write_text('---\ndocument-type: specification\ncategory: rule\ndomain: null\n'
                      'name: demo\nlanguage: ko\n---\n# 규칙\n\n- 금지와 예외. [Detail](references/detail.md)\n')
+    metadata_path = package / 'metadata.yaml'
+    if metadata_storage == 'sidecar':
+        _, header, body = entry.read_text().split('---', 2)
+        metadata_path.write_text(header.lstrip())
+        entry.write_text('---\nname: rule-demo\ndescription: Example rules\n---' + body)
     (package / 'references').mkdir()
     detail = package / 'references/detail.md'
     detail.write_text('# Detail\n\n## Topic\n\n- Current rule\n')
@@ -540,7 +688,16 @@ def test_canonical_skill_read_and_dependency_changes(tmp_path):
     assert read['document']['documentType'] == 'specification'
     assert read['document']['packagePath'] == 'docs/skills/rule-demo'
     assert '금지와 예외' in read['entryText']
+    assert read['document']['metadataPath'] == (metadata_path if metadata_storage == 'sidecar' else entry).relative_to(tmp_path).as_posix()
+    assert read['document']['contentPath'] == entry.relative_to(tmp_path).as_posix()
     assert json.loads(run(CATALOG, tmp_path).stdout)['documents'] == []
+    if metadata_storage == 'sidecar':
+        assert 'document-type' not in read['entryText']
+        metadata_path.write_text(metadata_path.read_text() + 'status: accepted\n')
+        with pytest.raises(ValueError, match='Stale'):
+            read_document(tmp_path, relative, 'topic', read['revision'])
+        read = read_document(tmp_path, relative, 'topic')
+        assert read['document']['metadata']['status'] == 'accepted'
     # Linked asset bytes invalidate the complete package even when text is unchanged.
     (package / 'assets').mkdir()
     asset = package / 'assets/data.csv'
@@ -551,3 +708,84 @@ def test_canonical_skill_read_and_dependency_changes(tmp_path):
     detail.symlink_to(entry)
     with pytest.raises(ValueError, match='Symlinks'):
         read_document(tmp_path, relative)
+
+
+def test_refined_sidecar_remains_searchable_without_expanding_entry(tmp_path):
+    from catalog_documents import catalog_entry
+    from search_documents import read_document, search
+
+    package = refined(tmp_path)
+    entry = package / 'SKILL.md'
+    _, header, body = entry.read_text().split('---', 2)
+    metadata = yaml.safe_load(header)['metadata']
+    metadata['provenance'] = {'authority': 'source-message-opaque-identifier'}
+    sidecar = package / 'metadata.yaml'
+    sidecar.write_text(yaml.safe_dump(metadata, allow_unicode=True))
+    entry.write_text('---\nname: refined-example\ndescription: Routing analysis\n---' + body)
+
+    item = catalog_entry(tmp_path, package, 'processed')
+    assert item['metadata'] == metadata
+    assert item['metadataPath'] == sidecar.relative_to(tmp_path).as_posix()
+    result = search(tmp_path, 'source-message-opaque-identifier')
+    assert result['count'] == 1
+    read = read_document(tmp_path, item['contentPath'])
+    assert read['text'] == entry.read_text()
+    assert 'source-message-opaque-identifier' not in read['text']
+    assert read['document']['metadata'] == metadata
+    explicit = read_document(tmp_path, item['metadataPath'])
+    assert yaml.safe_load(explicit['text']) == metadata
+    assert explicit['entryText'] == entry.read_text()
+
+
+@pytest.mark.parametrize('failure', ['duplicate', 'invalid-yaml', 'missing-field', 'symlink'])
+def test_sidecar_metadata_rejects_conflicting_or_invalid_sources(tmp_path, failure):
+    from catalog_documents import catalog_entry
+
+    package = refined(tmp_path)
+    entry = package / 'SKILL.md'
+    metadata = yaml.safe_load(entry.read_text().split('---', 2)[1])['metadata']
+    sidecar = package / 'metadata.yaml'
+    if failure != 'duplicate':
+        entry.write_text('---\nname: refined-example\n---\n# Entry\n')
+    if failure == 'invalid-yaml':
+        sidecar.write_text('category: [\n')
+        message = 'Invalid YAML'
+    elif failure == 'symlink':
+        sidecar.symlink_to(entry)
+        message = 'Symlinks'
+    else:
+        if failure == 'missing-field':
+            del metadata['category']
+        sidecar.write_text(yaml.safe_dump(metadata))
+        message = 'one source' if failure == 'duplicate' else 'Metadata missing category'
+    with pytest.raises(ValueError, match=message):
+        catalog_entry(tmp_path, package, 'processed')
+
+
+def test_reused_catalog_refreshes_metadata_and_dependency_hashes(tmp_path):
+    from unittest import mock
+    import search_documents
+    from catalog_documents import build_catalog
+
+    package = processed(tmp_path, body='needle')
+    entry = package / 'SKILL.md'
+    catalog = build_catalog(tmp_path)['documents']
+    path = entry.relative_to(tmp_path).as_posix()
+    with mock.patch.object(search_documents, 'build_catalog', side_effect=AssertionError('Unexpected catalog rebuild')):
+        hit = search_documents.search(tmp_path, 'needle', limit=None, catalog=catalog)['results'][0]
+        original = search_documents.read_document(tmp_path, path, revision=hit['revision'], catalog=catalog)
+        entry.write_text(entry.read_text().replace('domain: null', 'domain: null\nscope: changed'))
+        with pytest.raises(ValueError, match='Stale'):
+            search_documents.read_document(tmp_path, path, revision=hit['revision'], catalog=catalog)
+        current = search_documents.read_document(tmp_path, path, catalog=catalog)
+        assert current['document']['metadata']['scope'] == 'changed'
+        assert current['revision'] != original['revision']
+        (package / 'references').mkdir()
+        dependency = package / 'references/detail.md'
+        dependency.write_text('# New dependency\n')
+        with pytest.raises(ValueError, match='Stale'):
+            search_documents.read_document(tmp_path, path, revision=current['revision'], catalog=catalog)
+        dependency.unlink()
+        dependency.symlink_to(entry)
+        with pytest.raises(ValueError, match='Symlinks'):
+            search_documents.read_document(tmp_path, path, catalog=catalog)

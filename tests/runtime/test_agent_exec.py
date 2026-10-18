@@ -198,6 +198,74 @@ class AgentExecTests(unittest.TestCase):
             self.assertNotIn("backend", current)
             self.assertEqual(run_path.read_bytes(), historical)
 
+    def test_performer_reset_preserves_history_and_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(self.module, "spawn_worker", return_value=123), \
+                mock.patch.object(self.module, "emit") as emit:
+            root = Path(directory)
+            submit = self.module.parse_args([
+                "submit", "--project-root", directory, "--agent", "main-agent",
+                "--role", "work", "--message", "bounded request",
+                "--task-list-file", str(self.task_list(directory)), "--task-id", "bounded-task",
+                "--model", "gpt-5.6-sol", "--codex", sys.executable,
+            ])
+            self.module.submit(submit, True)
+            run = emit.call_args.args[0]
+            run_path = Path(run["statePath"])
+            self.module.mark_terminal(run_path, "completed")
+            historical = run_path.read_bytes()
+            session_path = self.module.session_file(root, "main-agent")
+            session = self.module.safe_read_json(session_path)
+            session.update({
+                "sessionId": "old-thread", "backend": "app-server",
+                "goal": {"status": "complete"}, "goalObservedAt": "earlier",
+            })
+            self.module.atomic_write_json(session_path, session)
+            self.module.command_reset_conversation(argparse.Namespace(
+                project_root=root, agent="main-agent"))
+
+            reset = emit.call_args.args[0]
+            current = self.module.load_session(root, "main-agent")
+            self.assertEqual(reset["kind"], "conversation-reset")
+            self.assertTrue(reset["conversationId"].startswith("conversation-"))
+            self.assertIsNone(current["sessionId"])
+            self.assertEqual(current["agentId"], "main-agent")
+            self.assertEqual(current["model"], "gpt-5.6-sol")
+            self.assertNotIn("goal", current)
+            self.assertNotIn("backend", current)
+            self.assertEqual(run_path.read_bytes(), historical)
+
+    def test_performer_waits_for_domain_capacity_without_starting_provider_and_can_cancel(self):
+        from conductor import domains, session_pool
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(self.module, "spawn_worker", return_value=123), \
+                mock.patch.object(self.module, "emit") as emit:
+            root = Path(directory)
+            runs = []
+            for agent in ("pool-a", "pool-b"):
+                args = self.module.parse_args(["submit", "--project-root", directory, "--agent", agent,
+                    "--role", "work", "--message", "bounded request", "--model", "gpt-5.6-sol", "--codex", sys.executable,
+                    "--task-list-file", str(self.task_list(directory)), "--task-id", "bounded-task"])
+                self.module.submit(args, True)
+                runs.append(emit.call_args.args[0])
+            private = Path(self.module.runtime_paths.resolve(root)["runtimeRoot"])
+            domain_id = domains.create(private, "Pool test", "human", "test")["domainId"]
+            for agent in ("pool-a", "pool-b"):
+                domains.assign(private, agent, domain_id, "human", "test")
+            domains.set_capacity(private, domain_id, 1, "human", "test")
+            self.assertTrue(session_pool.admit(private, Path(runs[0]["statePath"])))
+            # First cancellation check is before admission; the second is after waiting once.
+            with mock.patch.object(self.module, "run_codex_attempt") as launch, \
+                    mock.patch.object(self.module, "Heartbeat"), \
+                    mock.patch.object(self.module, "cancel_requested", side_effect=[False, True]), \
+                    mock.patch("signal.signal"):
+                self.module.worker(argparse.Namespace(project_root=root, agent="pool-b", run_id=runs[1]["runId"]))
+                launch.assert_not_called()
+            waiting = self.module.safe_read_json(Path(runs[1]["statePath"]))
+            self.assertEqual(waiting["status"], "cancelled")
+            self.assertEqual(waiting["domainAdmission"]["status"], "waiting")
+            self.assertEqual(waiting.get("attempt", 0), 0)
+
     def test_reset_conversation_rejects_active_run_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(self.module, "spawn_worker", return_value=123), \
