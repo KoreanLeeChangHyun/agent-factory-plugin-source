@@ -409,10 +409,10 @@ class AgentExecTests(unittest.TestCase):
             result_path=Path("/managed/result.md"), run_id="run-one",
             human_approval_policy="bypass",
         )
-        self.assertIn("For requested work, the Human has", prompt)
-        self.assertIn("authorized execution without a separate proposal", prompt)
+        self.assertIn("Explicit work requests satisfy the Delegation gate.", prompt)
+        self.assertIn("No routine proposal, plan, scope, tool or delegation\napproval is needed", prompt)
         self.assertNotIn("proceed through Main -> Work -> Verification immediately", prompt)
-        self.assertIn("Do not return\n`needs-human-decision` merely to approve a plan", prompt)
+        self.assertIn("do not return `needs-human-decision` merely for such approval", prompt)
         # Bypass authorizes requested work only; questions and unclear messages stay conversation.
         self.assertIn("Bypass never turns them into work.", prompt)
         self.assertIn("Conversation always remains direct Main: answer questions", prompt)
@@ -474,10 +474,8 @@ class AgentExecTests(unittest.TestCase):
                 Path(state["responseSchemaPath"]).read_text(encoding="utf-8")
             )
 
-        self.assertEqual(
-            schema["properties"]["resultPath"],
-            {"type": "string", "const": state["resultPath"]},
-        )
+        # The runtime binds the exact path; the schema keeps no run-specific value.
+        self.assertEqual(schema["properties"]["resultPath"], {"type": "string"})
 
     def _new_containment_state(self, root: Path) -> dict:
         return self.module.create_run(

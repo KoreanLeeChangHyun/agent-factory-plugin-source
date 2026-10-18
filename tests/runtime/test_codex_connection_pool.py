@@ -33,7 +33,7 @@ for line in sys.stdin:
  if m=='turn/start':
   if any(i.get('text')=='hold' for i in p.get('input',[])):
    while not Path(__file__).with_suffix('.release').exists(): time.sleep(.01)
-  result={'status':'completed','resultPath':p['outputSchema']['properties']['resultPath']['const'],'resultText':'ok','decisionKind':None}
+  result={'status':'completed','resultPath':Path(__file__).with_suffix('.result').read_text(),'resultText':'ok','decisionKind':None}
   out({'method':'turn/started','params':{'threadId':'thread-exact','turn':{'id':'turn-one'}}})
   out({'method':'item/completed','params':{'threadId':'thread-exact','item':{'type':'agentMessage','text':json.dumps(result)}}})
   out({'method':'turn/completed','params':{'threadId':'thread-exact','turn':{'id':'turn-one','status':'completed'}}})
@@ -45,6 +45,8 @@ class ConnectionPoolTests(unittest.TestCase):
             root = Path(directory)
             fake = root / 'codex'; fake.write_text(FAKE); fake.chmod(0o700)
             bridge, _, state = native_fixture(root, goal=False)
+            # The output schema keeps no run-specific path, so the fake reads this run's binding here.
+            fake.with_suffix('.result').write_text(state['resultPath'])
             session = bridge.session
             session['codex'] = str(fake)
             session['nativeCapabilities'] = {'goal': False}
